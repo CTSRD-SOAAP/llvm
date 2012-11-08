@@ -109,6 +109,9 @@ public:
   void writeHeader(const std::string &Title) {
     std::string GraphName = DTraits.getGraphName(G);
 
+    if (DTraits.isStrict(G))
+      O << "strict ";
+
     if (!Title.empty())
       O << "digraph \"" << DOT::EscapeString(Title) << "\" {\n";
     else if (!GraphName.empty())

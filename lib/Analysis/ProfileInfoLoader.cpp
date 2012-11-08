@@ -75,6 +75,7 @@ static void ReadProfilingBlock(const char *ToolName, FILE *F,
       Data[i] = AddCounts(ByteSwap(TempSpace[i], true), Data[i]);
     }
   }
+  //outs() << "Call edge count for printf -> vfprintf: " << Data[2078*3238 + 2895] << "\n";
 }
 
 const unsigned ProfileInfoLoader::Uncounted = ~0U;
@@ -142,6 +143,10 @@ ProfileInfoLoader::ProfileInfoLoader(const char *ToolName,
 
     case BBTraceInfo:
       ReadProfilingBlock(ToolName, F, ShouldByteSwap, BBTrace);
+      break;
+
+    case CallEdgeInfo:
+      ReadProfilingBlock(ToolName, F, ShouldByteSwap, CallEdgeCounts);
       break;
 
     default:

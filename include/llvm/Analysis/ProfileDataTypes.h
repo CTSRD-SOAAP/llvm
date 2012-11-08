@@ -29,7 +29,8 @@ enum ProfilingType {
   EdgeInfo      = 4,   /* Edge profiling information      */
   PathInfo      = 5,   /* Path profiling information      */
   BBTraceInfo   = 6,   /* Basic block trace information   */
-  OptEdgeInfo   = 7    /* Edge profiling information, optimal version */
+  OptEdgeInfo   = 7,    /* Edge profiling information, optimal version */
+  CallEdgeInfo	= 8		/* Call graph edge profiling information */
 };
 
 #if defined(__cplusplus)

@@ -144,6 +144,14 @@ public:
   ///
   template<typename GraphType, typename GraphWriter>
   static void addCustomGraphFeatures(const GraphType &, GraphWriter &) {}
+
+  /// isStrict - a strict graph has at most one edge between any pair of nodes.
+  /// Even if the constructed DOT graph has multiple edges, making it strict
+  /// ensures that only one is rendered.
+  template<typename GraphType>
+  static bool isStrict(const GraphType &) {
+    return false;
+  }  
 };
 
 

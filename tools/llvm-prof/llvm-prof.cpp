@@ -249,6 +249,21 @@ bool ProfileInfoPrinterPass::runOnModule(Module &M) {
         (*I)->print(outs(), &PA);
   }
 
+  // output call edge information
+  outs() << "\n===" << std::string(73, '-') << "===\n";
+  outs() << "Dynamic call graph information:\n\n";
+
+  for (Module::iterator F1I = M.begin(), F1E = M.end(); F1I != F1E; ++F1I) {
+    if (F1I->isDeclaration()) continue;
+    for (Module::iterator F2I = M.begin(), F2E = M.end(); F2I != F2E; ++F2I) {
+      if (F2I->isDeclaration()) continue;
+      int count = static_cast<int>(ignoreMissing(PI.getCallEdgeCount(std::make_pair(F1I, F2I))));
+      if (count > 0) {
+        outs() << F1I->getName() << " -> " << F2I->getName() << ": " << count << "\n";
+      }
+    }
+  }
+
   return false;
 }
 

@@ -34,6 +34,7 @@ class ProfileInfoLoader {
   std::vector<unsigned>    EdgeCounts;
   std::vector<unsigned>    OptimalEdgeCounts;
   std::vector<unsigned>    BBTrace;
+  std::vector<unsigned>    CallEdgeCounts;
 public:
   // ProfileInfoLoader ctor - Read the specified profiling data file, exiting
   // the program if the file is invalid or broken.
@@ -74,6 +75,9 @@ public:
     return OptimalEdgeCounts;
   }
 
+  const std::vector<unsigned> &getRawCallEdgeCounts() const {
+    return CallEdgeCounts;
+  }
 };
 
 } // End llvm namespace

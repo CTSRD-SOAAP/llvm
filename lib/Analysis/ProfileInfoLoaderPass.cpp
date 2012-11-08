@@ -263,5 +263,43 @@ bool LoaderPass::runOnModule(Module &M) {
     }
   }
 
+  CallEdgeInformation.clear();
+  Counters = PIL.getRawCallEdgeCounts();
+  // calculate number of defined functions
+  int numFuncs = 0;
+  for (Module::iterator F = M.begin(), E = M.end(); F != E; ++F) {
+    if (F->isDeclaration()) continue;
+    numFuncs++;
+  }
+  DEBUG(dbgs() << "numFuncs: " << numFuncs << "\n");
+  int currFuncId = 0;
+  //GlobalVariable* CallEdgeCountersGlobalArray = M.getNamedGlobal("CallEdgeCounters");
+  if (Counters.size() > 0) {
+    //CallEdgeCountersGlobalArray->dump();
+    ReadCount = numFuncs+1; // skip first row of array
+    for (Module::iterator F1 = M.begin(), E1 = M.end(); F1 != E1; ++F1) {
+      if (F1->isDeclaration()) continue;
+      ReadCount++; // skip NULL function
+      currFuncId++;
+      if (F1->getName() == "printf" || F1->getName() == "vfprintf") {
+        DEBUG(dbgs() << "Id for " << F1->getName() << ": " << currFuncId << "\n");
+      }
+      for (Module::iterator F2 = M.begin(), E2 = M.end(); F2 != E2; ++F2) {
+        if (F2->isDeclaration()) continue;
+        if (ReadCount < Counters.size()) {
+          CallEdgeInformation[F1][F2] = (double)Counters[ReadCount++];
+          if (F1->getName() == "printf" && F2->getName() == "vfprintf") { 
+            DEBUG(dbgs() << "Storing count for call edge " << F1->getName() << " -> " << F2->getName() << "\n");
+            DEBUG(dbgs() << "Value stored: " << CallEdgeInformation[F1][F2] << "\n");
+          }
+        }
+      }
+    }
+//    if (ReadCount != Counters.size()) {
+//      errs() << "WARNING: profile information is inconsistent with "
+//             << "the current program!\n";
+//    }
+  }
+
   return false;
 }

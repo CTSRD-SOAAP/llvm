@@ -60,6 +60,8 @@ namespace llvm {
     typedef std::map<Edge, double> EdgeWeights;
     typedef std::map<const BType*, double> BlockCounts;
     typedef std::map<const BType*, const BType*> Path;
+    typedef std::pair<const FType*, const FType*> CallEdge;
+    typedef std::map<const FType*, double> CallEdgeCounts;
 
   protected:
     // EdgeInformation - Count the number of times a transition between two
@@ -74,7 +76,11 @@ namespace llvm {
     // FunctionInformation - Count the number of times a function is executed.
     std::map<const FType*, double> FunctionInformation;
 
+    // CallEdgeInformation - Count the number of times a call edge is executed
+    std::map<const FType*, CallEdgeCounts> CallEdgeInformation;
+
     ProfileInfoT<MachineFunction, MachineBasicBlock> *MachineProfile;
+
   public:
     static char ID; // Class identification, replacement for typeinfo
     ProfileInfoT();
@@ -131,6 +137,17 @@ namespace llvm {
 
     EdgeWeights &getEdgeWeights (const FType *F) {
       return EdgeInformation[F];
+    }
+
+    double getCallEdgeCount(CallEdge e) {
+      typename std::map<const FType*, CallEdgeCounts>::const_iterator I =
+        CallEdgeInformation.find(e.first);
+      if (I == CallEdgeInformation.end()) return MissingValue;
+
+      typename CallEdgeCounts::const_iterator J = I->second.find(e.second);
+      if (J == I->second.end()) return MissingValue;
+
+      return J->second;
     }
 
     //===------------------------------------------------------------------===//
