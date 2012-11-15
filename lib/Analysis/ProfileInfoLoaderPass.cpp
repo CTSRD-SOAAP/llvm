@@ -26,6 +26,9 @@
 #include "llvm/Support/Format.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/SmallSet.h"
+#include "llvm/Support/InstIterator.h"
+#include "llvm/Instructions.h"
+
 #include <set>
 using namespace llvm;
 
@@ -279,18 +282,20 @@ bool LoaderPass::runOnModule(Module &M) {
     ReadCount = numFuncs+1; // skip first row of array
     for (Module::iterator F1 = M.begin(), E1 = M.end(); F1 != E1; ++F1) {
       if (F1->isDeclaration()) continue;
-      ReadCount++; // skip NULL function
       currFuncId++;
-      if (F1->getName() == "printf" || F1->getName() == "vfprintf") {
-        DEBUG(dbgs() << "Id for " << F1->getName() << ": " << currFuncId << "\n");
-      }
-      for (Module::iterator F2 = M.begin(), E2 = M.end(); F2 != E2; ++F2) {
-        if (F2->isDeclaration()) continue;
-        if (ReadCount < Counters.size()) {
-          CallEdgeInformation[F1][F2] = (double)Counters[ReadCount++];
-          if (F1->getName() == "printf" && F2->getName() == "vfprintf") { 
-            DEBUG(dbgs() << "Storing count for call edge " << F1->getName() << " -> " << F2->getName() << "\n");
-            DEBUG(dbgs() << "Value stored: " << CallEdgeInformation[F1][F2] << "\n");
+      for (inst_iterator I = inst_begin(F1), E = inst_end(F1); I != E; ++I) {
+        if (CallInst* C = dyn_cast<CallInst>(&*I)) {
+          ReadCount++; // skip NULL function
+          for (Module::iterator F2 = M.begin(), E2 = M.end(); F2 != E2; ++F2) {
+            if (F2->isDeclaration()) continue;
+            if (ReadCount < Counters.size()) {
+              int count = static_cast<int>(Counters[ReadCount++]);
+              if (count > 0) {
+                CallEdgeInformation[C][F2] = count;
+                DEBUG(dbgs() << "Storing count for call edge " << F1->getName() << " -> " << F2->getName() << "\n");
+                DEBUG(dbgs() << "Value stored: " << CallEdgeInformation[C][F2] << "\n");
+              }
+            }
           }
         }
       }

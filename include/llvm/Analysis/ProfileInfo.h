@@ -25,6 +25,8 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/Format.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Instructions.h"
+
 #include <cassert>
 #include <string>
 #include <map>
@@ -60,7 +62,7 @@ namespace llvm {
     typedef std::map<Edge, double> EdgeWeights;
     typedef std::map<const BType*, double> BlockCounts;
     typedef std::map<const BType*, const BType*> Path;
-    typedef std::pair<const FType*, const FType*> CallEdge;
+    typedef std::pair<const CallInst*, const FType*> CallEdge;
     typedef std::map<const FType*, double> CallEdgeCounts;
 
   protected:
@@ -77,7 +79,7 @@ namespace llvm {
     std::map<const FType*, double> FunctionInformation;
 
     // CallEdgeInformation - Count the number of times a call edge is executed
-    std::map<const FType*, CallEdgeCounts> CallEdgeInformation;
+    std::map<const CallInst*, CallEdgeCounts> CallEdgeInformation;
 
     ProfileInfoT<MachineFunction, MachineBasicBlock> *MachineProfile;
 
@@ -139,15 +141,30 @@ namespace llvm {
       return EdgeInformation[F];
     }
 
-    double getCallEdgeCount(CallEdge e) {
-      typename std::map<const FType*, CallEdgeCounts>::const_iterator I =
-        CallEdgeInformation.find(e.first);
+    double getCallEdgeCount(const CallInst* C, const FType* F) {
+      typename std::map<const CallInst*, CallEdgeCounts>::const_iterator I =
+        CallEdgeInformation.find(C);
       if (I == CallEdgeInformation.end()) return MissingValue;
 
-      typename CallEdgeCounts::const_iterator J = I->second.find(e.second);
+      typename CallEdgeCounts::const_iterator J = I->second.find(F);
       if (J == I->second.end()) return MissingValue;
 
       return J->second;
+    }
+
+    const CallEdgeCounts* getDynamicCallees(const CallInst* C) {
+      typename std::map<const CallInst*, CallEdgeCounts>::const_iterator I =
+        CallEdgeInformation.find(C);
+      if (I == CallEdgeInformation.end()) {
+        return NULL;
+      }
+      else {
+        return &I->second;
+      }
+    }
+
+    bool isDynamicCallEdge(const CallInst* C, const FType* F) {
+      return getCallEdgeCount(C, F) != MissingValue;
     }
 
     //===------------------------------------------------------------------===//

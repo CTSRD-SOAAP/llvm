@@ -31,6 +31,9 @@
 #include "llvm/Support/Format.h"
 #include "llvm/Support/Signals.h"
 #include "llvm/Support/system_error.h"
+#include "llvm/Support/InstIterator.h"
+#include "llvm/Instructions.h"
+
 #include <algorithm>
 #include <iomanip>
 #include <map>
@@ -255,12 +258,23 @@ bool ProfileInfoPrinterPass::runOnModule(Module &M) {
 
   for (Module::iterator F1I = M.begin(), F1E = M.end(); F1I != F1E; ++F1I) {
     if (F1I->isDeclaration()) continue;
-    for (Module::iterator F2I = M.begin(), F2E = M.end(); F2I != F2E; ++F2I) {
-      if (F2I->isDeclaration()) continue;
-      int count = static_cast<int>(ignoreMissing(PI.getCallEdgeCount(std::make_pair(F1I, F2I))));
-      if (count > 0) {
-        outs() << F1I->getName() << " -> " << F2I->getName() << ": " << count << "\n";
+    std::map<Function*,int> calleeCounts;
+    for (inst_iterator I = inst_begin(F1I), E = inst_end(F1I); I != E; ++I) {
+      if (CallInst* C = dyn_cast<CallInst>(&*I)) {
+        for (Module::iterator F2I = M.begin(), F2E = M.end(); F2I != F2E; ++F2I) {
+          if (F2I->isDeclaration()) continue;
+          int count = static_cast<int>(ignoreMissing(PI.getCallEdgeCount(C, F2I)));
+          if (count > 0) {
+            calleeCounts[F2I] += count;
+          }
+        }
       }
+    }
+    
+    for (std::map<Function*,int>::iterator I=calleeCounts.begin(), E=calleeCounts.end(); I!=E; I++) {
+      Function* fn = I->first;
+      int count = I->second;
+      outs() << F1I->getName() << " -> " << fn->getName() << ": " << count << "\n";
     }
   }
 
