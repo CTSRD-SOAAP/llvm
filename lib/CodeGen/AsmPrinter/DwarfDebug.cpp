@@ -577,8 +577,8 @@ unsigned DwarfDebug::GetOrCreateSourceID(StringRef FileName,
     return GetOrCreateSourceID("<stdin>", StringRef());
 
   // TODO: this might not belong here. See if we can factor this better.
-  if (DirName == CompilationDir)
-    DirName = "";
+  //if (DirName == CompilationDir)
+  //  DirName = "";
 
   unsigned SrcId = SourceIdMap.size()+1;
 
