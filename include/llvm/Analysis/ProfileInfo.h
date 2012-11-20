@@ -80,6 +80,8 @@ namespace llvm {
 
     // CallEdgeInformation - Count the number of times a call edge is executed
     std::map<const CallInst*, CallEdgeCounts> CallEdgeInformation;
+    // CallerInformation - mapping from callees to callers
+    std::map<const FType*, std::list<const CallInst*> > CallerInformation;
 
     ProfileInfoT<MachineFunction, MachineBasicBlock> *MachineProfile;
 
@@ -152,14 +154,45 @@ namespace llvm {
       return J->second;
     }
 
-    const CallEdgeCounts* getDynamicCallees(const CallInst* C) {
+    // return a copy of the counts, not the internal data structure
+    CallEdgeCounts getDynamicCalleesWithCounts(const CallInst* C) {
       typename std::map<const CallInst*, CallEdgeCounts>::const_iterator I =
         CallEdgeInformation.find(C);
       if (I == CallEdgeInformation.end()) {
-        return NULL;
+        return CallEdgeCounts();
       }
       else {
-        return &I->second;
+        return I->second;
+      }
+    }
+
+    std::list<const Function*> getDynamicCallees(const CallInst* C) {
+      typename std::map<const CallInst*, CallEdgeCounts>::const_iterator I =
+        CallEdgeInformation.find(C);
+      if (I == CallEdgeInformation.end()) {
+        return std::list<const Function*>();
+      }
+      else {
+        DEBUG(dbgs() << "Building list of dynamic callees\n");
+        std::list<const FType*> callees;
+        std::map<const FType*, double> DynamicEdgeCounts = I->second;
+        for (typename std::map<const FType*, double>::iterator J=DynamicEdgeCounts.begin(), K=DynamicEdgeCounts.end(); J!=K; J++) {
+          const FType* Callee = J->first;
+          DEBUG(dbgs() << "  adding " << Callee->getName() << "\n");
+          callees.push_back(J->first);
+        }
+        return callees;
+      }
+    }
+
+    std::list<const CallInst*> getDynamicCallers(const FType* F) {
+      typename std::map<const FType*, std::list<const CallInst*> >::const_iterator I =
+        CallerInformation.find(F);
+      if (I == CallerInformation.end()) {
+        return std::list<const CallInst*>();
+      }
+      else {
+        return I->second;
       }
     }
 

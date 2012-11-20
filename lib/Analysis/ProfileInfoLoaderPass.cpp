@@ -284,7 +284,7 @@ bool LoaderPass::runOnModule(Module &M) {
       if (F1->isDeclaration()) continue;
       currFuncId++;
       for (inst_iterator I = inst_begin(F1), E = inst_end(F1); I != E; ++I) {
-        if (CallInst* C = dyn_cast<CallInst>(&*I)) {
+        if (const CallInst* C = dyn_cast<CallInst>(&*I)) {
           ReadCount++; // skip NULL function
           for (Module::iterator F2 = M.begin(), E2 = M.end(); F2 != E2; ++F2) {
             if (F2->isDeclaration()) continue;
@@ -294,6 +294,7 @@ bool LoaderPass::runOnModule(Module &M) {
                 CallEdgeInformation[C][F2] = count;
                 DEBUG(dbgs() << "Storing count for call edge " << F1->getName() << " -> " << F2->getName() << "\n");
                 DEBUG(dbgs() << "Value stored: " << CallEdgeInformation[C][F2] << "\n");
+                CallerInformation[F2].push_back(C);
               }
             }
           }
