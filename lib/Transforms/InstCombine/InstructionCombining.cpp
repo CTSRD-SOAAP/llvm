@@ -44,6 +44,7 @@
 #include "llvm/Target/TargetLibraryInfo.h"
 #include "llvm/Transforms/Utils/Local.h"
 #include "llvm/Support/CFG.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/GetElementPtrTypeIterator.h"
 #include "llvm/Support/PatternMatch.h"
@@ -64,6 +65,11 @@ STATISTIC(NumSunkInst , "Number of instructions sunk");
 STATISTIC(NumExpand,    "Number of expansions");
 STATISTIC(NumFactor   , "Number of factorizations");
 STATISTIC(NumReassoc  , "Number of reassociations");
+
+static cl::opt<bool> UnsafeFPShrink("enable-double-float-shrink", cl::Hidden,
+                                   cl::init(false),
+                                   cl::desc("Enable unsafe double to float "
+                                            "shrinking for math lib calls"));
 
 // Initialization Routines
 void llvm::initializeInstCombine(PassRegistry &Registry) {
@@ -2367,6 +2373,24 @@ bool InstCombiner::DoOneIteration(Function &F, unsigned Iteration) {
   return MadeIRChange;
 }
 
+namespace {
+class InstCombinerLibCallSimplifier : public LibCallSimplifier {
+  InstCombiner *IC;
+public:
+  InstCombinerLibCallSimplifier(const DataLayout *TD,
+                                const TargetLibraryInfo *TLI,
+                                InstCombiner *IC)
+    : LibCallSimplifier(TD, TLI, UnsafeFPShrink) {
+    this->IC = IC;
+  }
+
+  /// replaceAllUsesWith - override so that instruction replacement
+  /// can be defined in terms of the instruction combiner framework.
+  virtual void replaceAllUsesWith(Instruction *I, Value *With) const {
+    IC->ReplaceInstUsesWith(*I, With);
+  }
+};
+}
 
 bool InstCombiner::runOnFunction(Function &F) {
   TD = getAnalysisIfAvailable<DataLayout>();
@@ -2379,7 +2403,7 @@ bool InstCombiner::runOnFunction(Function &F) {
                InstCombineIRInserter(Worklist));
   Builder = &TheBuilder;
 
-  LibCallSimplifier TheSimplifier(TD, TLI);
+  InstCombinerLibCallSimplifier TheSimplifier(TD, TLI, this);
   Simplifier = &TheSimplifier;
 
   bool EverMadeChange = false;
