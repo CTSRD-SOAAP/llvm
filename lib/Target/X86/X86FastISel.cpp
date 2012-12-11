@@ -14,24 +14,24 @@
 //===----------------------------------------------------------------------===//
 
 #include "X86.h"
-#include "X86InstrBuilder.h"
 #include "X86ISelLowering.h"
+#include "X86InstrBuilder.h"
 #include "X86RegisterInfo.h"
 #include "X86Subtarget.h"
 #include "X86TargetMachine.h"
 #include "llvm/CallingConv.h"
-#include "llvm/DerivedTypes.h"
-#include "llvm/GlobalVariable.h"
-#include "llvm/GlobalAlias.h"
-#include "llvm/Instructions.h"
-#include "llvm/IntrinsicInst.h"
-#include "llvm/Operator.h"
 #include "llvm/CodeGen/Analysis.h"
 #include "llvm/CodeGen/FastISel.h"
 #include "llvm/CodeGen/FunctionLoweringInfo.h"
 #include "llvm/CodeGen/MachineConstantPool.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
+#include "llvm/DerivedTypes.h"
+#include "llvm/GlobalAlias.h"
+#include "llvm/GlobalVariable.h"
+#include "llvm/Instructions.h"
+#include "llvm/IntrinsicInst.h"
+#include "llvm/Operator.h"
 #include "llvm/Support/CallSite.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/GetElementPtrTypeIterator.h"
@@ -1529,6 +1529,10 @@ bool X86FastISel::X86SelectCall(const Instruction *I) {
   if (const IntrinsicInst *II = dyn_cast<IntrinsicInst>(CI))
     return X86VisitIntrinsicCall(*II);
 
+  // Allow SelectionDAG isel to handle tail calls.
+  if (cast<CallInst>(I)->isTailCall())
+    return false;
+
   return DoSelectCall(I, 0);
 }
 
@@ -1905,11 +1909,11 @@ bool X86FastISel::DoSelectCall(const Instruction *I, const char *MemIntName) {
   ComputeValueVTs(TLI, I->getType(), RetTys);
   for (unsigned i = 0, e = RetTys.size(); i != e; ++i) {
     EVT VT = RetTys[i];
-    EVT RegisterVT = TLI.getRegisterType(I->getParent()->getContext(), VT);
+    MVT RegisterVT = TLI.getRegisterType(I->getParent()->getContext(), VT);
     unsigned NumRegs = TLI.getNumRegisters(I->getParent()->getContext(), VT);
     for (unsigned j = 0; j != NumRegs; ++j) {
       ISD::InputArg MyFlags;
-      MyFlags.VT = RegisterVT.getSimpleVT();
+      MyFlags.VT = RegisterVT;
       MyFlags.Used = !CS.getInstruction()->use_empty();
       if (CS.paramHasAttr(0, Attributes::SExt))
         MyFlags.Flags.setSExt();

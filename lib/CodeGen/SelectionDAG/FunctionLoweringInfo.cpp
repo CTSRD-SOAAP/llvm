@@ -13,8 +13,15 @@
 //===----------------------------------------------------------------------===//
 
 #define DEBUG_TYPE "function-lowering-info"
-#include "llvm/ADT/PostOrderIterator.h"
 #include "llvm/CodeGen/FunctionLoweringInfo.h"
+#include "llvm/ADT/PostOrderIterator.h"
+#include "llvm/CodeGen/Analysis.h"
+#include "llvm/CodeGen/MachineFrameInfo.h"
+#include "llvm/CodeGen/MachineFunction.h"
+#include "llvm/CodeGen/MachineInstrBuilder.h"
+#include "llvm/CodeGen/MachineModuleInfo.h"
+#include "llvm/CodeGen/MachineRegisterInfo.h"
+#include "llvm/DataLayout.h"
 #include "llvm/DebugInfo.h"
 #include "llvm/DerivedTypes.h"
 #include "llvm/Function.h"
@@ -22,20 +29,13 @@
 #include "llvm/IntrinsicInst.h"
 #include "llvm/LLVMContext.h"
 #include "llvm/Module.h"
-#include "llvm/CodeGen/Analysis.h"
-#include "llvm/CodeGen/MachineFunction.h"
-#include "llvm/CodeGen/MachineFrameInfo.h"
-#include "llvm/CodeGen/MachineInstrBuilder.h"
-#include "llvm/CodeGen/MachineModuleInfo.h"
-#include "llvm/CodeGen/MachineRegisterInfo.h"
-#include "llvm/Target/TargetRegisterInfo.h"
-#include "llvm/DataLayout.h"
-#include "llvm/Target/TargetInstrInfo.h"
-#include "llvm/Target/TargetLowering.h"
-#include "llvm/Target/TargetOptions.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MathExtras.h"
+#include "llvm/Target/TargetInstrInfo.h"
+#include "llvm/Target/TargetLowering.h"
+#include "llvm/Target/TargetOptions.h"
+#include "llvm/Target/TargetRegisterInfo.h"
 #include <algorithm>
 using namespace llvm;
 
@@ -208,7 +208,7 @@ void FunctionLoweringInfo::clear() {
 }
 
 /// CreateReg - Allocate a single virtual register for the given type.
-unsigned FunctionLoweringInfo::CreateReg(EVT VT) {
+unsigned FunctionLoweringInfo::CreateReg(MVT VT) {
   return RegInfo->createVirtualRegister(TLI.getRegClassFor(VT));
 }
 
@@ -226,7 +226,7 @@ unsigned FunctionLoweringInfo::CreateRegs(Type *Ty) {
   unsigned FirstReg = 0;
   for (unsigned Value = 0, e = ValueVTs.size(); Value != e; ++Value) {
     EVT ValueVT = ValueVTs[Value];
-    EVT RegisterVT = TLI.getRegisterType(Ty->getContext(), ValueVT);
+    MVT RegisterVT = TLI.getRegisterType(Ty->getContext(), ValueVT);
 
     unsigned NumRegs = TLI.getNumRegisters(Ty->getContext(), ValueVT);
     for (unsigned i = 0; i != NumRegs; ++i) {

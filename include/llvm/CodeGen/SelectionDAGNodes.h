@@ -19,20 +19,20 @@
 #ifndef LLVM_CODEGEN_SELECTIONDAGNODES_H
 #define LLVM_CODEGEN_SELECTIONDAGNODES_H
 
-#include "llvm/Constants.h"
-#include "llvm/Instructions.h"
 #include "llvm/ADT/FoldingSet.h"
 #include "llvm/ADT/GraphTraits.h"
-#include "llvm/ADT/ilist_node.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/ilist_node.h"
 #include "llvm/CodeGen/ISDOpcodes.h"
-#include "llvm/CodeGen/ValueTypes.h"
 #include "llvm/CodeGen/MachineMemOperand.h"
-#include "llvm/Support/MathExtras.h"
+#include "llvm/CodeGen/ValueTypes.h"
+#include "llvm/Constants.h"
+#include "llvm/Instructions.h"
 #include "llvm/Support/DataTypes.h"
 #include "llvm/Support/DebugLoc.h"
+#include "llvm/Support/MathExtras.h"
 #include <cassert>
 
 namespace llvm {
@@ -129,6 +129,11 @@ public:
   /// getValueType - Return the ValueType of the referenced return value.
   ///
   inline EVT getValueType() const;
+
+  /// Return the simple ValueType of the referenced return value.
+  MVT getSimpleValueType() const {
+    return getValueType().getSimpleVT();
+  }
 
   /// getValueSizeInBits - Returns the size of the value in bits.
   ///
@@ -593,6 +598,12 @@ public:
   EVT getValueType(unsigned ResNo) const {
     assert(ResNo < NumValues && "Illegal result number!");
     return ValueList[ResNo];
+  }
+
+  /// Return the type of a specified result as a simple type.
+  ///
+  MVT getSimpleValueType(unsigned ResNo) const {
+    return getValueType(ResNo).getSimpleVT();
   }
 
   /// getValueSizeInBits - Returns MVT::getSizeInBits(getValueType(ResNo)).

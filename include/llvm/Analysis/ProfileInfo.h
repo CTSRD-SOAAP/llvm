@@ -28,9 +28,9 @@
 #include "llvm/Instructions.h"
 
 #include <cassert>
-#include <string>
 #include <map>
 #include <set>
+#include <string>
 
 namespace llvm {
   class Pass;
