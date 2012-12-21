@@ -518,20 +518,20 @@ raw_ostream &llvm::operator<<(raw_ostream &OS, const MachineMemOperand &MMO) {
 // MachineInstr Implementation
 //===----------------------------------------------------------------------===//
 
-void MachineInstr::addImplicitDefUseOperands() {
+void MachineInstr::addImplicitDefUseOperands(MachineFunction &MF) {
   if (MCID->ImplicitDefs)
     for (const uint16_t *ImpDefs = MCID->getImplicitDefs(); *ImpDefs; ++ImpDefs)
-      addOperand(MachineOperand::CreateReg(*ImpDefs, true, true));
+      addOperand(MF, MachineOperand::CreateReg(*ImpDefs, true, true));
   if (MCID->ImplicitUses)
     for (const uint16_t *ImpUses = MCID->getImplicitUses(); *ImpUses; ++ImpUses)
-      addOperand(MachineOperand::CreateReg(*ImpUses, false, true));
+      addOperand(MF, MachineOperand::CreateReg(*ImpUses, false, true));
 }
 
 /// MachineInstr ctor - This constructor creates a MachineInstr and adds the
 /// implicit operands. It reserves space for the number of operands specified by
 /// the MCInstrDesc.
-MachineInstr::MachineInstr(const MCInstrDesc &tid, const DebugLoc dl,
-                           bool NoImp)
+MachineInstr::MachineInstr(MachineFunction &MF, const MCInstrDesc &tid,
+                           const DebugLoc dl, bool NoImp)
   : MCID(&tid), Flags(0), AsmPrinterFlags(0),
     NumMemRefs(0), MemRefs(0), Parent(0), debugLoc(dl) {
   unsigned NumImplicitOps = 0;
@@ -539,7 +539,7 @@ MachineInstr::MachineInstr(const MCInstrDesc &tid, const DebugLoc dl,
     NumImplicitOps = MCID->getNumImplicitDefs() + MCID->getNumImplicitUses();
   Operands.reserve(NumImplicitOps + MCID->getNumOperands());
   if (!NoImp)
-    addImplicitDefUseOperands();
+    addImplicitDefUseOperands(MF);
   // Make sure that we get added to a machine basicblock
   LeakDetector::addGarbageObject(this);
 }
@@ -554,10 +554,10 @@ MachineInstr::MachineInstr(MachineFunction &MF, const MachineInstr &MI)
 
   // Add operands
   for (unsigned i = 0; i != MI.getNumOperands(); ++i)
-    addOperand(MI.getOperand(i));
+    addOperand(MF, MI.getOperand(i));
 
-  // Copy all the flags.
-  Flags = MI.Flags;
+  // Copy all the sensible flags.
+  setFlags(MI.Flags);
 
   // Set parent to null.
   Parent = 0;
@@ -603,11 +603,19 @@ void MachineInstr::AddRegOperandsToUseLists(MachineRegisterInfo &MRI) {
       MRI.addRegOperandToUseList(&Operands[i]);
 }
 
+void MachineInstr::addOperand(const MachineOperand &Op) {
+  MachineBasicBlock *MBB = getParent();
+  assert(MBB && "Use MachineInstrBuilder to add operands to dangling instrs");
+  MachineFunction *MF = MBB->getParent();
+  assert(MF && "Use MachineInstrBuilder to add operands to dangling instrs");
+  addOperand(*MF, Op);
+}
+
 /// addOperand - Add the specified operand to the instruction.  If it is an
 /// implicit operand, it is added to the end of the operand list.  If it is
 /// an explicit operand it is added at the end of the explicit operand list
 /// (before the first implicit operand).
-void MachineInstr::addOperand(const MachineOperand &Op) {
+void MachineInstr::addOperand(MachineFunction &MF, const MachineOperand &Op) {
   assert(MCID && "Cannot add operands before providing an instr descriptor");
   bool isImpReg = Op.isReg() && Op.isImplicit();
   MachineRegisterInfo *RegInfo = getRegInfo();
@@ -838,46 +846,25 @@ bool MachineInstr::isIdenticalTo(const MachineInstr *Other,
   return true;
 }
 
-/// removeFromParent - This method unlinks 'this' from the containing basic
-/// block, and returns it, but does not delete it.
 MachineInstr *MachineInstr::removeFromParent() {
   assert(getParent() && "Not embedded in a basic block!");
-
-  // If it's a bundle then remove the MIs inside the bundle as well.
-  if (isBundle()) {
-    MachineBasicBlock *MBB = getParent();
-    MachineBasicBlock::instr_iterator MII = *this; ++MII;
-    MachineBasicBlock::instr_iterator E = MBB->instr_end();
-    while (MII != E && MII->isInsideBundle()) {
-      MachineInstr *MI = &*MII;
-      ++MII;
-      MBB->remove(MI);
-    }
-  }
-  getParent()->remove(this);
-  return this;
+  return getParent()->remove(this);
 }
 
+MachineInstr *MachineInstr::removeFromBundle() {
+  assert(getParent() && "Not embedded in a basic block!");
+  return getParent()->remove_instr(this);
+}
 
-/// eraseFromParent - This method unlinks 'this' from the containing basic
-/// block, and deletes it.
 void MachineInstr::eraseFromParent() {
   assert(getParent() && "Not embedded in a basic block!");
-  // If it's a bundle then remove the MIs inside the bundle as well.
-  if (isBundle()) {
-    MachineBasicBlock *MBB = getParent();
-    MachineBasicBlock::instr_iterator MII = *this; ++MII;
-    MachineBasicBlock::instr_iterator E = MBB->instr_end();
-    while (MII != E && MII->isInsideBundle()) {
-      MachineInstr *MI = &*MII;
-      ++MII;
-      MBB->erase(MI);
-    }
-  }
-  // Erase the individual instruction, which may itself be inside a bundle.
-  getParent()->erase_instr(this);
+  getParent()->erase(this);
 }
 
+void MachineInstr::eraseFromBundle() {
+  assert(getParent() && "Not embedded in a basic block!");
+  getParent()->erase_instr(this);
+}
 
 /// getNumExplicitOperands - Returns the number of non-implicit operands.
 ///
@@ -899,6 +886,7 @@ void MachineInstr::bundleWithPred() {
   setFlag(BundledPred);
   MachineBasicBlock::instr_iterator Pred = this;
   --Pred;
+  assert(!Pred->isBundledWithSucc() && "Inconsistent bundle flags");
   Pred->setFlag(BundledSucc);
 }
 
@@ -907,6 +895,7 @@ void MachineInstr::bundleWithSucc() {
   setFlag(BundledSucc);
   MachineBasicBlock::instr_iterator Succ = this;
   ++Succ;
+  assert(!Succ->isBundledWithPred() && "Inconsistent bundle flags");
   Succ->setFlag(BundledPred);
 }
 
@@ -915,6 +904,7 @@ void MachineInstr::unbundleFromPred() {
   clearFlag(BundledPred);
   MachineBasicBlock::instr_iterator Pred = this;
   --Pred;
+  assert(Pred->isBundledWithSucc() && "Inconsistent bundle flags");
   Pred->clearFlag(BundledSucc);
 }
 
@@ -923,17 +913,8 @@ void MachineInstr::unbundleFromSucc() {
   clearFlag(BundledSucc);
   MachineBasicBlock::instr_iterator Succ = this;
   --Succ;
+  assert(Succ->isBundledWithPred() && "Inconsistent bundle flags");
   Succ->clearFlag(BundledPred);
-}
-
-/// isBundled - Return true if this instruction part of a bundle. This is true
-/// if either itself or its following instruction is marked "InsideBundle".
-bool MachineInstr::isBundled() const {
-  if (isInsideBundle())
-    return true;
-  MachineBasicBlock::const_instr_iterator nextMI = this;
-  ++nextMI;
-  return nextMI != Parent->instr_end() && nextMI->isInsideBundle();
 }
 
 bool MachineInstr::isStackAligningInlineAsm() const {
@@ -1236,41 +1217,6 @@ void MachineInstr::clearKillInfo() {
   }
 }
 
-/// copyKillDeadInfo - Copies kill / dead operand properties from MI.
-///
-void MachineInstr::copyKillDeadInfo(const MachineInstr *MI) {
-  for (unsigned i = 0, e = MI->getNumOperands(); i != e; ++i) {
-    const MachineOperand &MO = MI->getOperand(i);
-    if (!MO.isReg() || (!MO.isKill() && !MO.isDead()))
-      continue;
-    for (unsigned j = 0, ee = getNumOperands(); j != ee; ++j) {
-      MachineOperand &MOp = getOperand(j);
-      if (!MOp.isIdenticalTo(MO))
-        continue;
-      if (MO.isKill())
-        MOp.setIsKill();
-      else
-        MOp.setIsDead();
-      break;
-    }
-  }
-}
-
-/// copyPredicates - Copies predicate operand(s) from MI.
-void MachineInstr::copyPredicates(const MachineInstr *MI) {
-  assert(!isBundle() && "MachineInstr::copyPredicates() can't handle bundles");
-
-  const MCInstrDesc &MCID = MI->getDesc();
-  if (!MCID.isPredicable())
-    return;
-  for (unsigned i = 0, e = MI->getNumOperands(); i != e; ++i) {
-    if (MCID.OpInfo[i].isPredicate()) {
-      // Predicated operands must be last operands.
-      addOperand(MI->getOperand(i));
-    }
-  }
-}
-
 void MachineInstr::substituteRegister(unsigned FromReg,
                                       unsigned ToReg,
                                       unsigned SubIdx,
@@ -1465,12 +1411,13 @@ bool MachineInstr::allDefsAreDead() const {
 
 /// copyImplicitOps - Copy implicit register operands from specified
 /// instruction to this instruction.
-void MachineInstr::copyImplicitOps(const MachineInstr *MI) {
+void MachineInstr::copyImplicitOps(MachineFunction &MF,
+                                   const MachineInstr *MI) {
   for (unsigned i = MI->getDesc().getNumOperands(), e = MI->getNumOperands();
        i != e; ++i) {
     const MachineOperand &MO = MI->getOperand(i);
     if (MO.isReg() && MO.isImplicit())
-      addOperand(MO);
+      addOperand(MF, MO);
   }
 }
 

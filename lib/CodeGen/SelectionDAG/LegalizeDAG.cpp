@@ -731,7 +731,7 @@ void SelectionDAGLegalize::LegalizeStoreOps(SDNode *Node) {
           return;
         }
         case TargetLowering::Promote: {
-          EVT NVT = TLI.getTypeToPromoteTo(ISD::STORE, VT);
+          MVT NVT = TLI.getTypeToPromoteTo(ISD::STORE, VT);
           assert(NVT.getSizeInBits() == VT.getSizeInBits() &&
                  "Can only promote stores to same size type");
           Value = DAG.getNode(ISD::BITCAST, dl, NVT, Value);

@@ -25,6 +25,7 @@
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/DataLayout.h"
 #include "llvm/DerivedTypes.h"
+#include "llvm/Function.h"
 #include "llvm/LLVMContext.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
@@ -2985,7 +2986,8 @@ SDValue DAGCombiner::MatchBSwapHWord(SDNode *N, SDValue N0, SDValue N1) {
   SDValue N00 = N0.getOperand(0);
   SDValue N01 = N0.getOperand(1);
 
-  if (N1.getOpcode() == ISD::OR) {
+  if (N1.getOpcode() == ISD::OR &&
+      N00.getNumOperands() == 2 && N01.getNumOperands() == 2) {
     // (or (or (and), (and)), (or (and), (and)))
     SDValue N000 = N00.getOperand(0);
     if (!isBSwapHWordElement(N000, Parts))
@@ -5237,6 +5239,7 @@ SDValue DAGCombiner::visitSIGN_EXTEND_INREG(SDNode *N) {
                                      LN0->getAlignment());
     CombineTo(N, ExtLoad);
     CombineTo(N0.getNode(), ExtLoad, ExtLoad.getValue(1));
+    AddToWorkList(ExtLoad.getNode());
     return SDValue(N, 0);   // Return N so it doesn't get rechecked!
   }
   // fold (sext_inreg (zextload x)) -> (sextload x) iff load has one use
@@ -7436,7 +7439,8 @@ SDValue DAGCombiner::ReduceLoadOpStoreWidth(SDNode *N) {
     // start at the previous one.
     if (ShAmt % NewBW)
       ShAmt = (((ShAmt + NewBW - 1) / NewBW) * NewBW) - NewBW;
-    APInt Mask = APInt::getBitsSet(BitWidth, ShAmt, ShAmt + NewBW);
+    APInt Mask = APInt::getBitsSet(BitWidth, ShAmt,
+                                   std::min(BitWidth, ShAmt + NewBW));
     if ((Imm & Mask) == Imm) {
       APInt NewImm = (Imm & Mask).lshr(ShAmt).trunc(NewBW);
       if (Opc == ISD::AND)
@@ -7745,8 +7749,10 @@ bool DAGCombiner::MergeConsecutiveStores(StoreSDNode* St) {
         LastLegalVectorType = i + 1;
     }
 
-    // We only use vectors if the constant is known to be zero.
-    if (NonZero)
+    // We only use vectors if the constant is known to be zero and the
+    // function is not marked with the noimplicitfloat attribute.
+    if (NonZero || (DAG.getMachineFunction().getFunction()->getFnAttributes().
+                    hasAttribute(Attribute::NoImplicitFloat)))
       LastLegalVectorType = 0;
 
     // Check if we found a legal integer type to store.

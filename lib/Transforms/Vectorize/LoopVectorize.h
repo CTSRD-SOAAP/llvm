@@ -47,12 +47,12 @@
 #define LV_NAME "loop-vectorize"
 #define DEBUG_TYPE LV_NAME
 
-#include "llvm/Analysis/ScalarEvolution.h"
-#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
-#include "llvm/IRBuilder.h" 
-
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/Analysis/ScalarEvolution.h"
+#include "llvm/IRBuilder.h"
 #include <algorithm>
 using namespace llvm;
 
@@ -304,7 +304,7 @@ public:
 
   /// InductionList saves induction variables and maps them to the
   /// induction descriptor.
-  typedef DenseMap<PHINode*, InductionInfo> InductionList;
+  typedef MapVector<PHINode*, InductionInfo> InductionList;
 
   /// Returns true if it is legal to vectorize this loop.
   /// This does not mean that it is profitable to vectorize this
@@ -319,6 +319,9 @@ public:
 
   /// Returns the induction variables found in the loop.
   InductionList *getInductionVars() { return &Inductions; }
+
+  /// Returns True if V is an induction variable in this loop.
+  bool isInductionVariable(const Value *V);
 
   /// Return true if the block BB needs to be predicated in order for the loop
   /// to be vectorized.
@@ -420,10 +423,11 @@ public:
                              const VectorTargetTransformInfo *Vtti):
   TheLoop(Lp), SE(Se), Legal(Leg), VTTI(Vtti) { }
 
-  /// Returns the most profitable vectorization factor for the loop that is
-  /// smaller or equal to the VF argument. This method checks every power
-  /// of two up to VF.
-  unsigned findBestVectorizationFactor(unsigned VF = MaxVectorSize);
+  /// Returns the most profitable vectorization factor in powers of two.
+  /// This method checks every power of two up to VF. If UserVF is not ZERO
+  /// then this vectorization factor will be selected if vectorization is
+  /// possible.
+  unsigned selectVectorizationFactor(bool OptForSize, unsigned UserVF);
 
 private:
   /// Returns the expected execution cost. The unit of the cost does

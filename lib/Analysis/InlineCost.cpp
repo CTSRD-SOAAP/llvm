@@ -54,6 +54,8 @@ class CallAnalyzer : public InstVisitor<CallAnalyzer, bool> {
   bool IsRecursiveCall;
   bool ExposesReturnsTwice;
   bool HasDynamicAlloca;
+  bool ContainsNoDuplicateCall;
+
   /// Number of bytes allocated statically by the callee.
   uint64_t AllocatedSize;
   unsigned NumInstructions, NumVectorInstructions;
@@ -128,8 +130,8 @@ public:
   CallAnalyzer(const DataLayout *TD, Function &Callee, int Threshold)
     : TD(TD), F(Callee), Threshold(Threshold), Cost(0),
       IsCallerRecursive(false), IsRecursiveCall(false),
-      ExposesReturnsTwice(false), HasDynamicAlloca(false), AllocatedSize(0),
-      NumInstructions(0), NumVectorInstructions(0),
+      ExposesReturnsTwice(false), HasDynamicAlloca(false), ContainsNoDuplicateCall(false),
+      AllocatedSize(0), NumInstructions(0), NumVectorInstructions(0),
       FiftyPercentVectorBonus(0), TenPercentVectorBonus(0), VectorBonus(0),
       NumConstantArgs(0), NumConstantOffsetPtrArgs(0), NumAllocaArgs(0),
       NumConstantPtrCmps(0), NumConstantPtrDiffs(0),
@@ -610,11 +612,14 @@ bool CallAnalyzer::visitStore(StoreInst &I) {
 
 bool CallAnalyzer::visitCallSite(CallSite CS) {
   if (CS.isCall() && cast<CallInst>(CS.getInstruction())->canReturnTwice() &&
-      !F.getFnAttributes().hasAttribute(Attributes::ReturnsTwice)) {
+      !F.getFnAttributes().hasAttribute(Attribute::ReturnsTwice)) {
     // This aborts the entire analysis.
     ExposesReturnsTwice = true;
     return false;
   }
+  if (CS.isCall() &&
+      cast<CallInst>(CS.getInstruction())->hasFnAttr(Attribute::NoDuplicate))
+    ContainsNoDuplicateCall = true;
 
   if (IntrinsicInst *II = dyn_cast<IntrinsicInst>(CS.getInstruction())) {
     switch (II->getIntrinsicID()) {
@@ -842,7 +847,9 @@ bool CallAnalyzer::analyzeCall(CallSite CS) {
 
   // If there is only one call of the function, and it has internal linkage,
   // the cost of inlining it drops dramatically.
-  if (F.hasLocalLinkage() && F.hasOneUse() && &F == CS.getCalledFunction())
+  bool OnlyOneCallAndLocalLinkage = F.hasLocalLinkage() && F.hasOneUse() &&
+    &F == CS.getCalledFunction();
+  if (OnlyOneCallAndLocalLinkage)
     Cost += InlineConstants::LastCallToStaticBonus;
 
   // If the instruction after the call, or if the normal destination of the
@@ -1008,6 +1015,12 @@ bool CallAnalyzer::analyzeCall(CallSite CS) {
     }
   }
 
+  // If this is a noduplicate call, we can still inline as long as 
+  // inlining this would cause the removal of the caller (so the instruction
+  // is not actually duplicated, just moved).
+  if (!OnlyOneCallAndLocalLinkage && ContainsNoDuplicateCall)
+    return false;
+
   Threshold += VectorBonus;
 
   return Cost < Threshold;
@@ -1025,6 +1038,7 @@ void CallAnalyzer::dump() {
   DEBUG_PRINT_STAT(NumInstructionsSimplified);
   DEBUG_PRINT_STAT(SROACostSavings);
   DEBUG_PRINT_STAT(SROACostSavingsLost);
+  DEBUG_PRINT_STAT(ContainsNoDuplicateCall);
 #undef DEBUG_PRINT_STAT
 }
 #endif
@@ -1041,7 +1055,7 @@ InlineCost InlineCostAnalyzer::getInlineCost(CallSite CS, Function *Callee,
 
   // Calls to functions with always-inline attributes should be inlined
   // whenever possible.
-  if (Callee->getFnAttributes().hasAttribute(Attributes::AlwaysInline)) {
+  if (Callee->getFnAttributes().hasAttribute(Attribute::AlwaysInline)) {
     if (isInlineViable(*Callee))
       return llvm::InlineCost::getAlways();
     return llvm::InlineCost::getNever();
@@ -1051,7 +1065,7 @@ InlineCost InlineCostAnalyzer::getInlineCost(CallSite CS, Function *Callee,
   // something else.  Don't inline functions marked noinline or call sites
   // marked noinline.
   if (Callee->mayBeOverridden() ||
-      Callee->getFnAttributes().hasAttribute(Attributes::NoInline) ||
+      Callee->getFnAttributes().hasAttribute(Attribute::NoInline) ||
       CS.isNoInline())
     return llvm::InlineCost::getNever();
 
@@ -1073,7 +1087,7 @@ InlineCost InlineCostAnalyzer::getInlineCost(CallSite CS, Function *Callee,
 }
 
 bool InlineCostAnalyzer::isInlineViable(Function &F) {
-  bool ReturnsTwice =F.getFnAttributes().hasAttribute(Attributes::ReturnsTwice);
+  bool ReturnsTwice =F.getFnAttributes().hasAttribute(Attribute::ReturnsTwice);
   for (Function::iterator BI = F.begin(), BE = F.end(); BI != BE; ++BI) {
     // Disallow inlining of functions which contain an indirect branch.
     if (isa<IndirectBrInst>(BI->getTerminator()))

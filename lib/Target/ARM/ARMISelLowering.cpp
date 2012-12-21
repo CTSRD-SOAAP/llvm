@@ -1617,7 +1617,7 @@ ARMTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
   // FIXME: handle tail calls differently.
   unsigned CallOpc;
   bool HasMinSizeAttr = MF.getFunction()->getFnAttributes().
-    hasAttribute(Attributes::MinSize);
+    hasAttribute(Attribute::MinSize);
   if (Subtarget->isThumb()) {
     if ((!isDirect || isARMFunc) && !Subtarget->hasV5TOps())
       CallOpc = ARMISD::CALL_NOLINK;
@@ -6612,7 +6612,7 @@ EmitSjLjDispatchBlock(MachineInstr *MI, MachineBasicBlock *MBB) const {
         DefRegs[OI->getReg()] = true;
       }
 
-      MachineInstrBuilder MIB(&*II);
+      MachineInstrBuilder MIB(*MF, &*II);
 
       for (unsigned i = 0; SavedRegs[i] != 0; ++i) {
         unsigned Reg = SavedRegs[i];
@@ -6690,7 +6690,7 @@ EmitStructByval(MachineInstr *MI, MachineBasicBlock *BB) const {
   } else {
     // Check whether we can use NEON instructions.
     if (!MF->getFunction()->getFnAttributes().
-          hasAttribute(Attributes::NoImplicitFloat) &&
+          hasAttribute(Attribute::NoImplicitFloat) &&
         Subtarget->hasNEON()) {
       if ((Align % 16 == 0) && SizeVal >= 16) {
         ldrOpc = ARM::VLD1q32wb_fixed;
@@ -9450,15 +9450,15 @@ static bool memOpAlign(unsigned DstAlign, unsigned SrcAlign,
 
 EVT ARMTargetLowering::getOptimalMemOpType(uint64_t Size,
                                            unsigned DstAlign, unsigned SrcAlign,
-                                           bool IsZeroVal,
+                                           bool IsMemset, bool ZeroMemset,
                                            bool MemcpyStrSrc,
                                            MachineFunction &MF) const {
   const Function *F = MF.getFunction();
 
   // See if we can use NEON instructions for this...
-  if (IsZeroVal &&
+  if ((!IsMemset || ZeroMemset) &&
       Subtarget->hasNEON() &&
-      !F->getFnAttributes().hasAttribute(Attributes::NoImplicitFloat)) {
+      !F->getFnAttributes().hasAttribute(Attribute::NoImplicitFloat)) {
     bool Fast;
     if (Size >= 16 &&
         (memOpAlign(SrcAlign, DstAlign, 16) ||
@@ -10260,24 +10260,6 @@ bool ARMTargetLowering::isFPImmLegal(const APFloat &Imm, EVT VT) const {
   return false;
 }
 
-bool ARMTargetLowering::isIntImmLegal(const APInt &Imm, EVT VT) const {
-  if (VT.getSizeInBits() > 32)
-    return false;
-
-  int32_t ImmVal = Imm.getSExtValue();
-  if (!Subtarget->isThumb()) {
-    return (ImmVal >= 0 && ImmVal < 65536) ||
-      (ARM_AM::getSOImmVal(ImmVal) != -1) ||
-      (ARM_AM::getSOImmVal(~ImmVal) != -1);
-  } else if (Subtarget->isThumb2()) {
-    return (ImmVal >= 0 && ImmVal < 65536) ||
-      (ARM_AM::getT2SOImmVal(ImmVal) != -1) ||
-      (ARM_AM::getT2SOImmVal(~ImmVal) != -1);
-  } else /*Thumb1*/ {
-    return (ImmVal >= 0 && ImmVal < 256);
-  }
-}
-
 /// getTgtMemIntrinsic - Represent NEON load and store intrinsics as
 /// MemIntrinsicNodes.  The associated MachineMemOperands record the alignment
 /// specified in the intrinsic calls.
@@ -10358,4 +10340,37 @@ bool ARMTargetLowering::getTgtMemIntrinsic(IntrinsicInfo &Info,
   }
 
   return false;
+}
+
+unsigned
+ARMScalarTargetTransformImpl::getIntImmCost(const APInt &Imm, Type *Ty) const {
+  assert(Ty->isIntegerTy());
+
+  unsigned Bits = Ty->getPrimitiveSizeInBits();
+  if (Bits == 0 || Bits > 32)
+    return 4;
+
+  int32_t SImmVal = Imm.getSExtValue();
+  uint32_t ZImmVal = Imm.getZExtValue();
+  if (!Subtarget->isThumb()) {
+    if ((SImmVal >= 0 && SImmVal < 65536) ||
+        (ARM_AM::getSOImmVal(ZImmVal) != -1) ||
+        (ARM_AM::getSOImmVal(~ZImmVal) != -1))
+      return 1;
+    return Subtarget->hasV6T2Ops() ? 2 : 3;
+  } else if (Subtarget->isThumb2()) {
+    if ((SImmVal >= 0 && SImmVal < 65536) ||
+        (ARM_AM::getT2SOImmVal(ZImmVal) != -1) ||
+        (ARM_AM::getT2SOImmVal(~ZImmVal) != -1))
+      return 1;
+    return Subtarget->hasV6T2Ops() ? 2 : 3;
+  } else /*Thumb1*/ {
+    if (SImmVal >= 0 && SImmVal < 256)
+      return 1;
+    if ((~ZImmVal < 256) || ARM_AM::isThumbImmShiftedVal(ZImmVal))
+      return 2;
+    // Load from constantpool.
+    return 3;
+  }
+  return 2;
 }

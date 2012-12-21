@@ -37,10 +37,8 @@ def immZExt6 : ImmLeaf<i32, [{return Imm == (Imm & 0x3f);}]>;
 // Shifts
 // 64-bit shift instructions.
 let DecoderNamespace = "Mips64" in {
-class shift_rotate_imm64<bits<6> func, bits<5> isRotate, string instr_asm,
-                         SDNode OpNode>:
-  shift_rotate_imm<func, isRotate, instr_asm, OpNode, immZExt6, shamt,
-                   CPU64Regs>;
+class shift_rotate_imm64<string opstr, SDPatternOperator OpNode = null_frag>:
+  shift_rotate_imm<opstr, immZExt6, shamt, CPU64Regs, OpNode>;
 
 // Mul, Div
 class Mult64<bits<6> func, string instr_asm, InstrItinClass itin>:
@@ -48,19 +46,19 @@ class Mult64<bits<6> func, string instr_asm, InstrItinClass itin>:
 class Div64<SDNode op, bits<6> func, string instr_asm, InstrItinClass itin>:
   Div<op, func, instr_asm, itin, CPU64Regs, [HI64, LO64]>;
 
-multiclass Atomic2Ops64<PatFrag Op, string Opstr> {
-  def #NAME# : Atomic2Ops<Op, Opstr, CPU64Regs, CPURegs>,
+multiclass Atomic2Ops64<PatFrag Op> {
+  def #NAME# : Atomic2Ops<Op, CPU64Regs, CPURegs>,
                Requires<[NotN64, HasStdEnc]>;
-  def _P8    : Atomic2Ops<Op, Opstr, CPU64Regs, CPU64Regs>,
+  def _P8    : Atomic2Ops<Op, CPU64Regs, CPU64Regs>,
                Requires<[IsN64, HasStdEnc]> {
     let isCodeGenOnly = 1;
   }
 }
 
-multiclass AtomicCmpSwap64<PatFrag Op, string Width>  {
-  def #NAME# : AtomicCmpSwap<Op, Width, CPU64Regs, CPURegs>,
+multiclass AtomicCmpSwap64<PatFrag Op>  {
+  def #NAME# : AtomicCmpSwap<Op, CPU64Regs, CPURegs>,
                Requires<[NotN64, HasStdEnc]>;
-  def _P8    : AtomicCmpSwap<Op, Width, CPU64Regs, CPU64Regs>,
+  def _P8    : AtomicCmpSwap<Op, CPU64Regs, CPU64Regs>,
                Requires<[IsN64, HasStdEnc]> {
     let isCodeGenOnly = 1;
   }
@@ -68,14 +66,14 @@ multiclass AtomicCmpSwap64<PatFrag Op, string Width>  {
 }
 let usesCustomInserter = 1, Predicates = [HasStdEnc],
   DecoderNamespace = "Mips64" in {
-  defm ATOMIC_LOAD_ADD_I64  : Atomic2Ops64<atomic_load_add_64, "load_add_64">;
-  defm ATOMIC_LOAD_SUB_I64  : Atomic2Ops64<atomic_load_sub_64, "load_sub_64">;
-  defm ATOMIC_LOAD_AND_I64  : Atomic2Ops64<atomic_load_and_64, "load_and_64">;
-  defm ATOMIC_LOAD_OR_I64   : Atomic2Ops64<atomic_load_or_64, "load_or_64">;
-  defm ATOMIC_LOAD_XOR_I64  : Atomic2Ops64<atomic_load_xor_64, "load_xor_64">;
-  defm ATOMIC_LOAD_NAND_I64 : Atomic2Ops64<atomic_load_nand_64, "load_nand_64">;
-  defm ATOMIC_SWAP_I64      : Atomic2Ops64<atomic_swap_64, "swap_64">;
-  defm ATOMIC_CMP_SWAP_I64  : AtomicCmpSwap64<atomic_cmp_swap_64, "64">;
+  defm ATOMIC_LOAD_ADD_I64  : Atomic2Ops64<atomic_load_add_64>;
+  defm ATOMIC_LOAD_SUB_I64  : Atomic2Ops64<atomic_load_sub_64>;
+  defm ATOMIC_LOAD_AND_I64  : Atomic2Ops64<atomic_load_and_64>;
+  defm ATOMIC_LOAD_OR_I64   : Atomic2Ops64<atomic_load_or_64>;
+  defm ATOMIC_LOAD_XOR_I64  : Atomic2Ops64<atomic_load_xor_64>;
+  defm ATOMIC_LOAD_NAND_I64 : Atomic2Ops64<atomic_load_nand_64>;
+  defm ATOMIC_SWAP_I64      : Atomic2Ops64<atomic_swap_64>;
+  defm ATOMIC_CMP_SWAP_I64  : AtomicCmpSwap64<atomic_cmp_swap_64>;
 }
 
 //===----------------------------------------------------------------------===//
@@ -83,46 +81,48 @@ let usesCustomInserter = 1, Predicates = [HasStdEnc],
 //===----------------------------------------------------------------------===//
 let DecoderNamespace = "Mips64" in {
 /// Arithmetic Instructions (ALU Immediate)
-def DADDi    : ArithOverflowI<0x18, "daddi", add, simm16_64, immSExt16,
-                           CPU64Regs>;
-def DADDiu   : ArithLogicI<0x19, "daddiu", add, simm16_64, immSExt16,
-                           CPU64Regs>, IsAsCheapAsAMove;
-def DANDi    : ArithLogicI<0x0c, "andi", and, uimm16_64, immZExt16, CPU64Regs>;
-def SLTi64   : SetCC_I<0x0a, "slti", setlt, simm16_64, immSExt16, CPU64Regs>;
-def SLTiu64  : SetCC_I<0x0b, "sltiu", setult, simm16_64, immSExt16, CPU64Regs>;
-def ORi64    : ArithLogicI<0x0d, "ori", or, uimm16_64, immZExt16, CPU64Regs>;
-def XORi64   : ArithLogicI<0x0e, "xori", xor, uimm16_64, immZExt16, CPU64Regs>;
-def LUi64    : LoadUpper<0x0f, "lui", CPU64Regs, uimm16_64>;
+def DADDi   : ArithLogicI<"daddi", simm16_64, CPU64Regs>, ADDI_FM<0x18>;
+def DADDiu  : ArithLogicI<"daddiu", simm16_64, CPU64Regs, immSExt16, add>,
+              ADDI_FM<0x19>, IsAsCheapAsAMove;
+def DANDi   : ArithLogicI<"andi", uimm16_64, CPU64Regs, immZExt16, and>,
+              ADDI_FM<0xc>;
+def SLTi64  : SetCC_I<"slti", setlt, simm16_64, immSExt16, CPU64Regs>,
+              SLTI_FM<0xa>;
+def SLTiu64 : SetCC_I<"sltiu", setult, simm16_64, immSExt16, CPU64Regs>,
+              SLTI_FM<0xb>;
+def ORi64   : ArithLogicI<"ori", uimm16_64, CPU64Regs, immZExt16, or>,
+              ADDI_FM<0xd>;
+def XORi64  : ArithLogicI<"xori", uimm16_64, CPU64Regs, immZExt16, xor>,
+              ADDI_FM<0xe>;
+def LUi64   : LoadUpper<0x0f, "lui", CPU64Regs, uimm16_64>;
 
 /// Arithmetic Instructions (3-Operand, R-Type)
-def DADD     : ArithOverflowR<0x00, 0x2C, "dadd", IIAlu, CPU64Regs, 1>;
-def DADDu    : ArithLogicR<0x00, 0x2d, "daddu", add, IIAlu, CPU64Regs, 1>;
-def DSUBu    : ArithLogicR<0x00, 0x2f, "dsubu", sub, IIAlu, CPU64Regs>;
-def SLT64    : SetCC_R<0x00, 0x2a, "slt", setlt, CPU64Regs>;
-def SLTu64   : SetCC_R<0x00, 0x2b, "sltu", setult, CPU64Regs>;
-def AND64    : ArithLogicR<0x00, 0x24, "and", and, IIAlu, CPU64Regs, 1>;
-def OR64     : ArithLogicR<0x00, 0x25, "or", or, IIAlu, CPU64Regs, 1>;
-def XOR64    : ArithLogicR<0x00, 0x26, "xor", xor, IIAlu, CPU64Regs, 1>;
-def NOR64    : LogicNOR<0x00, 0x27, "nor", CPU64Regs>;
+def DADD   : ArithLogicR<"dadd", CPU64Regs>, ADD_FM<0, 0x2c>;
+def DADDu  : ArithLogicR<"daddu", CPU64Regs, 1, IIAlu, add>, ADD_FM<0, 0x2d>;
+def DSUBu  : ArithLogicR<"dsubu", CPU64Regs, 0, IIAlu, sub>, ADD_FM<0, 0x2f>;
+def SLT64  : SetCC_R<"slt", setlt, CPU64Regs>, ADD_FM<0, 0x2a>;
+def SLTu64 : SetCC_R<"sltu", setult, CPU64Regs>, ADD_FM<0, 0x2b>;
+def AND64  : ArithLogicR<"and", CPU64Regs, 1, IIAlu, and>, ADD_FM<0, 0x24>;
+def OR64   : ArithLogicR<"or", CPU64Regs, 1, IIAlu, or>, ADD_FM<0, 0x25>;
+def XOR64  : ArithLogicR<"xor", CPU64Regs, 1, IIAlu, xor>, ADD_FM<0, 0x26>;
+def NOR64  : LogicNOR<0x00, 0x27, "nor", CPU64Regs>;
 
 /// Shift Instructions
-def DSLL     : shift_rotate_imm64<0x38, 0x00, "dsll", shl>;
-def DSRL     : shift_rotate_imm64<0x3a, 0x00, "dsrl", srl>;
-def DSRA     : shift_rotate_imm64<0x3b, 0x00, "dsra", sra>;
-def DSLLV    : shift_rotate_reg<0x14, 0x00, "dsllv", shl, CPU64Regs>;
-def DSRLV    : shift_rotate_reg<0x16, 0x00, "dsrlv", srl, CPU64Regs>;
-def DSRAV    : shift_rotate_reg<0x17, 0x00, "dsrav", sra, CPU64Regs>;
-let Pattern = []<dag> in {
-  def DSLL32   : shift_rotate_imm64<0x3c, 0x00, "dsll32", shl>;
-  def DSRL32   : shift_rotate_imm64<0x3e, 0x00, "dsrl32", srl>;
-  def DSRA32   : shift_rotate_imm64<0x3f, 0x00, "dsra32", sra>;
-}
+def DSLL   : shift_rotate_imm64<"dsll", shl>, SRA_FM<0x38, 0>;
+def DSRL   : shift_rotate_imm64<"dsrl", srl>, SRA_FM<0x3a, 0>;
+def DSRA   : shift_rotate_imm64<"dsra", sra>, SRA_FM<0x3b, 0>;
+def DSLLV  : shift_rotate_reg<"dsllv", shl, CPU64Regs>, SRLV_FM<0x14, 0>;
+def DSRLV  : shift_rotate_reg<"dsrlv", srl, CPU64Regs>, SRLV_FM<0x16, 0>;
+def DSRAV  : shift_rotate_reg<"dsrav", sra, CPU64Regs>, SRLV_FM<0x17, 0>;
+def DSLL32 : shift_rotate_imm64<"dsll32">, SRA_FM<0x3c, 0>;
+def DSRL32 : shift_rotate_imm64<"dsrl32">, SRA_FM<0x3e, 0>;
+def DSRA32 : shift_rotate_imm64<"dsra32">, SRA_FM<0x3f, 0>;
 }
 // Rotate Instructions
 let Predicates = [HasMips64r2, HasStdEnc],
     DecoderNamespace = "Mips64" in {
-  def DROTR    : shift_rotate_imm64<0x3a, 0x01, "drotr", rotr>;
-  def DROTRV   : shift_rotate_reg<0x16, 0x01, "drotrv", rotr, CPU64Regs>;
+  def DROTR  : shift_rotate_imm64<"drotr", rotr>, SRA_FM<0x3a, 1>;
+  def DROTRV : shift_rotate_reg<"drotrv", rotr, CPU64Regs>, SRLV_FM<0x16, 1>;
 }
 
 let DecoderNamespace = "Mips64" in {
@@ -168,12 +168,12 @@ def SCD_P8 : SCBase<0x3c, "scd", CPU64Regs, mem64>,
 
 /// Jump and Branch Instructions
 def JR64   : IndirectBranch<CPU64Regs>;
-def BEQ64  : CBranch<0x04, "beq", seteq, CPU64Regs>;
-def BNE64  : CBranch<0x05, "bne", setne, CPU64Regs>;
-def BGEZ64 : CBranchZero<0x01, 1, "bgez", setge, CPU64Regs>;
-def BGTZ64 : CBranchZero<0x07, 0, "bgtz", setgt, CPU64Regs>;
-def BLEZ64 : CBranchZero<0x06, 0, "blez", setle, CPU64Regs>;
-def BLTZ64 : CBranchZero<0x01, 0, "bltz", setlt, CPU64Regs>;
+def BEQ64  : CBranch<"beq", seteq, CPU64Regs>, BEQ_FM<4>;
+def BNE64  : CBranch<"bne", setne, CPU64Regs>, BEQ_FM<5>;
+def BGEZ64 : CBranchZero<"bgez", setge, CPU64Regs>, BGEZ_FM<1, 1>;
+def BGTZ64 : CBranchZero<"bgtz", setgt, CPU64Regs>, BGEZ_FM<7, 0>;
+def BLEZ64 : CBranchZero<"blez", setle, CPU64Regs>, BGEZ_FM<6, 0>;
+def BLTZ64 : CBranchZero<"bltz", setlt, CPU64Regs>, BGEZ_FM<1, 0>;
 }
 let DecoderNamespace = "Mips64" in
 def JALR64 : JumpLinkReg<0x00, 0x09, "jalr", CPU64Regs>;

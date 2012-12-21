@@ -51,9 +51,10 @@ namespace {
 
 /// The LoopVectorize Pass.
 struct LoopVectorize : public LoopPass {
-  static char ID; // Pass identification, replacement for typeid
+  /// Pass identification, replacement for typeid
+  static char ID;
 
-  LoopVectorize() : LoopPass(ID) {
+  explicit LoopVectorize() : LoopPass(ID) {
     initializeLoopVectorizePass(*PassRegistry::getPassRegistry());
   }
 
@@ -85,28 +86,27 @@ struct LoopVectorize : public LoopPass {
     }
 
     // Select the preffered vectorization factor.
-    unsigned VF = 1;
-    if (VectorizationFactor == 0) {
-      const VectorTargetTransformInfo *VTTI = 0;
-      if (TTI)
-        VTTI = TTI->getVectorTargetTransformInfo();
-      // Use the cost model.
-      LoopVectorizationCostModel CM(L, SE, &LVL, VTTI);
-      VF = CM.findBestVectorizationFactor();
+    const VectorTargetTransformInfo *VTTI = 0;
+    if (TTI)
+      VTTI = TTI->getVectorTargetTransformInfo();
+    // Use the cost model.
+    LoopVectorizationCostModel CM(L, SE, &LVL, VTTI);
 
-      if (VF == 1) {
-        DEBUG(dbgs() << "LV: Vectorization is possible but not beneficial.\n");
-        return false;
-      }
+    // Check the function attribues to find out if this function should be
+    // optimized for size.
+    Function *F = L->getHeader()->getParent();
+    Attribute::AttrVal SzAttr= Attribute::OptimizeForSize;
+    bool OptForSize = F->getFnAttributes().hasAttribute(SzAttr);
 
-    } else {
-      // Use the user command flag.
-      VF = VectorizationFactor;
+    unsigned VF = CM.selectVectorizationFactor(OptForSize, VectorizationFactor);
+
+    if (VF == 1) {
+      DEBUG(dbgs() << "LV: Vectorization is possible but not beneficial.\n");
+      return false;
     }
 
     DEBUG(dbgs() << "LV: Found a vectorizable loop ("<< VF << ") in "<<
-          L->getHeader()->getParent()->getParent()->getModuleIdentifier()<<
-          "\n");
+          F->getParent()->getModuleIdentifier()<<"\n");
 
     // If we decided that it is *legal* to vectorizer the loop then do it.
     InnerLoopVectorizer LB(L, SE, LI, DT, DL, VF);
@@ -284,7 +284,7 @@ void InnerLoopVectorizer::scalarizeInstruction(Instruction *Instr) {
 
     // If the src is an instruction that appeared earlier in the basic block
     // then it should already be vectorized.
-    if (SrcInst && SrcInst->getParent() == Instr->getParent()) {
+    if (SrcInst && OrigLoop->contains(SrcInst)) {
       assert(WidenMap.count(SrcInst) && "Source operand is unavailable");
       // The parameter is a vector value from earlier.
       Params.push_back(WidenMap[SrcInst]);
@@ -407,27 +407,27 @@ InnerLoopVectorizer::createEmptyLoop(LoopVectorizationLegality *Legal) {
    the vectorized instructions while the old loop will continue to run the
    scalar remainder.
 
-   [ ] <-- vector loop bypass.
-   /  |
-   /   v
+       [ ] <-- vector loop bypass.
+     /  |
+    /   v
    |   [ ]     <-- vector pre header.
    |    |
    |    v
    |   [  ] \
    |   [  ]_|   <-- vector loop.
    |    |
-   \   v
-   >[ ]   <--- middle-block.
-   /  |
-   /   v
+    \   v
+      >[ ]   <--- middle-block.
+     /  |
+    /   v
    |   [ ]     <--- new preheader.
    |    |
    |    v
    |   [ ] \
    |   [ ]_|   <-- old scalar loop to handle remainder.
-   \   |
-   \  v
-   >[ ]     <-- exit block.
+    \   |
+     \  v
+      >[ ]     <-- exit block.
    ...
    */
 
@@ -817,33 +817,52 @@ InnerLoopVectorizer::vectorizeLoop(LoopVectorizationLegality *Legal) {
     NewPhi->addIncoming(VectorStart, LoopBypassBlock);
     NewPhi->addIncoming(getVectorValue(RdxDesc.LoopExitInstr), LoopVectorBody);
 
-    // Extract the first scalar.
-    Value *Scalar0 =
-    Builder.CreateExtractElement(NewPhi, Builder.getInt32(0));
-    // Extract and reduce the remaining vector elements.
-    for (unsigned i=1; i < VF; ++i) {
-      Value *Scalar1 =
-      Builder.CreateExtractElement(NewPhi, Builder.getInt32(i));
+    // VF is a power of 2 so we can emit the reduction using log2(VF) shuffles
+    // and vector ops, reducing the set of values being computed by half each
+    // round.
+    assert(isPowerOf2_32(VF) &&
+           "Reduction emission only supported for pow2 vectors!");
+    Value *TmpVec = NewPhi;
+    SmallVector<Constant*, 32> ShuffleMask(VF, 0);
+    for (unsigned i = VF; i != 1; i >>= 1) {
+      // Move the upper half of the vector to the lower half.
+      for (unsigned j = 0; j != i/2; ++j)
+        ShuffleMask[j] = Builder.getInt32(i/2 + j);
+
+      // Fill the rest of the mask with undef.
+      std::fill(&ShuffleMask[i/2], ShuffleMask.end(),
+                UndefValue::get(Builder.getInt32Ty()));
+
+      Value *Shuf =
+        Builder.CreateShuffleVector(TmpVec,
+                                    UndefValue::get(TmpVec->getType()),
+                                    ConstantVector::get(ShuffleMask),
+                                    "rdx.shuf");
+
+      // Emit the operation on the shuffled value.
       switch (RdxDesc.Kind) {
       case LoopVectorizationLegality::IntegerAdd:
-        Scalar0 = Builder.CreateAdd(Scalar0, Scalar1, "add.rdx");
+        TmpVec = Builder.CreateAdd(TmpVec, Shuf, "add.rdx");
         break;
       case LoopVectorizationLegality::IntegerMult:
-        Scalar0 = Builder.CreateMul(Scalar0, Scalar1, "mul.rdx");
+        TmpVec = Builder.CreateMul(TmpVec, Shuf, "mul.rdx");
         break;
       case LoopVectorizationLegality::IntegerOr:
-        Scalar0 = Builder.CreateOr(Scalar0, Scalar1, "or.rdx");
+        TmpVec = Builder.CreateOr(TmpVec, Shuf, "or.rdx");
         break;
       case LoopVectorizationLegality::IntegerAnd:
-        Scalar0 = Builder.CreateAnd(Scalar0, Scalar1, "and.rdx");
+        TmpVec = Builder.CreateAnd(TmpVec, Shuf, "and.rdx");
         break;
       case LoopVectorizationLegality::IntegerXor:
-        Scalar0 = Builder.CreateXor(Scalar0, Scalar1, "xor.rdx");
+        TmpVec = Builder.CreateXor(TmpVec, Shuf, "xor.rdx");
         break;
       default:
         llvm_unreachable("Unknown reduction operation");
       }
     }
+
+    // The result is in the first element of the vector.
+    Value *Scalar0 = Builder.CreateExtractElement(TmpVec, Builder.getInt32(0));
 
     // Now, we need to fix the users of the reduction variable
     // inside and outside of the scalar remainder loop.
@@ -954,7 +973,7 @@ InnerLoopVectorizer::vectorizeBlockInLoop(LoopVectorizationLegality *Legal,
         // At this point we generate the predication tree. There may be
         // duplications since this is a simple recursive scan, but future
         // optimizations will clean it up.
-        Value *Cond = createBlockInMask(P->getIncomingBlock(0));
+        Value *Cond = createEdgeMask(P->getIncomingBlock(0), P->getParent());
         WidenMap[P] =
           Builder.CreateSelect(Cond,
                                getVectorValue(P->getIncomingValue(0)),
@@ -1204,8 +1223,20 @@ InnerLoopVectorizer::vectorizeBlockInLoop(LoopVectorizationLegality *Legal,
     case Instruction::Trunc:
     case Instruction::FPTrunc:
     case Instruction::BitCast: {
-      /// Vectorize bitcasts.
       CastInst *CI = dyn_cast<CastInst>(it);
+      /// Optimize the special case where the source is the induction
+      /// variable. Notice that we can only optimize the 'trunc' case
+      /// because: a. FP conversions lose precision, b. sext/zext may wrap,
+      /// c. other casts depend on pointer size.
+      if (CI->getOperand(0) == OldInduction &&
+          it->getOpcode() == Instruction::Trunc) {
+        Value *ScalarCast = Builder.CreateCast(CI->getOpcode(), Induction,
+                                               CI->getType());
+        Value *Broadcasted = getBroadcastInstrs(ScalarCast);
+        WidenMap[it] = getConsecutiveVector(Broadcasted);
+        break;
+      }
+      /// Vectorize casts.
       Value *A = getVectorValue(it->getOperand(0));
       Type *DestTy = VectorType::get(CI->getType()->getScalarType(), VF);
       WidenMap[it] = Builder.CreateCast(CI->getOpcode(), A, DestTy);
@@ -1562,8 +1593,7 @@ bool LoopVectorizationLegality::canVectorizeMemory() {
 
   ValueVector::iterator I, IE;
   for (I = Stores.begin(), IE = Stores.end(); I != IE; ++I) {
-    StoreInst *ST = dyn_cast<StoreInst>(*I);
-    assert(ST && "Bad StoreInst");
+    StoreInst *ST = cast<StoreInst>(*I);
     Value* Ptr = ST->getPointerOperand();
 
     if (isUniform(Ptr)) {
@@ -1578,8 +1608,7 @@ bool LoopVectorizationLegality::canVectorizeMemory() {
   }
 
   for (I = Loads.begin(), IE = Loads.end(); I != IE; ++I) {
-    LoadInst *LD = dyn_cast<LoadInst>(*I);
-    assert(LD && "Bad LoadInst");
+    LoadInst *LD = cast<LoadInst>(*I);
     Value* Ptr = LD->getPointerOperand();
     // If we did *not* see this pointer before, insert it to the
     // read list. If we *did* see it before, then it is already in
@@ -1602,13 +1631,13 @@ bool LoopVectorizationLegality::canVectorizeMemory() {
 
   // Find pointers with computable bounds. We are going to use this information
   // to place a runtime bound check.
-  bool RT = true;
+  bool CanDoRT = true;
   for (I = ReadWrites.begin(), IE = ReadWrites.end(); I != IE; ++I)
     if (hasComputableBounds(*I)) {
       PtrRtCheck.insert(SE, TheLoop, *I);
       DEBUG(dbgs() << "LV: Found a runtime check ptr:" << **I <<"\n");
     } else {
-      RT = false;
+      CanDoRT = false;
       break;
     }
   for (I = Reads.begin(), IE = Reads.end(); I != IE; ++I)
@@ -1616,22 +1645,22 @@ bool LoopVectorizationLegality::canVectorizeMemory() {
       PtrRtCheck.insert(SE, TheLoop, *I);
       DEBUG(dbgs() << "LV: Found a runtime check ptr:" << **I <<"\n");
     } else {
-      RT = false;
+      CanDoRT = false;
       break;
     }
 
   // Check that we did not collect too many pointers or found a
   // unsizeable pointer.
-  if (!RT || PtrRtCheck.Pointers.size() > RuntimeMemoryCheckThreshold) {
+  if (!CanDoRT || PtrRtCheck.Pointers.size() > RuntimeMemoryCheckThreshold) {
     PtrRtCheck.reset();
-    RT = false;
+    CanDoRT = false;
   }
 
-  PtrRtCheck.Need = RT;
-
-  if (RT) {
+  if (CanDoRT) {
     DEBUG(dbgs() << "LV: We can perform a memory runtime check if needed.\n");
   }
+
+  bool NeedRTCheck = false;
 
   // Now that the pointers are in two lists (Reads and ReadWrites), we
   // can check that there are no conflicts between each of the writes and
@@ -1647,12 +1676,12 @@ bool LoopVectorizationLegality::canVectorizeMemory() {
          it != e; ++it) {
       if (!isIdentifiedObject(*it)) {
         DEBUG(dbgs() << "LV: Found an unidentified write ptr:"<< **it <<"\n");
-        return RT;
+        NeedRTCheck = true;
       }
       if (!WriteObjects.insert(*it)) {
         DEBUG(dbgs() << "LV: Found a possible write-write reorder:"
               << **it <<"\n");
-        return RT;
+        return false;
       }
     }
     TempObjects.clear();
@@ -1665,20 +1694,27 @@ bool LoopVectorizationLegality::canVectorizeMemory() {
          it != e; ++it) {
       if (!isIdentifiedObject(*it)) {
         DEBUG(dbgs() << "LV: Found an unidentified read ptr:"<< **it <<"\n");
-        return RT;
+        NeedRTCheck = true;
       }
       if (WriteObjects.count(*it)) {
         DEBUG(dbgs() << "LV: Found a possible read/write reorder:"
               << **it <<"\n");
-        return RT;
+        return false;
       }
     }
     TempObjects.clear();
   }
 
-  // It is safe to vectorize and we don't need any runtime checks.
-  DEBUG(dbgs() << "LV: We don't need a runtime memory check.\n");
-  PtrRtCheck.reset();
+  PtrRtCheck.Need = NeedRTCheck;
+  if (NeedRTCheck && !CanDoRT) {
+    DEBUG(dbgs() << "LV: We can't vectorize because we can't find " <<
+          "the array bounds.\n");
+    PtrRtCheck.reset();
+    return false;
+  }
+
+  DEBUG(dbgs() << "LV: We "<< (NeedRTCheck ? "" : "don't") <<
+        " need a runtime memory check.\n");
   return true;
 }
 
@@ -1836,6 +1872,15 @@ LoopVectorizationLegality::isInductionVariable(PHINode *Phi) {
   return NoInduction;
 }
 
+bool LoopVectorizationLegality::isInductionVariable(const Value *V) {
+  Value *In0 = const_cast<Value*>(V);
+  PHINode *PN = dyn_cast_or_null<PHINode>(In0);
+  if (!PN)
+    return false;
+
+  return Inductions.count(PN);
+}
+
 bool LoopVectorizationLegality::blockNeedsPredication(BasicBlock *BB)  {
   assert(TheLoop->contains(BB) && "Unknown block used");
 
@@ -1850,7 +1895,7 @@ bool LoopVectorizationLegality::blockCanBePredicated(BasicBlock *BB) {
     if (it->mayReadFromMemory() || it->mayWriteToMemory() || it->mayThrow())
       return false;
 
-    // The isntructions below can trap.
+    // The instructions below can trap.
     switch (it->getOpcode()) {
     default: continue;
     case Instruction::UDiv:
@@ -1874,7 +1919,48 @@ bool LoopVectorizationLegality::hasComputableBounds(Value *Ptr) {
 }
 
 unsigned
-LoopVectorizationCostModel::findBestVectorizationFactor(unsigned VF) {
+LoopVectorizationCostModel::selectVectorizationFactor(bool OptForSize,
+                                                        unsigned UserVF) {
+  if (OptForSize && Legal->getRuntimePointerCheck()->Need) {
+    DEBUG(dbgs() << "LV: Aborting. Runtime ptr check is required in Os.\n");
+    return 1;
+  }
+
+  // Find the trip count.
+  unsigned TC = SE->getSmallConstantTripCount(TheLoop, TheLoop->getLoopLatch());
+  DEBUG(dbgs() << "LV: Found trip count:"<<TC<<"\n");
+
+  unsigned VF = MaxVectorSize;
+
+  // If we optimize the program for size, avoid creating the tail loop.
+  if (OptForSize) {
+    // If we are unable to calculate the trip count then don't try to vectorize.
+    if (TC < 2) {
+      DEBUG(dbgs() << "LV: Aborting. A tail loop is required in Os.\n");
+      return 1;
+    }
+
+    // Find the maximum SIMD width that can fit within the trip count.
+    VF = TC % MaxVectorSize;
+
+    if (VF == 0)
+      VF = MaxVectorSize;
+
+    // If the trip count that we found modulo the vectorization factor is not
+    // zero then we require a tail.
+    if (VF < 2) {
+      DEBUG(dbgs() << "LV: Aborting. A tail loop is required in Os.\n");
+      return 1;
+    }
+  }
+
+  if (UserVF != 0) {
+    assert(isPowerOf2_32(UserVF) && "VF needs to be a power of two");
+    DEBUG(dbgs() << "LV: Using user VF "<<UserVF<<".\n");
+
+    return UserVF;
+  }
+
   if (!VTTI) {
     DEBUG(dbgs() << "LV: No vector target information. Not vectorizing. \n");
     return 1;
@@ -2056,6 +2142,13 @@ LoopVectorizationCostModel::getInstructionCost(Instruction *I, unsigned VF) {
   case Instruction::Trunc:
   case Instruction::FPTrunc:
   case Instruction::BitCast: {
+    // We optimize the truncation of induction variable.
+    // The cost of these is the same as the scalar operation.
+    if (I->getOpcode() == Instruction::Trunc &&
+        Legal->isInductionVariable(I->getOperand(0)))
+         return VTTI->getCastInstrCost(I->getOpcode(), I->getType(),
+                                       I->getOperand(0)->getType());
+
     Type *SrcVecTy = ToVectorTy(I->getOperand(0)->getType(), VF);
     return VTTI->getCastInstrCost(I->getOpcode(), VectorTy, SrcVecTy);
   }

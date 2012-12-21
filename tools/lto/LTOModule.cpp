@@ -745,6 +745,9 @@ namespace {
       Symbol->setSection(*getCurrentSection());
       markDefined(*Symbol);
     }
+    virtual void EmitDebugLabel(MCSymbol *Symbol) {
+      EmitLabel(Symbol);
+    }
     virtual void EmitAssignment(MCSymbol *Symbol, const MCExpr *Value) {
       // FIXME: should we handle aliases?
       markDefined(*Symbol);
@@ -761,6 +764,10 @@ namespace {
                                   unsigned ByteAlignment) {
       markDefined(*Symbol);
     }
+
+    virtual void EmitBundleAlignMode(unsigned AlignPow2) {}
+    virtual void EmitBundleLock() {}
+    virtual void EmitBundleUnlock() {}
 
     // Noop calls.
     virtual void ChangeSection(const MCSection *Section) {}

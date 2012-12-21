@@ -21,16 +21,18 @@ Subsystem Documentation
    HowToUseInstrMappings
    SystemLibrary
    SourceLevelDebugging
+   Vectorizers
    WritingAnLLVMBackend
    GarbageCollection
+   WritingAnLLVMPass
 
 .. FIXME: once LangRef is Sphinxified, HowToUseInstrMappings should be put
    under LangRef's toctree instead of this page's toctree.
 
-* `Writing an LLVM Pass <WritingAnLLVMPass.html>`_
-    
+* :doc:`WritingAnLLVMPass`
+
    Information on how to write LLVM transformations and analyses.
-    
+
 * :doc:`WritingAnLLVMBackend`
 
    Information on how to write LLVM backends for machine targets.
@@ -60,6 +62,10 @@ Subsystem Documentation
     
    This document describes the design and philosophy behind the LLVM
    source-level debugger.
+
+* :doc:`Vectorizers`
+    
+   This document describes the current status of vectorization in LLVM.
     
 * :ref:`exception_handling`
     

@@ -562,7 +562,23 @@ X86InstrInfo::X86InstrInfo(X86TargetMachine &tm)
     { X86::VBROADCASTSSYrr, X86::VBROADCASTSSYrm,     TB_NO_REVERSE },
     { X86::VBROADCASTSDYrr, X86::VBROADCASTSDYrm,     TB_NO_REVERSE },
 
-    // BMI/BMI2 foldable instructions
+    // BMI/BMI2/LZCNT/POPCNT foldable instructions
+    { X86::BEXTR32rr,       X86::BEXTR32rm,           0 },
+    { X86::BEXTR64rr,       X86::BEXTR64rm,           0 },
+    { X86::BLSI32rr,        X86::BLSI32rm,            0 },
+    { X86::BLSI64rr,        X86::BLSI64rm,            0 },
+    { X86::BLSMSK32rr,      X86::BLSMSK32rm,          0 },
+    { X86::BLSMSK64rr,      X86::BLSMSK64rm,          0 },
+    { X86::BLSR32rr,        X86::BLSR32rm,            0 },
+    { X86::BLSR64rr,        X86::BLSR64rm,            0 },
+    { X86::BZHI32rr,        X86::BZHI32rm,            0 },
+    { X86::BZHI64rr,        X86::BZHI64rm,            0 },
+    { X86::LZCNT16rr,       X86::LZCNT16rm,           0 },
+    { X86::LZCNT32rr,       X86::LZCNT32rm,           0 },
+    { X86::LZCNT64rr,       X86::LZCNT64rm,           0 },
+    { X86::POPCNT16rr,      X86::POPCNT16rm,          0 },
+    { X86::POPCNT32rr,      X86::POPCNT32rm,          0 },
+    { X86::POPCNT64rr,      X86::POPCNT64rm,          0 },
     { X86::RORX32ri,        X86::RORX32mi,            0 },
     { X86::RORX64ri,        X86::RORX64mi,            0 },
     { X86::SARX32rr,        X86::SARX32rm,            0 },
@@ -571,6 +587,9 @@ X86InstrInfo::X86InstrInfo(X86TargetMachine &tm)
     { X86::SHRX64rr,        X86::SHRX64rm,            0 },
     { X86::SHLX32rr,        X86::SHLX32rm,            0 },
     { X86::SHLX64rr,        X86::SHLX64rm,            0 },
+    { X86::TZCNT16rr,       X86::TZCNT16rm,           0 },
+    { X86::TZCNT32rr,       X86::TZCNT32rm,           0 },
+    { X86::TZCNT64rr,       X86::TZCNT64rm,           0 },
   };
 
   for (unsigned i = 0, e = array_lengthof(OpTbl1); i != e; ++i) {
@@ -756,6 +775,14 @@ X86InstrInfo::X86InstrInfo(X86TargetMachine &tm)
     { X86::PMAXUBrr,        X86::PMAXUBrm,      TB_ALIGN_16 },
     { X86::PMINSWrr,        X86::PMINSWrm,      TB_ALIGN_16 },
     { X86::PMINUBrr,        X86::PMINUBrm,      TB_ALIGN_16 },
+    { X86::PMINSBrr,        X86::PMINSBrm,      TB_ALIGN_16 },
+    { X86::PMINSDrr,        X86::PMINSDrm,      TB_ALIGN_16 },
+    { X86::PMINUDrr,        X86::PMINUDrm,      TB_ALIGN_16 },
+    { X86::PMINUWrr,        X86::PMINUWrm,      TB_ALIGN_16 },
+    { X86::PMAXSBrr,        X86::PMAXSBrm,      TB_ALIGN_16 },
+    { X86::PMAXSDrr,        X86::PMAXSDrm,      TB_ALIGN_16 },
+    { X86::PMAXUDrr,        X86::PMAXUDrm,      TB_ALIGN_16 },
+    { X86::PMAXUWrr,        X86::PMAXUWrm,      TB_ALIGN_16 },
     { X86::PMULDQrr,        X86::PMULDQrm,      TB_ALIGN_16 },
     { X86::PMULHRSWrr128,   X86::PMULHRSWrm128, TB_ALIGN_16 },
     { X86::PMULHUWrr,       X86::PMULHUWrm,     TB_ALIGN_16 },
@@ -932,6 +959,14 @@ X86InstrInfo::X86InstrInfo(X86TargetMachine &tm)
     { X86::VPMAXUBrr,         X86::VPMAXUBrm,          TB_ALIGN_16 },
     { X86::VPMINSWrr,         X86::VPMINSWrm,          TB_ALIGN_16 },
     { X86::VPMINUBrr,         X86::VPMINUBrm,          TB_ALIGN_16 },
+    { X86::VPMINSBrr,         X86::VPMINSBrm,          TB_ALIGN_16 },
+    { X86::VPMINSDrr,         X86::VPMINSDrm,          TB_ALIGN_16 },
+    { X86::VPMINUDrr,         X86::VPMINUDrm,          TB_ALIGN_16 },
+    { X86::VPMINUWrr,         X86::VPMINUWrm,          TB_ALIGN_16 },
+    { X86::VPMAXSBrr,         X86::VPMAXSBrm,          TB_ALIGN_16 },
+    { X86::VPMAXSDrr,         X86::VPMAXSDrm,          TB_ALIGN_16 },
+    { X86::VPMAXUDrr,         X86::VPMAXUDrm,          TB_ALIGN_16 },
+    { X86::VPMAXUWrr,         X86::VPMAXUWrm,          TB_ALIGN_16 },
     { X86::VPMULDQrr,         X86::VPMULDQrm,          TB_ALIGN_16 },
     { X86::VPMULHRSWrr128,    X86::VPMULHRSWrm128,     TB_ALIGN_16 },
     { X86::VPMULHUWrr,        X86::VPMULHUWrm,         TB_ALIGN_16 },
@@ -1073,6 +1108,14 @@ X86InstrInfo::X86InstrInfo(X86TargetMachine &tm)
     { X86::VPMAXUBYrr,        X86::VPMAXUBYrm,         TB_ALIGN_32 },
     { X86::VPMINSWYrr,        X86::VPMINSWYrm,         TB_ALIGN_32 },
     { X86::VPMINUBYrr,        X86::VPMINUBYrm,         TB_ALIGN_32 },
+    { X86::VPMINSBYrr,        X86::VPMINSBYrm,         TB_ALIGN_32 },
+    { X86::VPMINSDYrr,        X86::VPMINSDYrm,         TB_ALIGN_32 },
+    { X86::VPMINUDYrr,        X86::VPMINUDYrm,         TB_ALIGN_32 },
+    { X86::VPMINUWYrr,        X86::VPMINUWYrm,         TB_ALIGN_32 },
+    { X86::VPMAXSBYrr,        X86::VPMAXSBYrm,         TB_ALIGN_32 },
+    { X86::VPMAXSDYrr,        X86::VPMAXSDYrm,         TB_ALIGN_32 },
+    { X86::VPMAXUDYrr,        X86::VPMAXUDYrm,         TB_ALIGN_32 },
+    { X86::VPMAXUWYrr,        X86::VPMAXUWYrm,         TB_ALIGN_32 },
     { X86::VMPSADBWYrri,      X86::VMPSADBWYrmi,       TB_ALIGN_32 },
     { X86::VPMULDQYrr,        X86::VPMULDQYrm,         TB_ALIGN_32 },
     { X86::VPMULHRSWrr256,    X86::VPMULHRSWrm256,     TB_ALIGN_32 },
@@ -1156,8 +1199,14 @@ X86InstrInfo::X86InstrInfo(X86TargetMachine &tm)
     { X86::VFMSUBADDPD4rrY,   X86::VFMSUBADDPD4mrY,    TB_ALIGN_32 },
 
     // BMI/BMI2 foldable instructions
+    { X86::ANDN32rr,          X86::ANDN32rm,            0 },
+    { X86::ANDN64rr,          X86::ANDN64rm,            0 },
     { X86::MULX32rr,          X86::MULX32rm,            0 },
     { X86::MULX64rr,          X86::MULX64rm,            0 },
+    { X86::PDEP32rr,          X86::PDEP32rm,            0 },
+    { X86::PDEP64rr,          X86::PDEP64rm,            0 },
+    { X86::PEXT32rr,          X86::PEXT32rm,            0 },
+    { X86::PEXT64rr,          X86::PEXT64rm,            0 },
   };
 
   for (unsigned i = 0, e = array_lengthof(OpTbl2); i != e; ++i) {
@@ -3152,19 +3201,15 @@ inline static bool isDefConvertible(MachineInstr *MI) {
   case X86::SUB8ri:    case X86::SUB64rr:  case X86::SUB32rr:
   case X86::SUB16rr:   case X86::SUB8rr:   case X86::SUB64rm:
   case X86::SUB32rm:   case X86::SUB16rm:  case X86::SUB8rm:
-  case X86::DEC64r:  case X86::DEC32r:  case X86::DEC16r: case X86::DEC8r:
-  case X86::DEC64m:  case X86::DEC32m:  case X86::DEC16m: case X86::DEC8m:
+  case X86::DEC64r:    case X86::DEC32r:   case X86::DEC16r: case X86::DEC8r:
   case X86::DEC64_32r: case X86::DEC64_16r:
-  case X86::DEC64_32m: case X86::DEC64_16m:
   case X86::ADD64ri32: case X86::ADD64ri8: case X86::ADD32ri:
   case X86::ADD32ri8:  case X86::ADD16ri:  case X86::ADD16ri8:
   case X86::ADD8ri:    case X86::ADD64rr:  case X86::ADD32rr:
   case X86::ADD16rr:   case X86::ADD8rr:   case X86::ADD64rm:
   case X86::ADD32rm:   case X86::ADD16rm:  case X86::ADD8rm:
-  case X86::INC64r:  case X86::INC32r:  case X86::INC16r: case X86::INC8r:
-  case X86::INC64m:  case X86::INC32m:  case X86::INC16m: case X86::INC8m:
+  case X86::INC64r:    case X86::INC32r:   case X86::INC16r: case X86::INC8r:
   case X86::INC64_32r: case X86::INC64_16r:
-  case X86::INC64_32m: case X86::INC64_16m:
   case X86::AND64ri32: case X86::AND64ri8: case X86::AND32ri:
   case X86::AND32ri8:  case X86::AND16ri:  case X86::AND16ri8:
   case X86::AND8ri:    case X86::AND64rr:  case X86::AND32rr:
@@ -3180,6 +3225,8 @@ inline static bool isDefConvertible(MachineInstr *MI) {
   case X86::OR8ri:     case X86::OR64rr:   case X86::OR32rr:
   case X86::OR16rr:    case X86::OR8rr:    case X86::OR64rm:
   case X86::OR32rm:    case X86::OR16rm:   case X86::OR8rm:
+  case X86::ANDN32rr:  case X86::ANDN32rm:
+  case X86::ANDN64rr:  case X86::ANDN64rm:
     return true;
   }
 }
@@ -3502,43 +3549,44 @@ optimizeLoadInstr(MachineInstr *MI, const MachineRegisterInfo *MRI,
 /// to:
 ///   %xmm4 = PXORrr %xmm4<undef>, %xmm4<undef>
 ///
-static bool Expand2AddrUndef(MachineInstr *MI, const MCInstrDesc &Desc) {
+static bool Expand2AddrUndef(MachineInstrBuilder &MIB,
+                             const MCInstrDesc &Desc) {
   assert(Desc.getNumOperands() == 3 && "Expected two-addr instruction.");
-  unsigned Reg = MI->getOperand(0).getReg();
-  MI->setDesc(Desc);
+  unsigned Reg = MIB->getOperand(0).getReg();
+  MIB->setDesc(Desc);
 
   // MachineInstr::addOperand() will insert explicit operands before any
   // implicit operands.
-  MachineInstrBuilder(MI).addReg(Reg, RegState::Undef)
-                         .addReg(Reg, RegState::Undef);
+  MIB.addReg(Reg, RegState::Undef).addReg(Reg, RegState::Undef);
   // But we don't trust that.
-  assert(MI->getOperand(1).getReg() == Reg &&
-         MI->getOperand(2).getReg() == Reg && "Misplaced operand");
+  assert(MIB->getOperand(1).getReg() == Reg &&
+         MIB->getOperand(2).getReg() == Reg && "Misplaced operand");
   return true;
 }
 
 bool X86InstrInfo::expandPostRAPseudo(MachineBasicBlock::iterator MI) const {
   bool HasAVX = TM.getSubtarget<X86Subtarget>().hasAVX();
+  MachineInstrBuilder MIB(*MI->getParent()->getParent(), MI);
   switch (MI->getOpcode()) {
   case X86::SETB_C8r:
-    return Expand2AddrUndef(MI, get(X86::SBB8rr));
+    return Expand2AddrUndef(MIB, get(X86::SBB8rr));
   case X86::SETB_C16r:
-    return Expand2AddrUndef(MI, get(X86::SBB16rr));
+    return Expand2AddrUndef(MIB, get(X86::SBB16rr));
   case X86::SETB_C32r:
-    return Expand2AddrUndef(MI, get(X86::SBB32rr));
+    return Expand2AddrUndef(MIB, get(X86::SBB32rr));
   case X86::SETB_C64r:
-    return Expand2AddrUndef(MI, get(X86::SBB64rr));
+    return Expand2AddrUndef(MIB, get(X86::SBB64rr));
   case X86::V_SET0:
   case X86::FsFLD0SS:
   case X86::FsFLD0SD:
-    return Expand2AddrUndef(MI, get(HasAVX ? X86::VXORPSrr : X86::XORPSrr));
+    return Expand2AddrUndef(MIB, get(HasAVX ? X86::VXORPSrr : X86::XORPSrr));
   case X86::AVX_SET0:
     assert(HasAVX && "AVX not supported");
-    return Expand2AddrUndef(MI, get(X86::VXORPSYrr));
+    return Expand2AddrUndef(MIB, get(X86::VXORPSYrr));
   case X86::V_SETALLONES:
-    return Expand2AddrUndef(MI, get(HasAVX ? X86::VPCMPEQDrr : X86::PCMPEQDrr));
+    return Expand2AddrUndef(MIB, get(HasAVX ? X86::VPCMPEQDrr : X86::PCMPEQDrr));
   case X86::AVX2_SETALLONES:
-    return Expand2AddrUndef(MI, get(X86::VPCMPEQDYrr));
+    return Expand2AddrUndef(MIB, get(X86::VPCMPEQDYrr));
   case X86::TEST8ri_NOREX:
     MI->setDesc(get(X86::TEST8ri));
     return true;
@@ -3564,9 +3612,10 @@ static MachineInstr *FuseTwoAddrInst(MachineFunction &MF, unsigned Opcode,
                                      MachineInstr *MI,
                                      const TargetInstrInfo &TII) {
   // Create the base instruction with the memory operand as the first part.
+  // Omit the implicit operands, something BuildMI can't do.
   MachineInstr *NewMI = MF.CreateMachineInstr(TII.get(Opcode),
                                               MI->getDebugLoc(), true);
-  MachineInstrBuilder MIB(NewMI);
+  MachineInstrBuilder MIB(MF, NewMI);
   unsigned NumAddrOps = MOs.size();
   for (unsigned i = 0; i != NumAddrOps; ++i)
     MIB.addOperand(MOs[i]);
@@ -3590,9 +3639,10 @@ static MachineInstr *FuseInst(MachineFunction &MF,
                               unsigned Opcode, unsigned OpNo,
                               const SmallVectorImpl<MachineOperand> &MOs,
                               MachineInstr *MI, const TargetInstrInfo &TII) {
+  // Omit the implicit operands, something BuildMI can't do.
   MachineInstr *NewMI = MF.CreateMachineInstr(TII.get(Opcode),
                                               MI->getDebugLoc(), true);
-  MachineInstrBuilder MIB(NewMI);
+  MachineInstrBuilder MIB(MF, NewMI);
 
   for (unsigned i = 0, e = MI->getNumOperands(); i != e; ++i) {
     MachineOperand &MO = MI->getOperand(i);
@@ -3840,7 +3890,7 @@ MachineInstr* X86InstrInfo::foldMemoryOperandImpl(MachineFunction &MF,
   // Unless optimizing for size, don't fold to avoid partial
   // register update stalls
   if (!MF.getFunction()->getFnAttributes().
-        hasAttribute(Attributes::OptimizeForSize) &&
+        hasAttribute(Attribute::OptimizeForSize) &&
       hasPartialRegUpdate(MI->getOpcode()))
     return 0;
 
@@ -3882,7 +3932,7 @@ MachineInstr* X86InstrInfo::foldMemoryOperandImpl(MachineFunction &MF,
   // Unless optimizing for size, don't fold to avoid partial
   // register update stalls
   if (!MF.getFunction()->getFnAttributes().
-        hasAttribute(Attributes::OptimizeForSize) &&
+        hasAttribute(Attribute::OptimizeForSize) &&
       hasPartialRegUpdate(MI->getOpcode()))
     return 0;
 
@@ -4132,7 +4182,7 @@ bool X86InstrInfo::unfoldMemoryOperand(MachineFunction &MF, MachineInstr *MI,
 
   // Emit the data processing instruction.
   MachineInstr *DataMI = MF.CreateMachineInstr(MCID, MI->getDebugLoc(), true);
-  MachineInstrBuilder MIB(DataMI);
+  MachineInstrBuilder MIB(MF, DataMI);
 
   if (FoldedStore)
     MIB.addReg(Reg, RegState::Define);

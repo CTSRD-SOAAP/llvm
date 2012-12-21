@@ -368,16 +368,6 @@ public:
     return false;
   }
 
-  /// isIntImmLegal - Returns true if the target can instruction select the
-  /// specified integer immediate natively (that is, it's materialized with one
-  /// instruction). The current *assumption* in isel is all of integer
-  /// immediates are "legal" and only the memcpy / memset expansion code is
-  /// making use of this. The rest of isel doesn't have proper cost model for
-  /// immediate materialization.
-  virtual bool isIntImmLegal(const APInt &/*Imm*/, EVT /*VT*/) const {
-    return true;
-  }
-
   /// isShuffleMaskLegal - Targets can use this to indicate that they only
   /// support *some* VECTOR_SHUFFLE operations, those with specific masks.
   /// By default, if a target supports the VECTOR_SHUFFLE node, all mask values
@@ -711,19 +701,29 @@ public:
   /// lowering. If DstAlign is zero that means it's safe to destination
   /// alignment can satisfy any constraint. Similarly if SrcAlign is zero it
   /// means there isn't a need to check it against alignment requirement,
-  /// probably because the source does not need to be loaded. If
-  /// 'IsZeroVal' is true, that means it's safe to return a
-  /// non-scalar-integer type, e.g. empty string source, constant, or loaded
-  /// from memory. 'MemcpyStrSrc' indicates whether the memcpy source is
-  /// constant so it does not need to be loaded.
+  /// probably because the source does not need to be loaded. If 'IsMemset' is
+  /// true, that means it's expanding a memset. If 'ZeroMemset' is true, that
+  /// means it's a memset of zero. 'MemcpyStrSrc' indicates whether the memcpy
+  /// source is constant so it does not need to be loaded.
   /// It returns EVT::Other if the type should be determined using generic
   /// target-independent logic.
   virtual EVT getOptimalMemOpType(uint64_t /*Size*/,
                                   unsigned /*DstAlign*/, unsigned /*SrcAlign*/,
-                                  bool /*IsZeroVal*/,
+                                  bool /*IsMemset*/,
+                                  bool /*ZeroMemset*/,
                                   bool /*MemcpyStrSrc*/,
                                   MachineFunction &/*MF*/) const {
     return MVT::Other;
+  }
+
+  /// isSafeMemOpType - Returns true if it's safe to use load / store of the
+  /// specified type to expand memcpy / memset inline. This is mostly true
+  /// for all types except for some special cases. For example, on X86
+  /// targets without SSE2 f64 load / store are done with fldl / fstpl which
+  /// also does type conversion. Note the specified type doesn't have to be
+  /// legal as the hook is used before type legalization.
+  virtual bool isSafeMemOpType(MVT VT) const {
+    return true;
   }
 
   /// usesUnderscoreSetJmp - Determine if we should use _setjmp or setjmp
@@ -1351,9 +1351,9 @@ public:
                      FunctionType *FTy, bool isTailCall, SDValue callee,
                      ArgListTy &args, SelectionDAG &dag, DebugLoc dl,
                      ImmutableCallSite &cs)
-    : Chain(chain), RetTy(retTy), RetSExt(cs.paramHasAttr(0, Attributes::SExt)),
-      RetZExt(cs.paramHasAttr(0, Attributes::ZExt)), IsVarArg(FTy->isVarArg()),
-      IsInReg(cs.paramHasAttr(0, Attributes::InReg)),
+    : Chain(chain), RetTy(retTy), RetSExt(cs.paramHasAttr(0, Attribute::SExt)),
+      RetZExt(cs.paramHasAttr(0, Attribute::ZExt)), IsVarArg(FTy->isVarArg()),
+      IsInReg(cs.paramHasAttr(0, Attribute::InReg)),
       DoesNotReturn(cs.doesNotReturn()),
       IsReturnValueUsed(!cs.getInstruction()->use_empty()),
       IsTailCall(isTailCall), NumFixedArgs(FTy->getNumParams()),
@@ -1446,9 +1446,9 @@ public:
   /// but this is not true all the time, e.g. i1 on x86-64. It is also not
   /// necessary for non-C calling conventions. The frontend should handle this
   /// and include all of the necessary information.
-  virtual EVT getTypeForExtArgOrReturn(LLVMContext &Context, EVT VT,
+  virtual MVT getTypeForExtArgOrReturn(MVT VT,
                                        ISD::NodeType /*ExtendKind*/) const {
-    EVT MinVT = getRegisterType(Context, MVT::i32);
+    MVT MinVT = getRegisterType(MVT::i32);
     return VT.bitsLT(MinVT) ? MinVT : VT;
   }
 
@@ -1555,7 +1555,7 @@ public:
     Value *CallOperandVal;
 
     /// ConstraintVT - The ValueType for the operand value.
-    EVT ConstraintVT;
+    MVT ConstraintVT;
 
     /// isMatchingInputConstraint - Return true of this is an input operand that
     /// is a matching constraint like "4".
@@ -2005,8 +2005,11 @@ public:
          && "Promote may not follow Expand or Promote");
 
       if (LA == TypeSplitVector)
-        NVT = MVT::getVectorVT(SVT.getVectorElementType(),
-                               SVT.getVectorNumElements() / 2);
+        return LegalizeKind(LA, EVT::getVectorVT(Context,
+                                                 SVT.getVectorElementType(),
+                                                 SVT.getVectorNumElements()/2));
+      if (LA == TypeScalarizeVector)
+        return LegalizeKind(LA, SVT.getVectorElementType());
       return LegalizeKind(LA, NVT);
     }
 
@@ -2203,7 +2206,7 @@ private:
 /// GetReturnInfo - Given an LLVM IR type and return type attributes,
 /// compute the return value EVTs and flags, and optionally also
 /// the offsets, if the return value is being lowered to memory.
-void GetReturnInfo(Type* ReturnType, Attributes attr,
+void GetReturnInfo(Type* ReturnType, Attribute attr,
                    SmallVectorImpl<ISD::OutputArg> &Outs,
                    const TargetLowering &TLI);
 
