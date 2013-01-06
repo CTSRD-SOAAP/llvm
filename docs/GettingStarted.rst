@@ -71,27 +71,24 @@ Here's the short story for getting up and running quickly with LLVM:
    * ``../llvm/configure [options]``
      Some common options:
 
-     * ``--prefix=directory`` ---
+     * ``--prefix=directory`` --- Specify for *directory* the full pathname of
+       where you want the LLVM tools and libraries to be installed (default
+       ``/usr/local``).
 
-       Specify for *directory* the full pathname of where you want the LLVM
-       tools and libraries to be installed (default ``/usr/local``).
+     * ``--enable-optimized`` --- Compile with optimizations enabled (default
+       is NO).
 
-     * ``--enable-optimized`` ---
-
-       Compile with optimizations enabled (default is NO).
-
-     * ``--enable-assertions`` ---
-
-       Compile with assertion checks enabled (default is YES).
+     * ``--enable-assertions`` --- Compile with assertion checks enabled
+       (default is YES).
 
    * ``make [-j]`` --- The ``-j`` specifies the number of jobs (commands) to run
      simultaneously.  This builds both LLVM and Clang for Debug+Asserts mode.
-     The --enabled-optimized configure option is used to specify a Release
+     The ``--enabled-optimized`` configure option is used to specify a Release
      build.
 
    * ``make check-all`` --- This run the regression tests to ensure everything
      is in working order.
-  
+
    * ``make update`` --- This command is used to update all the svn repositories
      at once, rather then having to ``cd`` into the individual repositories and
      running ``svn update``.
@@ -636,8 +633,21 @@ upstream git repo, run:
 
 This leaves your working directories on their master branches, so you'll need to
 ``checkout`` each working branch individually and ``rebase`` it on top of its
-parent branch.  (Note: This script is intended for relative newbies to git.  If
-you have more experience, you can likely improve on it.)
+parent branch.
+
+To commit back changes via git-svn, use ``dcommit``:
+
+.. code-block:: console
+
+  % git svn dcommit
+
+Note that git-svn will create one SVN commit for each Git commit you have pending,
+so squash and edit each commit before executing ``dcommit`` to make sure they all
+conform to the coding standards and the developers' policy.
+
+On success, ``dcommit`` will rebase against the HEAD of SVN, so to avoid conflict,
+please make sure your current branch is up-to-date (via fetch/rebase) before
+proceeding.
 
 The git-svn metadata can get out of sync after you mess around with branches and
 ``dcommit``. When that happens, ``git svn dcommit`` stops working, complaining
@@ -647,6 +657,8 @@ about files with uncommitted changes. The fix is to rebuild the metadata:
 
   % rm -rf .git/svn
   % git svn rebase -l
+
+Please, refer to the Git-SVN manual (``man git-svn``) for more information.
 
 Local LLVM Configuration
 ------------------------
@@ -664,14 +676,15 @@ configure the build system:
 | Variable   | Purpose                                                   |
 +============+===========================================================+
 | CC         | Tells ``configure`` which C compiler to use.  By default, |
-|            | ``configure`` will look for the first GCC C compiler in   |
-|            | ``PATH``.  Use this variable to override ``configure``\'s |
-|            | default behavior.                                         |
+|            | ``configure`` will check ``PATH`` for ``clang`` and GCC C |
+|            | compilers (in this order).  Use this variable to override |
+|            | ``configure``\'s  default behavior.                       |
 +------------+-----------------------------------------------------------+
 | CXX        | Tells ``configure`` which C++ compiler to use.  By        |
-|            | default, ``configure`` will look for the first GCC C++    |
-|            | compiler in ``PATH``.  Use this variable to override      |
-|            | ``configure``'s default behavior.                         |
+|            | default, ``configure`` will check ``PATH`` for            |
+|            | ``clang++`` and GCC C++ compilers (in this order).  Use   |
+|            | this variable to override  ``configure``'s default        |
+|            | behavior.                                                 |
 +------------+-----------------------------------------------------------+
 
 The following options can be used to set or enable LLVM specific options:

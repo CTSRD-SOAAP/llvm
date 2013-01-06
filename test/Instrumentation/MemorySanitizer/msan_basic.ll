@@ -56,7 +56,7 @@ entry:
 ; CHECK-ORIGINS: icmp
 ; CHECK-ORIGINS: br i1
 ; CHECK-ORIGINS: <label>
-; CHECK-ORIGINS-NOT: store {{.*}} align
+; CHECK-ORIGINS: store {{.*}} align 32
 ; CHECK-ORIGINS: br label
 ; CHECK-ORIGINS: <label>
 ; CHECK-ORIGINS: store {{.*}} align 32
@@ -251,6 +251,23 @@ entry:
 ; CHECK: ret i32
 
 
+; Check that we propagate origin for "select" with vector condition.
+; Select condition is flattened to i1, which is then used to select one of the
+; argument origins.
+
+define <8 x i16> @SelectVector(<8 x i16> %a, <8 x i16> %b, <8 x i1> %c) nounwind uwtable readnone {
+entry:
+  %cond = select <8 x i1> %c, <8 x i16> %a, <8 x i16> %b
+  ret <8 x i16> %cond
+}
+
+; CHECK-ORIGINS: @SelectVector
+; CHECK-ORIGINS: bitcast <8 x i1> {{.*}} to i8
+; CHECK-ORIGINS: icmp ne i8
+; CHECK-ORIGINS: select i1
+; CHECK-ORIGINS: ret <8 x i16>
+
+
 define i8* @IntToPtr(i64 %x) nounwind uwtable readnone {
 entry:
   %0 = inttoptr i64 %x to i8*
@@ -345,7 +362,8 @@ define zeroext i1 @ICmpSLE(i32 %x) nounwind uwtable readnone {
 ; CHECK: ret i1
 
 
-; Check that loads from shadow have the same aligment as the original loads.
+; Check that loads of shadow have the same aligment as the original loads.
+; Check that loads of origin have the aligment of max(4, original alignment).
 
 define i32 @ShadowLoadAlignmentLarge() nounwind uwtable {
   %y = alloca i32, align 64
@@ -368,6 +386,12 @@ define i32 @ShadowLoadAlignmentSmall() nounwind uwtable {
 ; CHECK: load i32* {{.*}} align 2
 ; CHECK: load volatile i32* {{.*}} align 2
 ; CHECK: ret i32
+
+; CHECK-ORIGINS: @ShadowLoadAlignmentSmall
+; CHECK-ORIGINS: load i32* {{.*}} align 2
+; CHECK-ORIGINS: load i32* {{.*}} align 4
+; CHECK-ORIGINS: load volatile i32* {{.*}} align 2
+; CHECK-ORIGINS: ret i32
 
 
 ; Test vector manipulation instructions.
@@ -495,3 +519,18 @@ declare <8 x i16> @llvm.x86.sse2.padds.w(<8 x i16> %a, <8 x i16> %b) nounwind
 ; CHECK-ORIGINS: call <8 x i16> @llvm.x86.sse2.padds.w
 ; CHECK-ORIGINS: store i32 {{.*}} @__msan_retval_origin_tls
 ; CHECK-ORIGINS: ret <8 x i16>
+
+
+; Test handling of vectors of pointers.
+; Check that shadow of such vector is a vector of integers.
+
+define <8 x i8*> @VectorOfPointers(<8 x i8*>* %p) nounwind uwtable {
+  %x = load <8 x i8*>* %p
+  ret <8 x i8*> %x
+}
+
+; CHECK: @VectorOfPointers
+; CHECK: load <8 x i64>*
+; CHECK: load <8 x i8*>*
+; CHECK: store <8 x i64> {{.*}} @__msan_retval_tls
+; CHECK: ret <8 x i8*>

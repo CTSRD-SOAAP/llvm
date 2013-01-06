@@ -163,30 +163,28 @@ class BranchBase<bits<6> op, dag outs, dag ins, string asmstr,
 // Format J instruction class in Mips : <|opcode|address|>
 //===----------------------------------------------------------------------===//
 
-class FJ<bits<6> op, dag outs, dag ins, string asmstr, list<dag> pattern,
-         InstrItinClass itin>: InstSE<outs, ins, asmstr, pattern, itin, FrmJ>
+class FJ<bits<6> op>
 {
-  bits<26> addr;
+  bits<26> target;
 
-  let Opcode = op;
+  bits<32> Inst;
 
-  let Inst{25-0} = addr;
+  let Inst{31-26} = op;
+  let Inst{25-0}  = target;
 }
 
- //===----------------------------------------------------------------------===//
+//===----------------------------------------------------------------------===//
 // MFC instruction class in Mips : <|op|mf|rt|rd|0000000|sel|>
 //===----------------------------------------------------------------------===//
-class MFC3OP<bits<6> op, bits<5> _mfmt, dag outs, dag ins, string asmstr>:
-  InstSE<outs, ins, asmstr, [], NoItinerary, FrmFR>
+class MFC3OP_FM<bits<6> op, bits<5> mfmt>
 {
-  bits<5> mfmt;
   bits<5> rt;
   bits<5> rd;
   bits<3> sel;
 
-  let Opcode = op;
-  let mfmt = _mfmt;
+  bits<32> Inst;
 
+  let Inst{31-26} = op;
   let Inst{25-21} = mfmt;
   let Inst{20-16} = rt;
   let Inst{15-11} = rd;
@@ -301,6 +299,166 @@ class SLTI_FM<bits<6> op> {
   let Inst{25-21} = rs;
   let Inst{20-16} = rt;
   let Inst{15-0}  = imm16;
+}
+
+class MFLO_FM<bits<6> funct> {
+  bits<5> rd;
+
+  bits<32> Inst;
+
+  let Inst{31-26} = 0;
+  let Inst{25-16} = 0;
+  let Inst{15-11} = rd;
+  let Inst{10-6}  = 0;
+  let Inst{5-0}   = funct;
+}
+
+class MTLO_FM<bits<6> funct> {
+  bits<5> rs;
+
+  bits<32> Inst;
+
+  let Inst{31-26} = 0;
+  let Inst{25-21} = rs;
+  let Inst{20-6}  = 0;
+  let Inst{5-0}   = funct;
+}
+
+class SEB_FM<bits<5> funct, bits<6> funct2> {
+  bits<5> rd;
+  bits<5> rt;
+
+  bits<32> Inst;
+
+  let Inst{31-26} = 0x1f;
+  let Inst{25-21} = 0;
+  let Inst{20-16} = rt;
+  let Inst{15-11} = rd;
+  let Inst{10-6}  = funct;
+  let Inst{5-0}   = funct2;
+}
+
+class CLO_FM<bits<6> funct> {
+  bits<5> rd;
+  bits<5> rs;
+  bits<5> rt;
+
+  bits<32> Inst;
+
+  let Inst{31-26} = 0x1c;
+  let Inst{25-21} = rs;
+  let Inst{20-16} = rt;
+  let Inst{15-11} = rd;
+  let Inst{10-6}  = 0;
+  let Inst{5-0}   = funct;
+  let rt = rd;
+}
+
+class LUI_FM {
+  bits<5> rt;
+  bits<16> imm16;
+
+  bits<32> Inst;
+
+  let Inst{31-26} = 0xf;
+  let Inst{25-21} = 0;
+  let Inst{20-16} = rt;
+  let Inst{15-0}  = imm16;
+}
+
+class NOP_FM {
+  bits<32> Inst;
+
+  let Inst{31-0} = 0;
+}
+
+class JALR_FM {
+  bits<5> rs;
+
+  bits<32> Inst;
+
+  let Inst{31-26} = 0;
+  let Inst{25-21} = rs;
+  let Inst{20-16} = 0;
+  let Inst{15-11} = 31;
+  let Inst{10-6}  = 0;
+  let Inst{5-0}   = 9;
+}
+
+class BAL_FM {
+  bits<16> offset;
+
+  bits<32> Inst;
+
+  let Inst{31-26} = 1;
+  let Inst{25-21} = 0;
+  let Inst{20-16} = 0x11;
+  let Inst{15-0}  = offset;
+}
+
+class BGEZAL_FM<bits<5> funct> {
+  bits<5>  rs;
+  bits<16> offset;
+
+  bits<32> Inst;
+
+  let Inst{31-26} = 1;
+  let Inst{25-21} = rs;
+  let Inst{20-16} = funct;
+  let Inst{15-0}  = offset;
+}
+
+class SYNC_FM {
+  bits<5> stype;
+
+  bits<32> Inst;
+
+  let Inst{31-26} = 0;
+  let Inst{10-6}  = stype;
+  let Inst{5-0}   = 0xf;
+}
+
+class MULT_FM<bits<6> op, bits<6> funct> {
+  bits<5>  rs;
+  bits<5>  rt;
+
+  bits<32> Inst;
+
+  let Inst{31-26} = op;
+  let Inst{25-21} = rs;
+  let Inst{20-16} = rt;
+  let Inst{15-6}  = 0;
+  let Inst{5-0}   = funct;
+}
+
+class EXT_FM<bits<6> funct> {
+  bits<5> rt;
+  bits<5> rs;
+  bits<5> pos;
+  bits<5> size;
+
+  bits<32> Inst;
+
+  let Inst{31-26} = 0x1f;
+  let Inst{25-21} = rs;
+  let Inst{20-16} = rt;
+  let Inst{15-11} = size;
+  let Inst{10-6}  = pos;
+  let Inst{5-0}   = funct;
+}
+
+class RDHWR_FM {
+  bits<5> rt;
+  bits<5> rd;
+
+  bits<32> Inst;
+
+  let Inst{31-26} = 0x1f;
+  let Inst{25-21} = 0;
+  let Inst{20-16} = rt;
+  let Inst{15-11} = rd;
+  let Inst{10-6}  = 0;
+  let Inst{5-0}   = 0x3b;
 }
 
 //===----------------------------------------------------------------------===//

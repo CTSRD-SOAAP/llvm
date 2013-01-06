@@ -52,8 +52,10 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Analysis/ScalarEvolution.h"
-#include "llvm/IRBuilder.h"
+#include "llvm/IR/IRBuilder.h"
 #include <algorithm>
+#include <map>
+
 using namespace llvm;
 
 /// We don't vectorize loops with a known constant trip count below this number.
@@ -66,12 +68,15 @@ const unsigned RuntimeMemoryCheckThreshold = 4;
 /// This is the highest vector width that we try to generate.
 const unsigned MaxVectorSize = 8;
 
+/// This is the highest Unroll Factor.
+const unsigned MaxUnrollSize = 4;
+
 namespace llvm {
 
 // Forward declarations.
 class LoopVectorizationLegality;
 class LoopVectorizationCostModel;
-class VectorTargetTransformInfo;
+class TargetTransformInfo;
 
 /// InnerLoopVectorizer vectorizes loops which contain only one basic
 /// block to a specified vectorization factor (VF).
@@ -91,9 +96,11 @@ class InnerLoopVectorizer {
 public:
   /// Ctor.
   InnerLoopVectorizer(Loop *Orig, ScalarEvolution *Se, LoopInfo *Li,
-                      DominatorTree *Dt, DataLayout *Dl, unsigned VecWidth):
+                      DominatorTree *Dt, DataLayout *Dl,
+                      unsigned VecWidth, unsigned UnrollFactor):
   OrigLoop(Orig), SE(Se), LI(Li), DT(Dt), DL(Dl), VF(VecWidth),
-  Builder(Se->getContext()), Induction(0), OldInduction(0) { }
+  UF(UnrollFactor), Builder(Se->getContext()), Induction(0), OldInduction(0),
+  WidenMap(UnrollFactor) { }
 
   // Perform the actual loop widening (vectorization).
   void vectorize(LoopVectorizationLegality *Legal) {
@@ -109,6 +116,10 @@ public:
 private:
   /// A small list of PHINodes.
   typedef SmallVector<PHINode*, 4> PhiVector;
+  /// When we unroll loops we have multiple vector values for each scalar.
+  /// This data structure holds the unrolled and vectorized values that
+  /// originated from one scalar instruction.
+  typedef SmallVector<Value*, 2> VectorParts;
 
   /// Add code that checks at runtime if the accessed arrays overlap.
   /// Returns the comparator value or NULL if no check is needed.
@@ -122,10 +133,10 @@ private:
   /// A helper function that computes the predicate of the block BB, assuming
   /// that the header block of the loop is set to True. It returns the *entry*
   /// mask for the block BB.
-  Value *createBlockInMask(BasicBlock *BB);
+  VectorParts createBlockInMask(BasicBlock *BB);
   /// A helper function that computes the predicate of the edge between SRC
   /// and DST.
-  Value *createEdgeMask(BasicBlock *Src, BasicBlock *Dst);
+  VectorParts createEdgeMask(BasicBlock *Src, BasicBlock *Dst);
 
   /// A helper function to vectorize a single BB within the innermost loop.
   void vectorizeBlockInLoop(LoopVectorizationLegality *Legal, BasicBlock *BB,
@@ -148,35 +159,78 @@ private:
 
   /// This function adds 0, 1, 2 ... to each vector element, starting at zero.
   /// If Negate is set then negative numbers are added e.g. (0, -1, -2, ...).
-  Value *getConsecutiveVector(Value* Val, bool Negate = false);
+  /// The sequence starts at StartIndex.
+  Value *getConsecutiveVector(Value* Val, unsigned StartIdx, bool Negate);
 
   /// When we go over instructions in the basic block we rely on previous
   /// values within the current basic block or on loop invariant values.
   /// When we widen (vectorize) values we place them in the map. If the values
   /// are not within the map, they have to be loop invariant, so we simply
   /// broadcast them into a vector.
-  Value *getVectorValue(Value *V);
+  VectorParts &getVectorValue(Value *V);
 
   /// Get a uniform vector of constant integers. We use this to get
   /// vectors of ones and zeros for the reduction code.
   Constant* getUniformVector(unsigned Val, Type* ScalarTy);
 
-  typedef DenseMap<Value*, Value*> ValueMap;
+  /// Generate a shuffle sequence that will reverse the vector Vec.
+  Value *reverseVector(Value *Vec);
+
+  /// This is a helper class that holds the vectorizer state. It maps scalar
+  /// instructions to vector instructions. When the code is 'unrolled' then
+  /// then a single scalar value is mapped to multiple vector parts. The parts
+  /// are stored in the VectorPart type.
+  struct ValueMap {
+    /// C'tor.  UnrollFactor controls the number of vectors ('parts') that
+    /// are mapped.
+    ValueMap(unsigned UnrollFactor) : UF(UnrollFactor) {}
+
+    /// \return True if 'Key' is saved in the Value Map.
+    bool has(Value *Key) { return MapStoreage.count(Key); }
+
+    /// Initializes a new entry in the map. Sets all of the vector parts to the
+    /// save value in 'Val'.
+    /// \return A reference to a vector with splat values.
+    VectorParts &splat(Value *Key, Value *Val) {
+        MapStoreage[Key].clear();
+        MapStoreage[Key].append(UF, Val);
+        return MapStoreage[Key];
+    }
+
+    ///\return A reference to the value that is stored at 'Key'.
+    VectorParts &get(Value *Key) {
+      if (!has(Key))
+        MapStoreage[Key].resize(UF);
+      return MapStoreage[Key];
+    }
+
+    /// The unroll factor. Each entry in the map stores this number of vector
+    /// elements.
+    unsigned UF;
+
+    /// Map storage. We use std::map and not DenseMap because insertions to a
+    /// dense map invalidates its iterators.
+    std::map<Value*, VectorParts> MapStoreage;
+  };
 
   /// The original loop.
   Loop *OrigLoop;
-  // Scev analysis to use.
+  /// Scev analysis to use.
   ScalarEvolution *SE;
-  // Loop Info.
+  /// Loop Info.
   LoopInfo *LI;
-  // Dominator Tree.
+  /// Dominator Tree.
   DominatorTree *DT;
-  // Data Layout.
+  /// Data Layout.
   DataLayout *DL;
-  // The vectorization factor to use.
+  /// The vectorization SIMD factor to use. Each vector will have this many
+  /// vector elements.
   unsigned VF;
+  /// The vectorization unroll factor to use. Each scalar is vectorized to this
+  /// many different vector instructions.
+  unsigned UF;
 
-  // The builder that we use
+  /// The builder that we use
   IRBuilder<> Builder;
 
   // --- Vectorization state ---
@@ -200,7 +254,7 @@ private:
   PHINode *Induction;
   /// The induction variable of the old basic block.
   PHINode *OldInduction;
-  // Maps scalars to widened vectors.
+  /// Maps scalars to widened vectors.
   ValueMap WidenMap;
 };
 
@@ -331,7 +385,11 @@ public:
   /// when the last index of the GEP is the induction variable, or that the
   /// pointer itself is an induction variable.
   /// This check allows us to vectorize A[idx] into a wide load/store.
-  bool isConsecutivePtr(Value *Ptr);
+  /// Returns:
+  /// 0 - Stride is unknown or non consecutive.
+  /// 1 - Address is consecutive.
+  /// -1 - Address is consecutive, and decreasing.
+  int isConsecutivePtr(Value *Ptr);
 
   /// Returns true if the value V is uniform within the loop.
   bool isUniform(Value *V);
@@ -410,24 +468,44 @@ private:
 
 /// LoopVectorizationCostModel - estimates the expected speedups due to
 /// vectorization.
-/// In many cases vectorization is not profitable. This can happen because
-/// of a number of reasons. In this class we mainly attempt to predict
-/// the expected speedup/slowdowns due to the supported instruction set.
-/// We use the VectorTargetTransformInfo to query the different backends
-/// for the cost of different operations.
+/// In many cases vectorization is not profitable. This can happen because of
+/// a number of reasons. In this class we mainly attempt to predict the
+/// expected speedup/slowdowns due to the supported instruction set. We use the
+/// TargetTransformInfo to query the different backends for the cost of
+/// different operations.
 class LoopVectorizationCostModel {
 public:
   /// C'tor.
-  LoopVectorizationCostModel(Loop *Lp, ScalarEvolution *Se,
+  LoopVectorizationCostModel(Loop *Lp, ScalarEvolution *Se, LoopInfo *Li,
                              LoopVectorizationLegality *Leg,
-                             const VectorTargetTransformInfo *Vtti):
-  TheLoop(Lp), SE(Se), Legal(Leg), VTTI(Vtti) { }
+                             const TargetTransformInfo *Tti):
+  TheLoop(Lp), SE(Se), LI(Li), Legal(Leg), TTI(Tti) { }
 
-  /// Returns the most profitable vectorization factor in powers of two.
+  /// \return The most profitable vectorization factor.
   /// This method checks every power of two up to VF. If UserVF is not ZERO
   /// then this vectorization factor will be selected if vectorization is
   /// possible.
   unsigned selectVectorizationFactor(bool OptForSize, unsigned UserVF);
+
+
+  /// \return The most profitable unroll factor.
+  /// If UserUF is non-zero then this method finds the best unroll-factor
+  /// based on register pressure and other parameters.
+  unsigned selectUnrollFactor(bool OptForSize, unsigned UserUF);
+
+  /// \brief A struct that represents some properties of the register usage
+  /// of a loop.
+  struct RegisterUsage {
+    /// Holds the number of loop invariant values that are used in the loop.
+    unsigned LoopInvariantRegs;
+    /// Holds the maximum number of concurrent live intervals in the loop.
+    unsigned MaxLocalUsers;
+    /// Holds the number of instructions in the loop.
+    unsigned NumInstructions;
+  };
+
+  /// \return  information about the register usage of the loop.
+  RegisterUsage calculateRegisterUsage();
 
 private:
   /// Returns the expected execution cost. The unit of the cost does
@@ -449,11 +527,12 @@ private:
   Loop *TheLoop;
   /// Scev analysis.
   ScalarEvolution *SE;
-
+  /// Loop Info analysis.
+  LoopInfo *LI;
   /// Vectorization legality.
   LoopVectorizationLegality *Legal;
   /// Vector target information.
-  const VectorTargetTransformInfo *VTTI;
+  const TargetTransformInfo *TTI;
 };
 
 }// namespace llvm

@@ -338,7 +338,7 @@ class R600_TEX <bits<11> inst, string opName, list<dag> pattern,
 def TEX_SHADOW : PatLeaf<
   (imm),
   [{uint32_t TType = (uint32_t)N->getZExtValue();
-    return (TType >= 6 && TType <= 8) || TType == 11 || TType == 12;
+    return (TType >= 6 && TType <= 8) || (TType >= 11 && TType <= 13);
   }]
 >;
 
@@ -674,7 +674,7 @@ def ADD_INT : R600_2OP_Helper <0x34, "ADD_INT", add>;
 def SUB_INT : R600_2OP_Helper <0x35, "SUB_INT", sub>;
 def MAX_INT : R600_2OP_Helper <0x36, "MAX_INT", AMDGPUsmax>;
 def MIN_INT : R600_2OP_Helper <0x37, "MIN_INT", AMDGPUsmin>;
-def MAX_UINT : R600_2OP_Helper <0x38, "MAX_UINT", AMDGPUsmax>;
+def MAX_UINT : R600_2OP_Helper <0x38, "MAX_UINT", AMDGPUumax>;
 def MIN_UINT : R600_2OP_Helper <0x39, "MIN_UINT", AMDGPUumin>;
 
 def SETE_INT : R600_2OP <

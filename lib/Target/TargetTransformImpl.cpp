@@ -27,8 +27,14 @@ bool ScalarTargetTransformImpl::isLegalICmpImmediate(int64_t imm) const {
   return TLI->isLegalICmpImmediate(imm);
 }
 
-bool ScalarTargetTransformImpl::isLegalAddressingMode(const AddrMode &AM,
-                                                      Type *Ty) const {
+bool ScalarTargetTransformImpl::isLegalAddressingMode(Type *Ty, GlobalValue *BaseGV,
+                                     int64_t BaseOffset, bool HasBaseReg,
+                                     int64_t Scale) const {
+  AddrMode AM;
+  AM.BaseGV = BaseGV;
+  AM.BaseOffs = BaseOffset;
+  AM.HasBaseReg = HasBaseReg;
+  AM.Scale = Scale;
   return TLI->isLegalAddressingMode(AM, Ty);
 }
 
@@ -64,7 +70,7 @@ int VectorTargetTransformImpl::InstructionOpcodeToISD(unsigned Opcode) const {
   enum InstructionOpcodes {
 #define HANDLE_INST(NUM, OPCODE, CLASS) OPCODE = NUM,
 #define LAST_OTHER_INST(NUM) InstructionOpcodesCount = NUM
-#include "llvm/Instruction.def"
+#include "llvm/IR/Instruction.def"
   };
   switch (static_cast<InstructionOpcodes>(Opcode)) {
   case Ret:            return 0;
@@ -132,7 +138,6 @@ int VectorTargetTransformImpl::InstructionOpcodeToISD(unsigned Opcode) const {
 
 std::pair<unsigned, MVT>
 VectorTargetTransformImpl::getTypeLegalizationCost(Type *Ty) const {
-
   LLVMContext &C = Ty->getContext();
   EVT MTy = TLI->getValueType(Ty);
 
@@ -172,6 +177,10 @@ VectorTargetTransformImpl::getScalarizationOverhead(Type *Ty,
   return Cost;
 }
 
+unsigned VectorTargetTransformImpl::getNumberOfRegisters(bool Vector) const {
+  return 1;
+}
+
 unsigned VectorTargetTransformImpl::getArithmeticInstrCost(unsigned Opcode,
                                                            Type *Ty) const {
   // Check if any of the operands are vector operands.
@@ -180,10 +189,20 @@ unsigned VectorTargetTransformImpl::getArithmeticInstrCost(unsigned Opcode,
 
   std::pair<unsigned, MVT> LT = getTypeLegalizationCost(Ty);
 
-  if (!TLI->isOperationExpand(ISD, LT.second)) {
-    // The operation is legal. Assume it costs 1. Multiply
-    // by the type-legalization overhead.
+  if (TLI->isOperationLegalOrPromote(ISD, LT.second)) {
+    // The operation is legal. Assume it costs 1.
+    // If the type is split to multiple registers, assume that thre is some
+    // overhead to this.
+    // TODO: Once we have extract/insert subvector cost we need to use them.
+    if (LT.first > 1)
+      return LT.first * 2;
     return LT.first * 1;
+  }
+
+  if (!TLI->isOperationExpand(ISD, LT.second)) {
+    // If the operation is custom lowered then assume
+    // thare the code is twice as expensive.
+    return LT.first * 2;
   }
 
   // Else, assume that we need to scalarize this op.
@@ -199,7 +218,8 @@ unsigned VectorTargetTransformImpl::getArithmeticInstrCost(unsigned Opcode,
   return 1;
 }
 
-unsigned VectorTargetTransformImpl::getBroadcastCost(Type *Tp) const {
+unsigned VectorTargetTransformImpl::getShuffleCost(ShuffleKind Kind,
+                                  Type *Tp, int Index, Type *SubTp) const {
   return 1;
 }
 
@@ -271,7 +291,7 @@ unsigned VectorTargetTransformImpl::getCastInstrCost(unsigned Opcode, Type *Dst,
     return getScalarizationOverhead(Dst, true, true) + Num * Cost;
   }
 
-  // We already handled vector-to-vector and scalar-to-scalar conversions. This 
+  // We already handled vector-to-vector and scalar-to-scalar conversions. This
   // is where we handle bitcast between vectors and scalars. We need to assume
   //  that the conversion is scalarized in one way or another.
   if (Opcode == Instruction::BitCast)
@@ -283,6 +303,7 @@ unsigned VectorTargetTransformImpl::getCastInstrCost(unsigned Opcode, Type *Dst,
  }
 
 unsigned VectorTargetTransformImpl::getCFInstrCost(unsigned Opcode) const {
+  // Branches are assumed to be predicted.
   return 0;
 }
 
@@ -327,12 +348,6 @@ unsigned VectorTargetTransformImpl::getCmpSelInstrCost(unsigned Opcode,
 unsigned VectorTargetTransformImpl::getVectorInstrCost(unsigned Opcode,
                                                        Type *Val,
                                                        unsigned Index) const {
-  return 1;
-}
-
-unsigned
-VectorTargetTransformImpl::getInstrCost(unsigned Opcode, Type *Ty1,
-                                        Type *Ty2) const {
   return 1;
 }
 

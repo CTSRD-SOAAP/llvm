@@ -24,11 +24,12 @@
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/AddressingMode.h"
-#include "llvm/Attributes.h"
-#include "llvm/CallingConv.h"
+#include "llvm/CodeGen/DAGCombine.h"
 #include "llvm/CodeGen/RuntimeLibcalls.h"
 #include "llvm/CodeGen/SelectionDAGNodes.h"
-#include "llvm/InlineAsm.h"
+#include "llvm/IR/Attributes.h"
+#include "llvm/IR/CallingConv.h"
+#include "llvm/IR/InlineAsm.h"
 #include "llvm/Support/CallSite.h"
 #include "llvm/Support/DebugLoc.h"
 #include "llvm/Target/TargetCallingConv.h"
@@ -67,7 +68,6 @@ namespace llvm {
       VLIW              // Scheduling for VLIW targets.
     };
   }
-
 
 //===----------------------------------------------------------------------===//
 /// TargetLowering - This class defines information used to lower LLVM code to
@@ -411,6 +411,15 @@ public:
     return (VT == MVT::Other || isTypeLegal(VT)) &&
       (getOperationAction(Op, VT) == Legal ||
        getOperationAction(Op, VT) == Custom);
+  }
+
+  /// isOperationLegalOrPromote - Return true if the specified operation is
+  /// legal on this target or can be made legal using promotion. This
+  /// is used to help guide high-level lowering decisions.
+  bool isOperationLegalOrPromote(unsigned Op, EVT VT) const {
+    return (VT == MVT::Other || isTypeLegal(VT)) &&
+      (getOperationAction(Op, VT) == Legal ||
+       getOperationAction(Op, VT) == Promote);
   }
 
   /// isOperationExpand - Return true if the specified operation is illegal on
@@ -955,18 +964,20 @@ public:
 
   struct DAGCombinerInfo {
     void *DC;  // The DAG Combiner object.
-    bool BeforeLegalize;
-    bool BeforeLegalizeOps;
+    CombineLevel Level;
     bool CalledByLegalizer;
   public:
     SelectionDAG &DAG;
 
-    DAGCombinerInfo(SelectionDAG &dag, bool bl, bool blo, bool cl, void *dc)
-      : DC(dc), BeforeLegalize(bl), BeforeLegalizeOps(blo),
-        CalledByLegalizer(cl), DAG(dag) {}
+    DAGCombinerInfo(SelectionDAG &dag, CombineLevel level,  bool cl, void *dc)
+      : DC(dc), Level(level), CalledByLegalizer(cl), DAG(dag) {}
 
-    bool isBeforeLegalize() const { return BeforeLegalize; }
-    bool isBeforeLegalizeOps() const { return BeforeLegalizeOps; }
+    bool isBeforeLegalize() const { return Level == BeforeLegalizeTypes; }
+    bool isBeforeLegalizeOps() const { return Level < AfterLegalizeVectorOps; }
+    bool isAfterLegalizeVectorOps() const {
+      return Level == AfterLegalizeDAG;
+    }
+    CombineLevel getDAGCombineLevel() { return Level; }
     bool isCalledByLegalizer() const { return CalledByLegalizer; }
 
     void AddToWorklist(SDNode *N);
@@ -2206,7 +2217,7 @@ private:
 /// GetReturnInfo - Given an LLVM IR type and return type attributes,
 /// compute the return value EVTs and flags, and optionally also
 /// the offsets, if the return value is being lowered to memory.
-void GetReturnInfo(Type* ReturnType, Attribute attr,
+void GetReturnInfo(Type* ReturnType, AttributeSet attr,
                    SmallVectorImpl<ISD::OutputArg> &Outs,
                    const TargetLowering &TLI);
 

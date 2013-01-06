@@ -16,11 +16,11 @@
 #include "R600Defines.h"
 #include "R600InstrInfo.h"
 #include "R600MachineFunctionInfo.h"
-#include "llvm/Argument.h"
-#include "llvm/Function.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/SelectionDAG.h"
+#include "llvm/IR/Argument.h"
+#include "llvm/IR/Function.h"
 
 using namespace llvm;
 
@@ -41,6 +41,10 @@ R600TargetLowering::R600TargetLowering(TargetMachine &TM) :
 
   setOperationAction(ISD::ADD,  MVT::v4i32, Expand);
   setOperationAction(ISD::AND,  MVT::v4i32, Expand);
+  setOperationAction(ISD::FP_TO_SINT, MVT::v4i32, Expand);
+  setOperationAction(ISD::FP_TO_UINT, MVT::v4i32, Expand);
+  setOperationAction(ISD::SINT_TO_FP, MVT::v4i32, Expand);
+  setOperationAction(ISD::UINT_TO_FP, MVT::v4i32, Expand);
   setOperationAction(ISD::UDIV, MVT::v4i32, Expand);
   setOperationAction(ISD::UREM, MVT::v4i32, Expand);
   setOperationAction(ISD::SETCC, MVT::v4i32, Expand);

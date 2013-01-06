@@ -30,15 +30,16 @@
 #include "llvm/Analysis/ScalarEvolution.h"
 #include "llvm/Analysis/ScalarEvolutionExpressions.h"
 #include "llvm/Analysis/ValueTracking.h"
-#include "llvm/Constants.h"
-#include "llvm/DataLayout.h"
-#include "llvm/DerivedTypes.h"
-#include "llvm/Function.h"
-#include "llvm/Instructions.h"
-#include "llvm/IntrinsicInst.h"
-#include "llvm/Intrinsics.h"
-#include "llvm/LLVMContext.h"
-#include "llvm/Metadata.h"
+#include "llvm/IR/Constants.h"
+#include "llvm/IR/DataLayout.h"
+#include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/Function.h"
+#include "llvm/IR/Instructions.h"
+#include "llvm/IR/IntrinsicInst.h"
+#include "llvm/IR/Intrinsics.h"
+#include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/Metadata.h"
+#include "llvm/IR/Type.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
@@ -46,7 +47,6 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/TargetTransformInfo.h"
 #include "llvm/Transforms/Utils/Local.h"
-#include "llvm/Type.h"
 #include <algorithm>
 #include <map>
 using namespace llvm;
@@ -201,7 +201,6 @@ namespace {
       TD = P->getAnalysisIfAvailable<DataLayout>();
       TTI = IgnoreTargetInfo ? 0 :
         P->getAnalysisIfAvailable<TargetTransformInfo>();
-      VTTI = TTI ? TTI->getVectorTargetTransformInfo() : 0;
     }
 
     typedef std::pair<Value *, Value *> ValuePair;
@@ -219,8 +218,7 @@ namespace {
     DominatorTree *DT;
     ScalarEvolution *SE;
     DataLayout *TD;
-    TargetTransformInfo *TTI;
-    const VectorTargetTransformInfo *VTTI;
+    const TargetTransformInfo *TTI;
 
     // FIXME: const correct?
 
@@ -387,7 +385,7 @@ namespace {
         return false;
       }
 
-      DEBUG(if (VTTI) dbgs() << "BBV: using target information\n");
+      DEBUG(if (TTI) dbgs() << "BBV: using target information\n");
 
       bool changed = false;
       // Iterate a sufficient number of times to merge types of size 1 bit,
@@ -395,7 +393,7 @@ namespace {
       // target vector register.
       unsigned n = 1;
       for (unsigned v = 2;
-           (VTTI || v <= Config.VectorBits) &&
+           (TTI || v <= Config.VectorBits) &&
            (!Config.MaxIter || n <= Config.MaxIter);
            v *= 2, ++n) {
         DEBUG(dbgs() << "BBV: fusing loop #" << n <<
@@ -428,7 +426,6 @@ namespace {
       TD = getAnalysisIfAvailable<DataLayout>();
       TTI = IgnoreTargetInfo ? 0 :
         getAnalysisIfAvailable<TargetTransformInfo>();
-      VTTI = TTI ? TTI->getVectorTargetTransformInfo() : 0;
 
       return vectorizeBB(BB);
     }
@@ -520,7 +517,7 @@ namespace {
       return 1;
     }
 
-    // Returns the cost of the provided instruction using VTTI.
+    // Returns the cost of the provided instruction using TTI.
     // This does not handle loads and stores.
     unsigned getInstrCost(unsigned Opcode, Type *T1, Type *T2) {
       switch (Opcode) {
@@ -531,7 +528,7 @@ namespace {
         // generate vector GEPs.
         return 0;
       case Instruction::Br:
-        return VTTI->getCFInstrCost(Opcode);
+        return TTI->getCFInstrCost(Opcode);
       case Instruction::PHI:
         return 0;
       case Instruction::Add:
@@ -552,11 +549,11 @@ namespace {
       case Instruction::And:
       case Instruction::Or:
       case Instruction::Xor:
-        return VTTI->getArithmeticInstrCost(Opcode, T1);
+        return TTI->getArithmeticInstrCost(Opcode, T1);
       case Instruction::Select:
       case Instruction::ICmp:
       case Instruction::FCmp:
-        return VTTI->getCmpSelInstrCost(Opcode, T1, T2);
+        return TTI->getCmpSelInstrCost(Opcode, T1, T2);
       case Instruction::ZExt:
       case Instruction::SExt:
       case Instruction::FPToUI:
@@ -570,7 +567,7 @@ namespace {
       case Instruction::FPTrunc:
       case Instruction::BitCast:
       case Instruction::ShuffleVector:
-        return VTTI->getCastInstrCost(Opcode, T1, T2);
+        return TTI->getCastInstrCost(Opcode, T1, T2);
       }
 
       return 1;
@@ -642,7 +639,7 @@ namespace {
       Function *F = I->getCalledFunction();
       if (!F) return false;
 
-      unsigned IID = F->getIntrinsicID();
+      Intrinsic::ID IID = (Intrinsic::ID) F->getIntrinsicID();
       if (!IID) return false;
 
       switch(IID) {
@@ -660,6 +657,7 @@ namespace {
       case Intrinsic::pow:
         return Config.VectorizeMath;
       case Intrinsic::fma:
+      case Intrinsic::fmuladd:
         return Config.VectorizeFMA;
       }
     }
@@ -903,8 +901,8 @@ namespace {
          T2->getScalarType()->isPointerTy()))
       return false;
 
-    if (!VTTI && (T1->getPrimitiveSizeInBits() >= Config.VectorBits ||
-                  T2->getPrimitiveSizeInBits() >= Config.VectorBits))
+    if (!TTI && (T1->getPrimitiveSizeInBits() >= Config.VectorBits ||
+                 T2->getPrimitiveSizeInBits() >= Config.VectorBits))
       return false;
 
     return true;
@@ -935,7 +933,7 @@ namespace {
     unsigned MaxTypeBits = std::max(
       IT1->getPrimitiveSizeInBits() + JT1->getPrimitiveSizeInBits(),
       IT2->getPrimitiveSizeInBits() + JT2->getPrimitiveSizeInBits());
-    if (!VTTI && MaxTypeBits > Config.VectorBits)
+    if (!TTI && MaxTypeBits > Config.VectorBits)
       return false;
 
     // FIXME: handle addsub-type operations!
@@ -967,21 +965,21 @@ namespace {
             return false;
         }
 
-        if (VTTI) {
-          unsigned ICost = VTTI->getMemoryOpCost(I->getOpcode(), aTypeI,
-                                                 IAlignment, IAddressSpace);
-          unsigned JCost = VTTI->getMemoryOpCost(J->getOpcode(), aTypeJ,
-                                                 JAlignment, JAddressSpace);
-          unsigned VCost = VTTI->getMemoryOpCost(I->getOpcode(), VType,
-                                                 BottomAlignment,
-                                                 IAddressSpace);
+        if (TTI) {
+          unsigned ICost = TTI->getMemoryOpCost(I->getOpcode(), aTypeI,
+                                                IAlignment, IAddressSpace);
+          unsigned JCost = TTI->getMemoryOpCost(J->getOpcode(), aTypeJ,
+                                                JAlignment, JAddressSpace);
+          unsigned VCost = TTI->getMemoryOpCost(I->getOpcode(), VType,
+                                                BottomAlignment,
+                                                IAddressSpace);
           if (VCost > ICost + JCost)
             return false;
 
           // We don't want to fuse to a type that will be split, even
           // if the two input types will also be split and there is no other
           // associated cost.
-          unsigned VParts = VTTI->getNumberOfParts(VType);
+          unsigned VParts = TTI->getNumberOfParts(VType);
           if (VParts > 1)
             return false;
           else if (!VParts && VCost == ICost + JCost)
@@ -992,7 +990,7 @@ namespace {
       } else {
         return false;
       }
-    } else if (VTTI) {
+    } else if (TTI) {
       unsigned ICost = getInstrCost(I->getOpcode(), IT1, IT2);
       unsigned JCost = getInstrCost(J->getOpcode(), JT1, JT2);
       Type *VT1 = getVecTypeForPair(IT1, JT1),
@@ -1005,8 +1003,8 @@ namespace {
       // We don't want to fuse to a type that will be split, even
       // if the two input types will also be split and there is no other
       // associated cost.
-      unsigned VParts1 = VTTI->getNumberOfParts(VT1),
-               VParts2 = VTTI->getNumberOfParts(VT2);
+      unsigned VParts1 = TTI->getNumberOfParts(VT1),
+               VParts2 = TTI->getNumberOfParts(VT2);
       if (VParts1 > 1 || VParts2 > 1)
         return false;
       else if ((!VParts1 || !VParts2) && VCost == ICost + JCost)
@@ -1019,14 +1017,67 @@ namespace {
     // vectorized, the second arguments must be equal.
     CallInst *CI = dyn_cast<CallInst>(I);
     Function *FI;
-    if (CI && (FI = CI->getCalledFunction()) &&
-        FI->getIntrinsicID() == Intrinsic::powi) {
+    if (CI && (FI = CI->getCalledFunction())) {
+      Intrinsic::ID IID = (Intrinsic::ID) FI->getIntrinsicID();
+      if (IID == Intrinsic::powi) {
+        Value *A1I = CI->getArgOperand(1),
+              *A1J = cast<CallInst>(J)->getArgOperand(1);
+        const SCEV *A1ISCEV = SE->getSCEV(A1I),
+                   *A1JSCEV = SE->getSCEV(A1J);
+        return (A1ISCEV == A1JSCEV);
+      }
 
-      Value *A1I = CI->getArgOperand(1),
-            *A1J = cast<CallInst>(J)->getArgOperand(1);
-      const SCEV *A1ISCEV = SE->getSCEV(A1I),
-                 *A1JSCEV = SE->getSCEV(A1J);
-      return (A1ISCEV == A1JSCEV);
+      if (IID && TTI) {
+        SmallVector<Type*, 4> Tys;
+        for (unsigned i = 0, ie = CI->getNumArgOperands(); i != ie; ++i)
+          Tys.push_back(CI->getArgOperand(i)->getType());
+        unsigned ICost = TTI->getIntrinsicInstrCost(IID, IT1, Tys);
+
+        Tys.clear();
+        CallInst *CJ = cast<CallInst>(J);
+        for (unsigned i = 0, ie = CJ->getNumArgOperands(); i != ie; ++i)
+          Tys.push_back(CJ->getArgOperand(i)->getType());
+        unsigned JCost = TTI->getIntrinsicInstrCost(IID, JT1, Tys);
+
+        Tys.clear();
+        assert(CI->getNumArgOperands() == CJ->getNumArgOperands() &&
+               "Intrinsic argument counts differ");
+        for (unsigned i = 0, ie = CI->getNumArgOperands(); i != ie; ++i) {
+          if (IID == Intrinsic::powi && i == 1)
+            Tys.push_back(CI->getArgOperand(i)->getType());
+          else
+            Tys.push_back(getVecTypeForPair(CI->getArgOperand(i)->getType(),
+                                            CJ->getArgOperand(i)->getType()));
+        }
+
+        Type *RetTy = getVecTypeForPair(IT1, JT1);
+        unsigned VCost = TTI->getIntrinsicInstrCost(IID, RetTy, Tys);
+
+        if (VCost > ICost + JCost)
+          return false;
+
+        // We don't want to fuse to a type that will be split, even
+        // if the two input types will also be split and there is no other
+        // associated cost.
+        unsigned RetParts = TTI->getNumberOfParts(RetTy);
+        if (RetParts > 1)
+          return false;
+        else if (!RetParts && VCost == ICost + JCost)
+          return false;
+
+        for (unsigned i = 0, ie = CI->getNumArgOperands(); i != ie; ++i) {
+          if (!Tys[i]->isVectorTy())
+            continue;
+
+          unsigned NumParts = TTI->getNumberOfParts(Tys[i]);
+          if (NumParts > 1)
+            return false;
+          else if (!NumParts && VCost == ICost + JCost)
+            return false;
+        }
+
+        CostSavings = ICost + JCost - VCost;
+      }
     }
 
     return true;
@@ -1144,7 +1195,7 @@ namespace {
         }
 
         CandidatePairs.insert(ValuePair(I, J));
-        if (VTTI)
+        if (TTI)
           CandidatePairCostSavings.insert(ValuePairWithCost(ValuePair(I, J),
                                                             CostSavings));
 
@@ -1691,7 +1742,7 @@ namespace {
                    PrunedTree, *J, UseCycleCheck);
 
       int EffSize = 0;
-      if (VTTI) {
+      if (TTI) {
         DenseSet<Value *> PrunedTreeInstrs;
         for (DenseSet<ValuePair>::iterator S = PrunedTree.begin(),
              E = PrunedTree.end(); S != E; ++S) {
@@ -1808,7 +1859,7 @@ namespace {
                 ESContrib = (int) getInstrCost(Instruction::ShuffleVector,
                                                Ty1, VTy);
               else
-                ESContrib = (int) VTTI->getVectorInstrCost(
+                ESContrib = (int) TTI->getVectorInstrCost(
                                     Instruction::ExtractElement, VTy, 0);
 
               DEBUG(if (DebugPairSelection) dbgs() << "\tcost {" <<
@@ -1838,7 +1889,7 @@ namespace {
                 ESContrib = (int) getInstrCost(Instruction::ShuffleVector,
                                                Ty2, VTy);
               else
-                ESContrib = (int) VTTI->getVectorInstrCost(
+                ESContrib = (int) TTI->getVectorInstrCost(
                                     Instruction::ExtractElement, VTy, 1);
               DEBUG(if (DebugPairSelection) dbgs() << "\tcost {" <<
                 *S->second << "} = " << ESContrib << "\n");
@@ -1914,21 +1965,21 @@ namespace {
                 ESContrib = (int) getInstrCost(Instruction::ShuffleVector,
                                                VTy, VTy);
               } else if (!Ty1->isVectorTy() && !Ty2->isVectorTy()) {
-                ESContrib = (int) VTTI->getVectorInstrCost(
+                ESContrib = (int) TTI->getVectorInstrCost(
                                     Instruction::InsertElement, VTy, 0);
-                ESContrib += (int) VTTI->getVectorInstrCost(
+                ESContrib += (int) TTI->getVectorInstrCost(
                                      Instruction::InsertElement, VTy, 1);
               } else if (!Ty1->isVectorTy()) {
                 // O1 needs to be inserted into a vector of size O2, and then
                 // both need to be shuffled together.
-                ESContrib = (int) VTTI->getVectorInstrCost(
+                ESContrib = (int) TTI->getVectorInstrCost(
                                     Instruction::InsertElement, Ty2, 0);
                 ESContrib += (int) getInstrCost(Instruction::ShuffleVector,
                                                 VTy, Ty2);
               } else if (!Ty2->isVectorTy()) {
                 // O2 needs to be inserted into a vector of size O1, and then
                 // both need to be shuffled together.
-                ESContrib = (int) VTTI->getVectorInstrCost(
+                ESContrib = (int) TTI->getVectorInstrCost(
                                     Instruction::InsertElement, Ty1, 0);
                 ESContrib += (int) getInstrCost(Instruction::ShuffleVector,
                                                 VTy, Ty1);
@@ -1970,7 +2021,7 @@ namespace {
              << *J->first << " <-> " << *J->second << "} of depth " <<
              MaxDepth << " and size " << PrunedTree.size() <<
             " (effective size: " << EffSize << ")\n");
-      if (((VTTI && !UseChainDepthWithTI) ||
+      if (((TTI && !UseChainDepthWithTI) ||
             MaxDepth >= Config.ReqChainDepth) &&
           EffSize > 0 && EffSize > BestEffSize) {
         BestMaxDepth = MaxDepth;
@@ -2550,7 +2601,7 @@ namespace {
         continue;
       } else if (isa<CallInst>(I)) {
         Function *F = cast<CallInst>(I)->getCalledFunction();
-        unsigned IID = F->getIntrinsicID();
+        Intrinsic::ID IID = (Intrinsic::ID) F->getIntrinsicID();
         if (o == NumOperands-1) {
           BasicBlock &BB = *I->getParent();
 
@@ -2559,8 +2610,7 @@ namespace {
           Type *ArgTypeJ = J->getType();
           Type *VArgType = getVecTypeForPair(ArgTypeI, ArgTypeJ);
 
-          ReplacedOperands[o] = Intrinsic::getDeclaration(M,
-            (Intrinsic::ID) IID, VArgType);
+          ReplacedOperands[o] = Intrinsic::getDeclaration(M, IID, VArgType);
           continue;
         } else if (IID == Intrinsic::powi && o == 1) {
           // The second argument of powi is a single integer and we've already

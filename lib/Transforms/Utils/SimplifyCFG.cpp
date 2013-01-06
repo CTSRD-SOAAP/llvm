@@ -21,18 +21,19 @@
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/InstructionSimplify.h"
 #include "llvm/Analysis/ValueTracking.h"
-#include "llvm/Constants.h"
-#include "llvm/DataLayout.h"
-#include "llvm/DerivedTypes.h"
-#include "llvm/GlobalVariable.h"
-#include "llvm/IRBuilder.h"
-#include "llvm/Instructions.h"
-#include "llvm/IntrinsicInst.h"
-#include "llvm/LLVMContext.h"
-#include "llvm/MDBuilder.h"
-#include "llvm/Metadata.h"
-#include "llvm/Module.h"
-#include "llvm/Operator.h"
+#include "llvm/IR/Constants.h"
+#include "llvm/IR/DataLayout.h"
+#include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/GlobalVariable.h"
+#include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/Instructions.h"
+#include "llvm/IR/IntrinsicInst.h"
+#include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/MDBuilder.h"
+#include "llvm/IR/Metadata.h"
+#include "llvm/IR/Module.h"
+#include "llvm/IR/Operator.h"
+#include "llvm/IR/Type.h"
 #include "llvm/Support/CFG.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ConstantRange.h"
@@ -41,7 +42,6 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/TargetTransformInfo.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
-#include "llvm/Type.h"
 #include <algorithm>
 #include <map>
 #include <set>
@@ -3523,8 +3523,7 @@ static bool ShouldBuildLookupTable(SwitchInst *SI,
     Type *Ty = I->second;
 
     // Saturate this flag to true.
-    HasIllegalType = HasIllegalType ||
-      !TTI->getScalarTargetTransformInfo()->isTypeLegal(Ty);
+    HasIllegalType = HasIllegalType || !TTI->isTypeLegal(Ty);
 
     // Saturate this flag to false.
     AllTablesFitInRegister = AllTablesFitInRegister &&
@@ -3561,8 +3560,7 @@ static bool SwitchToLookupTable(SwitchInst *SI,
   assert(SI->getNumCases() > 1 && "Degenerate switch?");
 
   // Only build lookup table when we have a target that supports it.
-  if (!TTI || !TTI->getScalarTargetTransformInfo() ||
-      !TTI->getScalarTargetTransformInfo()->shouldBuildLookupTables())
+  if (!TTI || !TTI->shouldBuildLookupTables())
     return false;
 
   // FIXME: If the switch is too sparse for a lookup table, perhaps we could
