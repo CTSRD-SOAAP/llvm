@@ -86,6 +86,14 @@ void DWARFContext::dump(raw_ostream &OS) {
     OS << format("0x%8.8x: \"%s\"\n", strDWOOffset, s);
     strDWOOffset = offset;
   }
+
+  OS << "\n.debug_str_offsets.dwo contents:\n";
+  DataExtractor strOffsetExt(getStringOffsetDWOSection(), isLittleEndian(), 0);
+  offset = 0;
+  while (offset < getStringOffsetDWOSection().size()) {
+    OS << format("0x%8.8x: ", offset);
+    OS << format("%8.8x\n", strOffsetExt.getU32(&offset));
+  }
 }
 
 const DWARFDebugAbbrev *DWARFContext::getDebugAbbrev() {
@@ -152,7 +160,9 @@ void DWARFContext::parseCompileUnits() {
   while (DIData.isValidOffset(offset)) {
     CUs.push_back(DWARFCompileUnit(getDebugAbbrev(), getInfoSection(),
                                    getAbbrevSection(), getRangeSection(),
-                                   getStringSection(), &infoRelocMap(),
+                                   getStringSection(), StringRef(),
+                                   getAddrSection(),
+                                   &infoRelocMap(),
                                    isLittleEndian()));
     if (!CUs.back().extract(DIData, &offset)) {
       CUs.pop_back();
@@ -172,6 +182,8 @@ void DWARFContext::parseDWOCompileUnits() {
                                       getAbbrevDWOSection(),
                                       getRangeDWOSection(),
                                       getStringDWOSection(),
+                                      getStringOffsetDWOSection(),
+                                      getAddrSection(),
                                       &infoDWORelocMap(),
                                       isLittleEndian()));
     if (!DWOCUs.back().extract(DIData, &offset)) {
@@ -350,7 +362,7 @@ DIInliningInfo DWARFContext::getInliningInfoForAddress(uint64_t Address,
 }
 
 DWARFContextInMemory::DWARFContextInMemory(object::ObjectFile *Obj) :
-  IsLittleEndian(true /* FIXME */) {
+  IsLittleEndian(Obj->isLittleEndian()) {
   error_code ec;
   for (object::section_iterator i = Obj->begin_sections(),
          e = Obj->end_sections();
@@ -382,6 +394,10 @@ DWARFContextInMemory::DWARFContextInMemory(object::ObjectFile *Obj) :
       AbbrevDWOSection = data;
     else if (name == "debug_str.dwo")
       StringDWOSection = data;
+    else if (name == "debug_str_offsets.dwo")
+      StringOffsetDWOSection = data;
+    else if (name == "debug_addr")
+      AddrSection = data;
     // Any more debug info sections go here.
     else
       continue;

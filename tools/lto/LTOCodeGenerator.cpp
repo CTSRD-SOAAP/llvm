@@ -42,7 +42,6 @@
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetOptions.h"
 #include "llvm/Target/TargetRegisterInfo.h"
-#include "llvm/TargetTransformInfo.h"
 #include "llvm/Transforms/IPO.h"
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
 using namespace llvm;
@@ -372,8 +371,7 @@ bool LTOCodeGenerator::generateObjectFile(raw_ostream &out,
 
   // Add an appropriate DataLayout instance for this module...
   passes.add(new DataLayout(*_target->getDataLayout()));
-  passes.add(createNoTTIPass(_target->getScalarTargetTransformInfo(),
-                             _target->getVectorTargetTransformInfo()));
+  _target->addAnalysisPasses(passes);
 
   // Enabling internalize here would use its AllButMain variant. It
   // keeps only main if it exists and does nothing for libraries. Instead
@@ -389,6 +387,7 @@ bool LTOCodeGenerator::generateObjectFile(raw_ostream &out,
   FunctionPassManager *codeGenPasses = new FunctionPassManager(mergedModule);
 
   codeGenPasses->add(new DataLayout(*_target->getDataLayout()));
+  _target->addAnalysisPasses(*codeGenPasses);
 
   formatted_raw_ostream Out(out);
 

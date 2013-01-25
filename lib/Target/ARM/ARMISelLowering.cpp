@@ -7123,7 +7123,7 @@ ARMTargetLowering::EmitInstrWithCustomInserter(MachineInstr *MI,
     return EmitAtomicBinary64(MI, BB, isThumb2 ? ARM::t2SUBrr : ARM::SUBrr,
                               isThumb2 ? ARM::t2SBCrr : ARM::SBCrr,
                               /*NeedsCarry*/ true, /*IsCmpxchg*/false,
-                              /*IsMinMax*/ true, ARMCC::LE);
+                              /*IsMinMax*/ true, ARMCC::LT);
   case ARM::ATOMMAX6432:
     return EmitAtomicBinary64(MI, BB, isThumb2 ? ARM::t2SUBrr : ARM::SUBrr,
                               isThumb2 ? ARM::t2SBCrr : ARM::SBCrr,
@@ -7133,7 +7133,7 @@ ARMTargetLowering::EmitInstrWithCustomInserter(MachineInstr *MI,
     return EmitAtomicBinary64(MI, BB, isThumb2 ? ARM::t2SUBrr : ARM::SUBrr,
                               isThumb2 ? ARM::t2SBCrr : ARM::SBCrr,
                               /*NeedsCarry*/ true, /*IsCmpxchg*/false,
-                              /*IsMinMax*/ true, ARMCC::LS);
+                              /*IsMinMax*/ true, ARMCC::LO);
   case ARM::ATOMUMAX6432:
     return EmitAtomicBinary64(MI, BB, isThumb2 ? ARM::t2SUBrr : ARM::SUBrr,
                               isThumb2 ? ARM::t2SBCrr : ARM::SBCrr,
@@ -10344,35 +10344,3 @@ bool ARMTargetLowering::getTgtMemIntrinsic(IntrinsicInfo &Info,
   return false;
 }
 
-unsigned
-ARMScalarTargetTransformImpl::getIntImmCost(const APInt &Imm, Type *Ty) const {
-  assert(Ty->isIntegerTy());
-
-  unsigned Bits = Ty->getPrimitiveSizeInBits();
-  if (Bits == 0 || Bits > 32)
-    return 4;
-
-  int32_t SImmVal = Imm.getSExtValue();
-  uint32_t ZImmVal = Imm.getZExtValue();
-  if (!Subtarget->isThumb()) {
-    if ((SImmVal >= 0 && SImmVal < 65536) ||
-        (ARM_AM::getSOImmVal(ZImmVal) != -1) ||
-        (ARM_AM::getSOImmVal(~ZImmVal) != -1))
-      return 1;
-    return Subtarget->hasV6T2Ops() ? 2 : 3;
-  } else if (Subtarget->isThumb2()) {
-    if ((SImmVal >= 0 && SImmVal < 65536) ||
-        (ARM_AM::getT2SOImmVal(ZImmVal) != -1) ||
-        (ARM_AM::getT2SOImmVal(~ZImmVal) != -1))
-      return 1;
-    return Subtarget->hasV6T2Ops() ? 2 : 3;
-  } else /*Thumb1*/ {
-    if (SImmVal >= 0 && SImmVal < 256)
-      return 1;
-    if ((~ZImmVal < 256) || ARM_AM::isThumbImmShiftedVal(ZImmVal))
-      return 2;
-    // Load from constantpool.
-    return 3;
-  }
-  return 2;
-}

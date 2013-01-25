@@ -39,19 +39,16 @@ public:
                 ArrayRef<Constant*> values);
   AttributeImpl(LLVMContext &C, StringRef data);
 
-  ArrayRef<Constant*> getValues() const {
-    return Vals;
-  }
+  LLVMContext &getContext() { return Context; }
+
+  ArrayRef<Constant*> getValues() const { return Vals; }
 
   bool hasAttribute(Attribute::AttrKind A) const;
 
   bool hasAttributes() const;
 
   uint64_t getAlignment() const;
-  void setAlignment(unsigned Align);
-
   uint64_t getStackAlignment() const;
-  void setStackAlignment(unsigned Align);
 
   bool operator==(Attribute::AttrKind Kind) const;
   bool operator!=(Attribute::AttrKind Kind) const;
@@ -59,7 +56,9 @@ public:
   bool operator==(StringRef Kind) const;
   bool operator!=(StringRef Kind) const;
 
-  uint64_t getBitMask() const;         // FIXME: Remove.
+  bool operator<(const AttributeImpl &AI) const;
+
+  uint64_t Raw() const;         // FIXME: Remove.
 
   static uint64_t getAttrMask(Attribute::AttrKind Val);
 
@@ -67,20 +66,48 @@ public:
     Profile(ID, Data, Vals);
   }
   static void Profile(FoldingSetNodeID &ID, Constant *Data,
-                      ArrayRef<Constant*> Vals) {
-    ID.AddPointer(Data);
-    for (ArrayRef<Constant*>::iterator I = Vals.begin(), E = Vals.end();
-         I != E; ++I)
-      ID.AddPointer(*I);
+                      ArrayRef<Constant*> Vals);
+};
+
+//===----------------------------------------------------------------------===//
+/// \class
+/// \brief This class represents a group of attributes that apply to one
+/// element: function, return type, or parameter.
+class AttributeSetNode : public FoldingSetNode {
+  SmallVector<Attribute, 4> AttrList;
+
+  AttributeSetNode(ArrayRef<Attribute> Attrs)
+    : AttrList(Attrs.begin(), Attrs.end()) {}
+public:
+  static AttributeSetNode *get(LLVMContext &C, ArrayRef<Attribute> Attrs);
+
+  typedef SmallVectorImpl<Attribute>::iterator       iterator;
+  typedef SmallVectorImpl<Attribute>::const_iterator const_iterator;
+
+  iterator begin() { return AttrList.begin(); }
+  iterator end()   { return AttrList.end(); }
+
+  const_iterator begin() const { return AttrList.begin(); }
+  const_iterator end() const   { return AttrList.end(); }
+
+  void Profile(FoldingSetNodeID &ID) const {
+    Profile(ID, AttrList);
+  }
+  static void Profile(FoldingSetNodeID &ID, ArrayRef<Attribute> AttrList) {
+    for (unsigned I = 0, E = AttrList.size(); I != E; ++I)
+      AttrList[I].Profile(ID);
   }
 };
 
 //===----------------------------------------------------------------------===//
 /// \class
-/// \brief This class represents a set of attributes.
+/// \brief This class represents a set of attributes that apply to the function,
+/// return type, and parameters.
 class AttributeSetImpl : public FoldingSetNode {
   LLVMContext &Context;
   SmallVector<AttributeWithIndex, 4> AttrList;
+
+  SmallVector<std::pair<uint64_t, AttributeSetNode*>, 4> AttrNodes;
 
   // AttributesSet is uniqued, these should not be publicly available.
   void operator=(const AttributeSetImpl &) LLVM_DELETED_FUNCTION;
@@ -88,6 +115,9 @@ class AttributeSetImpl : public FoldingSetNode {
 public:
   AttributeSetImpl(LLVMContext &C, ArrayRef<AttributeWithIndex> attrs)
     : Context(C), AttrList(attrs.begin(), attrs.end()) {}
+  AttributeSetImpl(LLVMContext &C,
+                   ArrayRef<std::pair<uint64_t, AttributeSetNode*> > attrs)
+    : Context(C), AttrNodes(attrs.begin(), attrs.end()) {}
 
   LLVMContext &getContext() { return Context; }
   ArrayRef<AttributeWithIndex> getAttributes() const { return AttrList; }
@@ -97,10 +127,18 @@ public:
     Profile(ID, AttrList);
   }
   static void Profile(FoldingSetNodeID &ID,
-                      ArrayRef<AttributeWithIndex> AttrList){
+                      ArrayRef<AttributeWithIndex> AttrList) {
     for (unsigned i = 0, e = AttrList.size(); i != e; ++i) {
       ID.AddInteger(AttrList[i].Index);
-      ID.AddInteger(AttrList[i].Attrs.getBitMask());
+      ID.AddInteger(AttrList[i].Attrs.Raw());
+    }
+  }
+
+  static void Profile(FoldingSetNodeID &ID,
+                      ArrayRef<std::pair<uint64_t, AttributeSetNode*> > Nodes) {
+    for (unsigned i = 0, e = Nodes.size(); i != e; ++i) {
+      ID.AddInteger(Nodes[i].first);
+      ID.AddPointer(Nodes[i].second);
     }
   }
 };

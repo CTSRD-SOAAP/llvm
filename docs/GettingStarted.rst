@@ -1,5 +1,3 @@
-.. _getting_started:
-
 ====================================
 Getting Started with the LLVM System  
 ====================================
@@ -219,11 +217,7 @@ uses the package and provides other details.
 +--------------------------------------------------------------+-----------------+---------------------------------------------+
 | `SVN <http://subversion.tigris.org/project_packages.html>`_  | >=1.3           | Subversion access to LLVM\ :sup:`2`         |
 +--------------------------------------------------------------+-----------------+---------------------------------------------+
-| `DejaGnu <http://savannah.gnu.org/projects/dejagnu>`_        | 1.4.2           | Automated test suite\ :sup:`3`              |
-+--------------------------------------------------------------+-----------------+---------------------------------------------+
-| `tcl <http://www.tcl.tk/software/tcltk/>`_                   | 8.3, 8.4        | Automated test suite\ :sup:`3`              |
-+--------------------------------------------------------------+-----------------+---------------------------------------------+
-| `expect <http://expect.nist.gov/>`_                          | 5.38.0          | Automated test suite\ :sup:`3`              |
+| `python <http://www.python.org/>`_                           | >=2.4           | Automated test suite\ :sup:`3`              |
 +--------------------------------------------------------------+-----------------+---------------------------------------------+
 | `perl <http://www.perl.com/download.csp>`_                   | >=5.6.0         | Utilities                                   |
 +--------------------------------------------------------------+-----------------+---------------------------------------------+
@@ -384,6 +378,14 @@ intermittent failures when building LLVM with position independent code.  The
 symptom is an error about cyclic dependencies.  We recommend upgrading to a
 newer version of Gold.
 
+**Clang 3.0 with libstdc++ 4.7.x**: a few Linux distributions (Ubuntu 12.10,
+Fedora 17) have both Clang 3.0 and libstdc++ 4.7 in their repositories.  Clang
+3.0 does not implement a few builtins that are used in this library.  We
+recommend using the system GCC to compile LLVM and Clang in this case.
+
+**Clang 3.0 on Mageia 2**.  There's a packaging issue: Clang can not find at
+least some (``cxxabi.h``) libstdc++ headers.
+
 .. _Getting Started with LLVM:
 
 Getting Started with LLVM
@@ -458,6 +460,8 @@ The files are as follows, with *x.y* marking the version number:
 ``llvm-gcc-4.2-x.y-platform.tar.gz``
 
   Binary release of the llvm-gcc-4.2 front end for a specific platform.
+
+.. _checkout:
 
 Checkout LLVM from Subversion
 -----------------------------

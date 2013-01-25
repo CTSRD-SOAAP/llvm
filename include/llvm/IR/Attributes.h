@@ -13,11 +13,12 @@
 ///
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_ATTRIBUTES_H
-#define LLVM_ATTRIBUTES_H
+#ifndef LLVM_IR_ATTRIBUTES_H
+#define LLVM_IR_ATTRIBUTES_H
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/FoldingSet.h"
 #include "llvm/Support/MathExtras.h"
 #include <cassert>
 #include <string>
@@ -26,6 +27,7 @@ namespace llvm {
 
 class AttrBuilder;
 class AttributeImpl;
+class Constant;
 class LLVMContext;
 class Type;
 
@@ -89,6 +91,7 @@ public:
                            ///< alignstack=(1))
     StackProtect,          ///< Stack protection.
     StackProtectReq,       ///< Stack protection required.
+    StackProtectStrong,    ///< Strong Stack protection.
     StructRet,             ///< Hidden pointer to structure to return
     UWTable,               ///< Function must be in a unwind table
     ZExt,                  ///< Zero extended before/after call
@@ -119,19 +122,19 @@ public:
   /// value.
   unsigned getAlignment() const;
 
-  /// \brief Set the alignment field of an attribute.
-  void setAlignment(unsigned Align);
-
   /// \brief Returns the stack alignment field of an attribute as a byte
   /// alignment value.
   unsigned getStackAlignment() const;
 
-  /// \brief Set the stack alignment field of an attribute.
-  void setStackAlignment(unsigned Align);
-
   /// \brief Equality and non-equality query methods.
   bool operator==(AttrKind K) const;
   bool operator!=(AttrKind K) const;
+
+  bool operator<(Attribute A) const;
+
+  void Profile(FoldingSetNodeID &ID) const {
+    ID.AddPointer(pImpl);
+  }
 
   // FIXME: Remove these 'operator' methods.
   bool operator==(const Attribute &A) const {
@@ -141,7 +144,7 @@ public:
     return pImpl != A.pImpl;
   }
 
-  uint64_t getBitMask() const;
+  uint64_t Raw() const;
 
   /// \brief Which attributes cannot be applied to a type.
   static Attribute typeIncompatible(Type *Ty);
@@ -183,6 +186,189 @@ template<> struct DenseMapInfo<Attribute::AttrKind> {
 };
 
 //===----------------------------------------------------------------------===//
+// AttributeSet Smart Pointer
+//===----------------------------------------------------------------------===//
+
+class AttrBuilder;
+class AttributeSetImpl;
+struct AttributeWithIndex;
+
+//===----------------------------------------------------------------------===//
+/// \class
+/// \brief This class manages the ref count for the opaque AttributeSetImpl
+/// object and provides accessors for it.
+class AttributeSet {
+public:
+  enum AttrIndex {
+    ReturnIndex = 0U,
+    FunctionIndex = ~0U
+  };
+private:
+  friend class AttrBuilder;
+
+  /// \brief The attributes that we are managing.  This can be null to represent
+  /// the empty attributes list.
+  AttributeSetImpl *AttrList;
+
+  /// \brief The attributes for the specified index are returned.  Attributes
+  /// for the result are denoted with Idx = 0.
+  Attribute getAttributes(unsigned Idx) const;
+
+  /// \brief Add the specified attribute at the specified index to this
+  /// attribute list.  Since attribute lists are immutable, this returns the new
+  /// list.
+  AttributeSet addAttr(LLVMContext &C, unsigned Idx, Attribute Attrs) const;
+
+  /// \brief Remove the specified attribute at the specified index from this
+  /// attribute list.  Since attribute lists are immutable, this returns the new
+  /// list.
+  AttributeSet removeAttr(LLVMContext &C, unsigned Idx, Attribute Attrs) const;
+
+  explicit AttributeSet(AttributeSetImpl *LI) : AttrList(LI) {}
+public:
+  AttributeSet() : AttrList(0) {}
+  AttributeSet(const AttributeSet &P) : AttrList(P.AttrList) {}
+  const AttributeSet &operator=(const AttributeSet &RHS);
+
+  //===--------------------------------------------------------------------===//
+  // Attribute List Construction and Mutation
+  //===--------------------------------------------------------------------===//
+
+  /// \brief Return an AttributeSet with the specified parameters in it.
+  static AttributeSet get(LLVMContext &C, ArrayRef<AttributeWithIndex> Attrs);
+  static AttributeSet get(LLVMContext &C, unsigned Idx,
+                          Attribute::AttrKind Kind);
+  static AttributeSet get(LLVMContext &C, unsigned Idx, AttrBuilder &B);
+
+  /// \brief Add an attribute to the attribute set at the given index. Since
+  /// attribute sets are immutable, this returns a new set.
+  AttributeSet addAttribute(LLVMContext &C, unsigned Idx,
+                            Attribute::AttrKind Attr) const;
+
+  /// \brief Add attributes to the attribute set at the given index. Since
+  /// attribute sets are immutable, this returns a new set.
+  AttributeSet addAttributes(LLVMContext &C, unsigned Idx,
+                             AttributeSet Attrs) const;
+
+  /// \brief Add return attributes to this attribute set. Since attribute sets
+  /// are immutable, this returns a new set.
+  AttributeSet addRetAttributes(LLVMContext &C, AttributeSet Attrs) const {
+    return addAttributes(C, ReturnIndex, Attrs);
+  }
+
+  /// \brief Add function attributes to this attribute set. Since attribute sets
+  /// are immutable, this returns a new set.
+  AttributeSet addFnAttributes(LLVMContext &C, AttributeSet Attrs) const {
+    return addAttributes(C, FunctionIndex, Attrs);
+  }
+
+  /// \brief Remove the specified attribute at the specified index from this
+  /// attribute list. Since attribute lists are immutable, this returns the new
+  /// list.
+  AttributeSet removeAttribute(LLVMContext &C, unsigned Idx, 
+                               Attribute::AttrKind Attr) const;
+
+  /// \brief Remove the specified attributes at the specified index from this
+  /// attribute list. Since attribute lists are immutable, this returns the new
+  /// list.
+  AttributeSet removeAttributes(LLVMContext &C, unsigned Idx, 
+                                AttributeSet Attrs) const;
+
+  //===--------------------------------------------------------------------===//
+  // Attribute List Accessors
+  //===--------------------------------------------------------------------===//
+
+  /// \brief The attributes for the specified index are returned.
+  AttributeSet getParamAttributes(unsigned Idx) const;
+
+  /// \brief The attributes for the ret value are returned.
+  AttributeSet getRetAttributes() const;
+
+  /// \brief The function attributes are returned.
+  AttributeSet getFnAttributes() const;
+
+  /// \brief Return the alignment for the specified function parameter.
+  unsigned getParamAlignment(unsigned Idx) const;
+
+  /// \brief Return true if the attribute exists at the given index.
+  bool hasAttribute(unsigned Index, Attribute::AttrKind Kind) const;
+
+  /// \brief Return true if attribute exists at the given index.
+  bool hasAttributes(unsigned Index) const;
+
+  /// \brief Get the stack alignment.
+  unsigned getStackAlignment(unsigned Index) const;
+
+  /// \brief Return the attributes at the index as a string.
+  std::string getAsString(unsigned Index) const;
+
+  uint64_t Raw(unsigned Index) const;
+
+  /// \brief Return true if the specified attribute is set for at least one
+  /// parameter or for the return value.
+  bool hasAttrSomewhere(Attribute::AttrKind Attr) const;
+
+  /// operator==/!= - Provide equality predicates.
+  bool operator==(const AttributeSet &RHS) const {
+    return AttrList == RHS.AttrList;
+  }
+  bool operator!=(const AttributeSet &RHS) const {
+    return AttrList != RHS.AttrList;
+  }
+
+  //===--------------------------------------------------------------------===//
+  // Attribute List Introspection
+  //===--------------------------------------------------------------------===//
+
+  /// \brief Return a raw pointer that uniquely identifies this attribute list.
+  void *getRawPointer() const {
+    return AttrList;
+  }
+
+  // Attributes are stored as a dense set of slots, where there is one slot for
+  // each argument that has an attribute.  This allows walking over the dense
+  // set instead of walking the sparse list of attributes.
+
+  /// \brief Return true if there are no attributes.
+  bool isEmpty() const {
+    return AttrList == 0;
+  }
+
+  /// \brief Return the number of slots used in this attribute list.  This is
+  /// the number of arguments that have an attribute set on them (including the
+  /// function itself).
+  unsigned getNumSlots() const;
+
+  /// \brief Return the AttributeWithIndex at the specified slot.  This holds a
+  /// index number plus a set of attributes.
+  const AttributeWithIndex &getSlot(unsigned Slot) const;
+
+  void dump() const;
+};
+
+//===----------------------------------------------------------------------===//
+/// \class
+/// \brief This is just a pair of values to associate a set of attributes with
+/// an index.
+struct AttributeWithIndex {
+  Attribute Attrs;  ///< The attributes that are set, or'd together.
+  unsigned Index;   ///< Index of the parameter for which the attributes apply.
+
+  // FIXME: These methods all need to be revised. The first one is temporary.
+  static AttributeWithIndex get(LLVMContext &C, unsigned Idx, AttributeSet AS);
+  static AttributeWithIndex get(LLVMContext &C, unsigned Idx,
+                                ArrayRef<Attribute::AttrKind> Attrs) {
+    return get(Idx, Attribute::get(C, Attrs));
+  }
+  static AttributeWithIndex get(unsigned Idx, Attribute Attrs) {
+    AttributeWithIndex P;
+    P.Index = Idx;
+    P.Attrs = Attrs;
+    return P;
+  }
+};
+
+//===----------------------------------------------------------------------===//
 /// \class
 /// \brief This class is used in conjunction with the Attribute::get method to
 /// create an Attribute object. The object itself is uniquified. The Builder's
@@ -200,6 +386,7 @@ public:
   AttrBuilder(const Attribute &A) : Alignment(0), StackAlignment(0) {
     addAttributes(A);
   }
+  AttrBuilder(AttributeSet AS, unsigned Idx);
 
   void clear();
 
@@ -267,6 +454,7 @@ public:
       .removeAttribute(Attribute::OptimizeForSize)
       .removeAttribute(Attribute::StackProtect)
       .removeAttribute(Attribute::StackProtectReq)
+      .removeAttribute(Attribute::StackProtectStrong)
       .removeAttribute(Attribute::NoRedZone)
       .removeAttribute(Attribute::NoImplicitFloat)
       .removeAttribute(Attribute::Naked)
@@ -280,163 +468,12 @@ public:
       .removeAttribute(Attribute::NoDuplicate);
   }
 
-  uint64_t getBitMask() const;
+  uint64_t Raw() const;
 
   bool operator==(const AttrBuilder &B);
   bool operator!=(const AttrBuilder &B) {
     return !(*this == B);
   }
-};
-
-//===----------------------------------------------------------------------===//
-/// \class
-/// \brief This is just a pair of values to associate a set of attributes with
-/// an index.
-struct AttributeWithIndex {
-  Attribute Attrs;  ///< The attributes that are set, or'd together.
-  unsigned Index;   ///< Index of the parameter for which the attributes apply.
-                    ///< Index 0 is used for return value attributes.
-                    ///< Index ~0U is used for function attributes.
-
-  static AttributeWithIndex get(LLVMContext &C, unsigned Idx,
-                                ArrayRef<Attribute::AttrKind> Attrs) {
-    return get(Idx, Attribute::get(C, Attrs));
-  }
-  static AttributeWithIndex get(unsigned Idx, Attribute Attrs) {
-    AttributeWithIndex P;
-    P.Index = Idx;
-    P.Attrs = Attrs;
-    return P;
-  }
-};
-
-//===----------------------------------------------------------------------===//
-// AttributeSet Smart Pointer
-//===----------------------------------------------------------------------===//
-
-class AttributeSetImpl;
-
-//===----------------------------------------------------------------------===//
-/// \class
-/// \brief This class manages the ref count for the opaque AttributeSetImpl
-/// object and provides accessors for it.
-class AttributeSet {
-public:
-  enum AttrIndex {
-    ReturnIndex = 0U,
-    FunctionIndex = ~0U
-  };
-private:
-  /// \brief The attributes that we are managing.  This can be null to represent
-  /// the empty attributes list.
-  AttributeSetImpl *AttrList;
-
-  /// \brief The attributes for the specified index are returned.  Attributes
-  /// for the result are denoted with Idx = 0.
-  Attribute getAttributes(unsigned Idx) const;
-
-  explicit AttributeSet(AttributeSetImpl *LI) : AttrList(LI) {}
-public:
-  AttributeSet() : AttrList(0) {}
-  AttributeSet(const AttributeSet &P) : AttrList(P.AttrList) {}
-  const AttributeSet &operator=(const AttributeSet &RHS);
-
-  //===--------------------------------------------------------------------===//
-  // Attribute List Construction and Mutation
-  //===--------------------------------------------------------------------===//
-
-  /// \brief Return an AttributeSet with the specified parameters in it.
-  static AttributeSet get(LLVMContext &C, ArrayRef<AttributeWithIndex> Attrs);
-  static AttributeSet get(LLVMContext &C, unsigned Idx, AttrBuilder &B);
-
-  /// \brief Add the specified attribute at the specified index to this
-  /// attribute list.  Since attribute lists are immutable, this returns the new
-  /// list.
-  AttributeSet addAttr(LLVMContext &C, unsigned Idx, Attribute Attrs) const;
-
-  /// \brief Remove the specified attribute at the specified index from this
-  /// attribute list.  Since attribute lists are immutable, this returns the new
-  /// list.
-  AttributeSet removeAttr(LLVMContext &C, unsigned Idx, Attribute Attrs) const;
-
-  //===--------------------------------------------------------------------===//
-  // Attribute List Accessors
-  //===--------------------------------------------------------------------===//
-
-  /// \brief The attributes for the specified index are returned.
-  Attribute getParamAttributes(unsigned Idx) const {
-    return getAttributes(Idx);
-  }
-
-  /// \brief The attributes for the ret value are returned.
-  Attribute getRetAttributes() const {
-    return getAttributes(ReturnIndex);
-  }
-
-  /// \brief The function attributes are returned.
-  Attribute getFnAttributes() const {
-    return getAttributes(FunctionIndex);
-  }
-
-  /// \brief Return the alignment for the specified function parameter.
-  unsigned getParamAlignment(unsigned Idx) const {
-    return getAttributes(Idx).getAlignment();
-  }
-
-  /// \brief Return true if the attribute exists at the given index.
-  bool hasAttribute(unsigned Index, Attribute::AttrKind Kind) const;
-
-  /// \brief Return true if attribute exists at the given index.
-  bool hasAttributes(unsigned Index) const;
-
-  /// \brief Get the stack alignment.
-  unsigned getStackAlignment(unsigned Index) const;
-
-  /// \brief Return the attributes at the index as a string.
-  std::string getAsString(unsigned Index) const;
-
-  uint64_t getBitMask(unsigned Index) const;
-
-  /// \brief Return true if the specified attribute is set for at least one
-  /// parameter or for the return value.
-  bool hasAttrSomewhere(Attribute::AttrKind Attr) const;
-
-  /// operator==/!= - Provide equality predicates.
-  bool operator==(const AttributeSet &RHS) const {
-    return AttrList == RHS.AttrList;
-  }
-  bool operator!=(const AttributeSet &RHS) const {
-    return AttrList != RHS.AttrList;
-  }
-
-  //===--------------------------------------------------------------------===//
-  // Attribute List Introspection
-  //===--------------------------------------------------------------------===//
-
-  /// \brief Return a raw pointer that uniquely identifies this attribute list.
-  void *getRawPointer() const {
-    return AttrList;
-  }
-
-  // Attributes are stored as a dense set of slots, where there is one slot for
-  // each argument that has an attribute.  This allows walking over the dense
-  // set instead of walking the sparse list of attributes.
-
-  /// \brief Return true if there are no attributes.
-  bool isEmpty() const {
-    return AttrList == 0;
-  }
-
-  /// \brief Return the number of slots used in this attribute list.  This is
-  /// the number of arguments that have an attribute set on them (including the
-  /// function itself).
-  unsigned getNumSlots() const;
-
-  /// \brief Return the AttributeWithIndex at the specified slot.  This holds a
-  /// index number plus a set of attributes.
-  const AttributeWithIndex &getSlot(unsigned Slot) const;
-
-  void dump() const;
 };
 
 } // end llvm namespace

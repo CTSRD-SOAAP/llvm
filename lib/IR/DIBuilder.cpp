@@ -229,6 +229,24 @@ DIType DIBuilder::createPointerType(DIType PointeeTy, uint64_t SizeInBits,
   return DIType(MDNode::get(VMContext, Elts));
 }
 
+DIType DIBuilder::createMemberPointerType(DIType PointeeTy, DIType Base) {
+  // Pointer types are encoded in DIDerivedType format.
+  Value *Elts[] = {
+    GetTagConstant(VMContext, dwarf::DW_TAG_ptr_to_member_type),
+    NULL, //TheCU,
+    NULL,
+    NULL, // Filename
+    ConstantInt::get(Type::getInt32Ty(VMContext), 0), // Line
+    ConstantInt::get(Type::getInt64Ty(VMContext), 0),
+    ConstantInt::get(Type::getInt64Ty(VMContext), 0),
+    ConstantInt::get(Type::getInt64Ty(VMContext), 0), // Offset
+    ConstantInt::get(Type::getInt32Ty(VMContext), 0), // Flags
+    PointeeTy,
+    Base
+  };
+  return DIType(MDNode::get(VMContext, Elts));
+}
+
 /// createReferenceType - Create debugging information entry for a reference
 /// type.
 DIType DIBuilder::createReferenceType(unsigned Tag, DIType RTy) {
@@ -328,6 +346,30 @@ DIType DIBuilder::createMemberType(DIDescriptor Scope, StringRef Name,
     ConstantInt::get(Type::getInt64Ty(VMContext), OffsetInBits),
     ConstantInt::get(Type::getInt32Ty(VMContext), Flags),
     Ty
+  };
+  return DIType(MDNode::get(VMContext, Elts));
+}
+
+/// createStaticMemberType - Create debugging information entry for a
+/// C++ static data member.
+DIType DIBuilder::createStaticMemberType(DIDescriptor Scope, StringRef Name,
+                                         DIFile File, unsigned LineNumber,
+                                         DIType Ty, unsigned Flags,
+                                         llvm::Value *Val) {
+  // TAG_member is encoded in DIDerivedType format.
+  Flags |= DIDescriptor::FlagStaticMember;
+  Value *Elts[] = {
+    GetTagConstant(VMContext, dwarf::DW_TAG_member),
+    getNonCompileUnitScope(Scope),
+    MDString::get(VMContext, Name),
+    File,
+    ConstantInt::get(Type::getInt32Ty(VMContext), LineNumber),
+    ConstantInt::get(Type::getInt64Ty(VMContext), 0/*SizeInBits*/),
+    ConstantInt::get(Type::getInt64Ty(VMContext), 0/*AlignInBits*/),
+    ConstantInt::get(Type::getInt64Ty(VMContext), 0/*OffsetInBits*/),
+    ConstantInt::get(Type::getInt32Ty(VMContext), Flags),
+    Ty,
+    Val
   };
   return DIType(MDNode::get(VMContext, Elts));
 }
@@ -598,9 +640,10 @@ DIType DIBuilder::createArrayType(uint64_t Size, uint64_t AlignInBits,
 /// createVectorType - Create debugging information entry for a vector.
 DIType DIBuilder::createVectorType(uint64_t Size, uint64_t AlignInBits,
                                    DIType Ty, DIArray Subscripts) {
-  // TAG_vector_type is encoded in DICompositeType format.
+
+  // A vector is an array type with the FlagVector flag applied.
   Value *Elts[] = {
-    GetTagConstant(VMContext, dwarf::DW_TAG_vector_type),
+    GetTagConstant(VMContext, dwarf::DW_TAG_array_type),
     NULL, //TheCU,
     MDString::get(VMContext, ""),
     NULL, //TheCU,
@@ -608,7 +651,7 @@ DIType DIBuilder::createVectorType(uint64_t Size, uint64_t AlignInBits,
     ConstantInt::get(Type::getInt64Ty(VMContext), Size),
     ConstantInt::get(Type::getInt64Ty(VMContext), AlignInBits),
     ConstantInt::get(Type::getInt32Ty(VMContext), 0),
-    ConstantInt::get(Type::getInt32Ty(VMContext), 0),
+    ConstantInt::get(Type::getInt32Ty(VMContext), DIType::FlagVector),
     Ty,
     Subscripts,
     ConstantInt::get(Type::getInt32Ty(VMContext), 0),
@@ -641,7 +684,8 @@ DIType DIBuilder::createArtificialType(DIType Ty) {
   return DIType(MDNode::get(VMContext, Elts));
 }
 
-/// createArtificialType - Create a new DIType with "artificial" flag set.
+/// createObjectPointerType - Create a new type with both the object pointer
+/// and artificial flags set.
 DIType DIBuilder::createObjectPointerType(DIType Ty) {
   if (Ty.isObjectPointer())
     return Ty;
@@ -767,7 +811,8 @@ createGlobalVariable(StringRef Name, DIFile F, unsigned LineNumber,
     Ty,
     ConstantInt::get(Type::getInt32Ty(VMContext), isLocalToUnit),
     ConstantInt::get(Type::getInt32Ty(VMContext), 1), /* isDefinition*/
-    Val
+    Val,
+    DIDescriptor()
   };
   MDNode *Node = MDNode::get(VMContext, Elts);
   AllGVs.push_back(Node);
@@ -779,7 +824,7 @@ createGlobalVariable(StringRef Name, DIFile F, unsigned LineNumber,
 DIGlobalVariable DIBuilder::
 createStaticVariable(DIDescriptor Context, StringRef Name,
                      StringRef LinkageName, DIFile F, unsigned LineNumber,
-                     DIType Ty, bool isLocalToUnit, Value *Val) {
+                     DIType Ty, bool isLocalToUnit, Value *Val, MDNode *Decl) {
   Value *Elts[] = {
     GetTagConstant(VMContext, dwarf::DW_TAG_variable),
     Constant::getNullValue(Type::getInt32Ty(VMContext)),
@@ -792,7 +837,8 @@ createStaticVariable(DIDescriptor Context, StringRef Name,
     Ty,
     ConstantInt::get(Type::getInt32Ty(VMContext), isLocalToUnit),
     ConstantInt::get(Type::getInt32Ty(VMContext), 1), /* isDefinition*/
-    Val
+    Val,
+    DIDescriptor(Decl)
   };
   MDNode *Node = MDNode::get(VMContext, Elts);
   AllGVs.push_back(Node);

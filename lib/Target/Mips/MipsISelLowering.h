@@ -20,6 +20,8 @@
 #include "llvm/CodeGen/CallingConvLower.h"
 #include "llvm/CodeGen/SelectionDAG.h"
 #include "llvm/Target/TargetLowering.h"
+#include <deque>
+#include <string>
 
 namespace llvm {
   namespace MipsISD {
@@ -176,6 +178,12 @@ namespace llvm {
 
     void setMips16HardFloatLibCalls();
 
+    unsigned int
+      getMips16HelperFunctionStubNumber(ArgListTy &Args) const;
+
+    const char *getMips16HelperFunction
+      (Type* RetTy, ArgListTy &Args, bool &needHelper) const;
+
     /// ByValArgInfo - Byval argument information.
     struct ByValArgInfo {
       unsigned FirstIdx; // Index of the first register used.
@@ -294,7 +302,7 @@ namespace llvm {
 
     /// passByValArg - Pass a byval argument in registers or on stack.
     void passByValArg(SDValue Chain, DebugLoc DL,
-                      SmallVector<std::pair<unsigned, SDValue>, 16> &RegsToPass,
+                      std::deque< std::pair<unsigned, SDValue> > &RegsToPass,
                       SmallVector<SDValue, 8> &MemOpChains, SDValue StackPtr,
                       MachineFrameInfo *MFI, SelectionDAG &DAG, SDValue Arg,
                       const MipsCC &CC, const ByValArgInfo &ByVal,

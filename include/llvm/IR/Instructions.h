@@ -13,8 +13,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_INSTRUCTIONS_H
-#define LLVM_INSTRUCTIONS_H
+#ifndef LLVM_IR_INSTRUCTIONS_H
+#define LLVM_IR_INSTRUCTIONS_H
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
@@ -953,7 +953,7 @@ public:
           "Both operands to ICmp instruction are not of the same type!");
     // Check that the operands are the right type
     assert((getOperand(0)->getType()->isIntOrIntVectorTy() ||
-            getOperand(0)->getType()->isPointerTy()) &&
+            getOperand(0)->getType()->getScalarType()->isPointerTy()) &&
            "Invalid operand types for ICmp instruction");
   }
 

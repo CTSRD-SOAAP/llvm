@@ -48,6 +48,7 @@
 #include "llvm/Analysis/LoopPass.h"
 #include "llvm/Analysis/ScalarEvolutionExpander.h"
 #include "llvm/Analysis/ScalarEvolutionExpressions.h"
+#include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/IRBuilder.h"
@@ -56,7 +57,6 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetLibraryInfo.h"
-#include "llvm/TargetTransformInfo.h"
 #include "llvm/Transforms/Utils/Local.h"
 using namespace llvm;
 
@@ -177,6 +177,7 @@ namespace {
       AU.addPreserved<DominatorTree>();
       AU.addRequired<DominatorTree>();
       AU.addRequired<TargetLibraryInfo>();
+      AU.addRequired<TargetTransformInfo>();
     }
 
     const DataLayout *getDataLayout() {
@@ -196,9 +197,7 @@ namespace {
     }
 
     const TargetTransformInfo *getTargetTransformInfo() {
-      if (!TTI)
-        TTI = getAnalysisIfAvailable<TargetTransformInfo>();
-      return TTI;
+      return TTI ? TTI : (TTI = &getAnalysis<TargetTransformInfo>());
     }
 
     Loop *getLoop() const { return CurLoop; }
@@ -219,6 +218,7 @@ INITIALIZE_PASS_DEPENDENCY(LCSSA)
 INITIALIZE_PASS_DEPENDENCY(ScalarEvolution)
 INITIALIZE_PASS_DEPENDENCY(TargetLibraryInfo)
 INITIALIZE_AG_DEPENDENCY(AliasAnalysis)
+INITIALIZE_AG_DEPENDENCY(TargetTransformInfo)
 INITIALIZE_PASS_END(LoopIdiomRecognize, "loop-idiom", "Recognize loop idioms",
                     false, false)
 
@@ -311,7 +311,7 @@ NclPopcountRecognize::NclPopcountRecognize(LoopIdiomRecognize &TheLIR):
 
 bool NclPopcountRecognize::preliminaryScreen() {
   const TargetTransformInfo *TTI = LIR.getTargetTransformInfo();
-  if (TTI->getPopcntHwSupport(32) != TargetTransformInfo::Fast)
+  if (TTI->getPopcntSupport(32) != TargetTransformInfo::PSK_FastHardware)
     return false;
 
   // Counting population are usually conducted by few arithmetic instrutions.
@@ -407,7 +407,7 @@ bool NclPopcountRecognize::detectIdiom(Instruction *&CntInst,
 
   // step 2: detect instructions corresponding to "x2 = x1 & (x1 - 1)"
   {
-    if (DefX2->getOpcode() != Instruction::And)
+    if (!DefX2 || DefX2->getOpcode() != Instruction::And)
       return false;
 
     BinaryOperator *SubOneOp;

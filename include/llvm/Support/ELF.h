@@ -366,7 +366,8 @@ enum {
   R_X86_64_SIZE64     = 33,
   R_X86_64_GOTPC32_TLSDESC = 34,
   R_X86_64_TLSDESC_CALL    = 35,
-  R_X86_64_TLSDESC    = 36
+  R_X86_64_TLSDESC    = 36,
+  R_X86_64_IRELATIVE  = 37
 };
 
 // i386 relocations.
@@ -469,6 +470,7 @@ enum {
   R_PPC64_ADDR16_HI           = 5,
   R_PPC64_ADDR14              = 7,
   R_PPC64_REL24               = 10,
+  R_PPC64_REL32               = 26,
   R_PPC64_ADDR64              = 38,
   R_PPC64_ADDR16_HIGHER       = 39,
   R_PPC64_ADDR16_HIGHEST      = 41,
@@ -904,8 +906,12 @@ enum {
   SHT_ARM_ATTRIBUTES      = 0x70000003U,
   SHT_ARM_DEBUGOVERLAY    = 0x70000004U,
   SHT_ARM_OVERLAYSECTION  = 0x70000005U,
-
+  SHT_HEX_ORDERED         = 0x70000000, // Link editor is to sort the entries in 
+                                        // this section based on their sizes
   SHT_X86_64_UNWIND       = 0x70000001, // Unwind information
+
+  SHT_MIPS_REGINFO        = 0x70000006, // Register usage information
+  SHT_MIPS_OPTIONS        = 0x7000000d, // General options
 
   SHT_HIPROC        = 0x7fffffff, // Highest processor architecture-specific type.
   SHT_LOUSER        = 0x80000000, // Lowest type reserved for applications.
@@ -969,7 +975,14 @@ enum {
   // sets this flag besides being able to refer to data in a section that does
   // not set it; likewise, a small code model object can refer only to code in a
   // section that does not set this flag.
-  SHF_X86_64_LARGE = 0x10000000
+  SHF_X86_64_LARGE = 0x10000000,
+
+  // All sections with the GPREL flag are grouped into a global data area 
+  // for faster accesses
+  SHF_HEX_GPREL = 0x10000000,
+
+  // Do not strip this section. FIXME: We need target specific SHF_ enums.
+  SHF_MIPS_NOSTRIP = 0x8000000
 };
 
 // Section Group Flags
@@ -1099,14 +1112,14 @@ struct Elf64_Rel {
 
   // These accessors and mutators correspond to the ELF64_R_SYM, ELF64_R_TYPE,
   // and ELF64_R_INFO macros defined in the ELF specification:
-  Elf64_Xword getSymbol() const { return (r_info >> 32); }
-  unsigned char getType() const {
-    return (unsigned char) (r_info & 0xffffffffL);
+  Elf64_Word getSymbol() const { return (r_info >> 32); }
+  Elf64_Word getType() const {
+    return (Elf64_Word) (r_info & 0xffffffffL);
   }
-  void setSymbol(Elf32_Word s) { setSymbolAndType(s, getType()); }
-  void setType(unsigned char t) { setSymbolAndType(getSymbol(), t); }
-  void setSymbolAndType(Elf64_Xword s, unsigned char t) {
-    r_info = (s << 32) + (t&0xffffffffL);
+  void setSymbol(Elf64_Word s) { setSymbolAndType(s, getType()); }
+  void setType(Elf64_Word t) { setSymbolAndType(getSymbol(), t); }
+  void setSymbolAndType(Elf64_Word s, Elf64_Word t) {
+    r_info = ((Elf64_Xword)s << 32) + (t&0xffffffffL);
   }
 };
 
@@ -1118,14 +1131,14 @@ struct Elf64_Rela {
 
   // These accessors and mutators correspond to the ELF64_R_SYM, ELF64_R_TYPE,
   // and ELF64_R_INFO macros defined in the ELF specification:
-  Elf64_Xword getSymbol() const { return (r_info >> 32); }
-  unsigned char getType() const {
-    return (unsigned char) (r_info & 0xffffffffL);
+  Elf64_Word getSymbol() const { return (r_info >> 32); }
+  Elf64_Word getType() const {
+    return (Elf64_Word) (r_info & 0xffffffffL);
   }
-  void setSymbol(Elf64_Xword s) { setSymbolAndType(s, getType()); }
-  void setType(unsigned char t) { setSymbolAndType(getSymbol(), t); }
-  void setSymbolAndType(Elf64_Xword s, unsigned char t) {
-    r_info = (s << 32) + (t&0xffffffffL);
+  void setSymbol(Elf64_Word s) { setSymbolAndType(s, getType()); }
+  void setType(Elf64_Word t) { setSymbolAndType(getSymbol(), t); }
+  void setSymbolAndType(Elf64_Word s, Elf64_Word t) {
+    r_info = ((Elf64_Xword)s << 32) + (t&0xffffffffL);
   }
 };
 

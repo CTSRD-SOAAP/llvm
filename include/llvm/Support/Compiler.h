@@ -42,6 +42,33 @@
 #define LLVM_HAS_RVALUE_REFERENCE_THIS 0
 #endif
 
+/// \macro LLVM_HAS_CXX11_TYPETRAITS
+/// \brief Does the compiler have the C++11 type traits.
+///
+/// #include <type_traits>
+///
+/// * enable_if
+/// * {true,false}_type
+/// * is_constructible
+/// * etc...
+#if defined(__GXX_EXPERIMENTAL_CXX0X__) \
+    || (defined(_MSC_VER) && _MSC_VER >= 1700)
+#define LLVM_HAS_CXX11_TYPETRAITS 1
+#else
+#define LLVM_HAS_CXX11_TYPETRAITS 0
+#endif
+
+/// \macro LLVM_HAS_CXX11_STDLIB
+/// \brief Does the compiler have the C++11 standard library.
+///
+/// Implies LLVM_HAS_RVALUE_REFERENCES, LLVM_HAS_CXX11_TYPETRAITS
+#if defined(__GXX_EXPERIMENTAL_CXX0X__) \
+    || (defined(_MSC_VER) && _MSC_VER >= 1700)
+#define LLVM_HAS_CXX11_STDLIB 1
+#else
+#define LLVM_HAS_CXX11_STDLIB 0
+#endif
+
 /// llvm_move - Expands to ::std::move if the compiler supports
 /// r-value references; otherwise, expands to the argument.
 #if LLVM_HAS_RVALUE_REFERENCES
@@ -81,7 +108,8 @@
 
 /// LLVM_FINAL - Expands to 'final' if the compiler supports it.
 /// Use to mark classes or virtual methods as final.
-#if (__has_feature(cxx_override_control))
+#if __has_feature(cxx_override_control) \
+    || (defined(_MSC_VER) && _MSC_VER >= 1700)
 #define LLVM_FINAL final
 #else
 #define LLVM_FINAL
@@ -89,10 +117,17 @@
 
 /// LLVM_OVERRIDE - Expands to 'override' if the compiler supports it.
 /// Use to mark virtual methods as overriding a base class method.
-#if (__has_feature(cxx_override_control))
+#if __has_feature(cxx_override_control) \
+    || (defined(_MSC_VER) && _MSC_VER >= 1700)
 #define LLVM_OVERRIDE override
 #else
 #define LLVM_OVERRIDE
+#endif
+
+#if __has_feature(cxx_constexpr) || defined(__GXX_EXPERIMENTAL_CXX0X__)
+# define LLVM_CONSTEXPR constexpr
+#else
+# define LLVM_CONSTEXPR
 #endif
 
 /// LLVM_LIBRARY_VISIBILITY - If a class marked with this attribute is linked
@@ -247,6 +282,15 @@
            (((uintptr_t(p) % (a)) == 0) ? (p) : (LLVM_BUILTIN_UNREACHABLE, (p)))
 #else
 # define LLVM_ASSUME_ALIGNED(p, a) (p)
+#endif
+
+/// \macro LLVM_FUNCTION_NAME
+/// \brief Expands to __func__ on compilers which support it.  Otherwise,
+/// expands to a compiler-dependent replacement.
+#if defined(_MSC_VER)
+# define LLVM_FUNCTION_NAME __FUNCTION__
+#else
+# define LLVM_FUNCTION_NAME __func__
 #endif
 
 #endif

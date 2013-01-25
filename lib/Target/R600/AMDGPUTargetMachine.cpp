@@ -116,6 +116,11 @@ bool AMDGPUPassConfig::addPreRegAlloc() {
 }
 
 bool AMDGPUPassConfig::addPostRegAlloc() {
+  const AMDGPUSubtarget &ST = TM->getSubtarget<AMDGPUSubtarget>();
+
+  if (ST.device()->getGeneration() > AMDGPUDeviceInfo::HD6XXX) {
+    addPass(createSIInsertWaits(*TM));
+  }
   return false;
 }
 
@@ -131,6 +136,7 @@ bool AMDGPUPassConfig::addPreEmitPass() {
     addPass(createAMDGPUCFGPreparationPass(*TM));
     addPass(createAMDGPUCFGStructurizerPass(*TM));
     addPass(createR600ExpandSpecialInstrsPass(*TM));
+    addPass(createR600LowerConstCopy(*TM));
     addPass(&FinalizeMachineBundlesID);
   } else {
     addPass(createSILowerLiteralConstantsPass(*TM));

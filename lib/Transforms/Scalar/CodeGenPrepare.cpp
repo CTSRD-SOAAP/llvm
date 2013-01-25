@@ -729,9 +729,9 @@ bool CodeGenPrepare::DupRetToEnableTailCallOpts(BasicBlock *BB) {
   // It's not safe to eliminate the sign / zero extension of the return value.
   // See llvm::isInTailCallPosition().
   const Function *F = BB->getParent();
-  Attribute CallerRetAttr = F->getAttributes().getRetAttributes();
-  if (CallerRetAttr.hasAttribute(Attribute::ZExt) ||
-      CallerRetAttr.hasAttribute(Attribute::SExt))
+  AttributeSet CallerAttrs = F->getAttributes();
+  if (CallerAttrs.hasAttribute(AttributeSet::ReturnIndex, Attribute::ZExt) ||
+      CallerAttrs.hasAttribute(AttributeSet::ReturnIndex, Attribute::SExt))
     return false;
 
   // Make sure there are no instructions between the PHI and return, or that the
@@ -788,10 +788,10 @@ bool CodeGenPrepare::DupRetToEnableTailCallOpts(BasicBlock *BB) {
 
     // Conservatively require the attributes of the call to match those of the
     // return. Ignore noalias because it doesn't affect the call sequence.
-    Attribute CalleeRetAttr = CS.getAttributes().getRetAttributes();
-    if (AttrBuilder(CalleeRetAttr).
+    AttributeSet CalleeAttrs = CS.getAttributes();
+    if (AttrBuilder(CalleeAttrs, AttributeSet::ReturnIndex).
           removeAttribute(Attribute::NoAlias) !=
-        AttrBuilder(CallerRetAttr).
+        AttrBuilder(CalleeAttrs, AttributeSet::ReturnIndex).
           removeAttribute(Attribute::NoAlias))
       continue;
 
@@ -823,7 +823,7 @@ namespace {
 
 /// ExtAddrMode - This is an extended version of TargetLowering::AddrMode
 /// which holds actual Value*'s for register values.
-struct ExtAddrMode : public AddrMode {
+struct ExtAddrMode : public TargetLowering::AddrMode {
   Value *BaseReg;
   Value *ScaledReg;
   ExtAddrMode() : BaseReg(0), ScaledReg(0) {}

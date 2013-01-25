@@ -16,18 +16,18 @@
 #include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/Triple.h"
 #include "llvm/Analysis/CallGraph.h"
+#include "llvm/Analysis/CallGraphSCCPass.h"
 #include "llvm/Analysis/LoopPass.h"
 #include "llvm/Analysis/RegionPass.h"
 #include "llvm/Analysis/Verifier.h"
 #include "llvm/Assembly/PrintModulePass.h"
 #include "llvm/Bitcode/ReaderWriter.h"
-#include "llvm/CallGraphSCCPass.h"
 #include "llvm/CodeGen/CommandFlags.h"
 #include "llvm/DebugInfo.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/Module.h"
+#include "llvm/LinkAllIR.h"
 #include "llvm/LinkAllPasses.h"
-#include "llvm/LinkAllVMCore.h"
 #include "llvm/MC/SubtargetFeature.h"
 #include "llvm/PassManager.h"
 #include "llvm/Support/Debug.h"
@@ -43,7 +43,6 @@
 #include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Target/TargetLibraryInfo.h"
 #include "llvm/Target/TargetMachine.h"
-#include "llvm/TargetTransformInfo.h"
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
 #include <algorithm>
 #include <memory>
@@ -657,10 +656,9 @@ int main(int argc, char **argv) {
     Machine = GetTargetMachine(Triple(ModuleTriple));
   std::auto_ptr<TargetMachine> TM(Machine);
 
-  if (TM.get()) {
-    Passes.add(createNoTTIPass(TM->getScalarTargetTransformInfo(),
-                               TM->getVectorTargetTransformInfo()));
-  }
+  // Add internal analysis passes from the target machine.
+  if (TM.get())
+    TM->addAnalysisPasses(Passes);
 
   OwningPtr<FunctionPassManager> FPasses;
   if (OptLevelO1 || OptLevelO2 || OptLevelOs || OptLevelOz || OptLevelO3) {

@@ -23,6 +23,7 @@ class AMDGPUTargetMachine;
 // R600 Passes
 FunctionPass* createR600KernelParametersPass(const DataLayout *TD);
 FunctionPass *createR600ExpandSpecialInstrsPass(TargetMachine &tm);
+FunctionPass *createR600LowerConstCopy(TargetMachine &tm);
 
 // SI Passes
 FunctionPass *createSIAnnotateControlFlowPass();
@@ -30,6 +31,7 @@ FunctionPass *createSIAssignInterpRegsPass(TargetMachine &tm);
 FunctionPass *createSILowerControlFlowPass(TargetMachine &tm);
 FunctionPass *createSICodeEmitterPass(formatted_raw_ostream &OS);
 FunctionPass *createSILowerLiteralConstantsPass(TargetMachine &tm);
+FunctionPass *createSIInsertWaits(TargetMachine &tm);
 
 // Passes common to R600 and SI
 Pass *createAMDGPUStructurizeCFGPass();

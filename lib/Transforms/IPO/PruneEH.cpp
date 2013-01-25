@@ -20,7 +20,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/CallGraph.h"
-#include "llvm/CallGraphSCCPass.h"
+#include "llvm/Analysis/CallGraphSCCPass.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Instructions.h"
@@ -146,9 +146,11 @@ bool PruneEH::runOnSCC(CallGraphSCC &SCC) {
 
       Function *F = (*I)->getFunction();
       const AttributeSet &PAL = F->getAttributes();
-      const AttributeSet &NPAL = PAL.addAttr(F->getContext(), ~0,
-                                            Attribute::get(F->getContext(),
-                                                            NewAttributes));
+      const AttributeSet &NPAL =
+        PAL.addFnAttributes(F->getContext(),
+                            AttributeSet::get(F->getContext(),
+                                              AttributeSet::FunctionIndex,
+                                              NewAttributes));
       if (PAL != NPAL) {
         MadeChange = true;
         F->setAttributes(NPAL);

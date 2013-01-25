@@ -23,6 +23,7 @@
 #include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/Mutex.h"
 #include "llvm/Support/raw_ostream.h"
+#include <algorithm>
 using namespace llvm;
 
 //===----------------------------------------------------------------------===//
@@ -45,8 +46,7 @@ Attribute Attribute::get(LLVMContext &Context, AttrBuilder &B) {
   // Otherwise, build a key to look up the existing attributes.
   LLVMContextImpl *pImpl = Context.pImpl;
   FoldingSetNodeID ID;
-  // FIXME: Don't look up ConstantInts here.
-  ID.AddPointer(ConstantInt::get(Type::getInt64Ty(Context), B.getBitMask()));
+  ID.AddInteger(B.Raw());
 
   void *InsertPoint;
   AttributeImpl *PA = pImpl->AttrsSet.FindNodeOrInsertPos(ID, InsertPoint);
@@ -54,7 +54,7 @@ Attribute Attribute::get(LLVMContext &Context, AttrBuilder &B) {
   if (!PA) {
     // If we didn't find any existing attributes of the same shape then create a
     // new one and insert it.
-    PA = new AttributeImpl(Context, B.getBitMask());
+    PA = new AttributeImpl(Context, B.Raw());
     pImpl->AttrsSet.InsertNode(PA, InsertPoint);
   }
 
@@ -74,13 +74,7 @@ bool Attribute::hasAttributes() const {
 unsigned Attribute::getAlignment() const {
   if (!hasAttribute(Attribute::Alignment))
     return 0;
-  return 1U << ((pImpl->getAlignment() >> 16) - 1);
-}
-
-void Attribute::setAlignment(unsigned Align) {
-  assert(hasAttribute(Attribute::Alignment) &&
-         "Trying to set the alignment on a non-alignment attribute!");
-  pImpl->setAlignment(Align);
+  return pImpl->getAlignment();
 }
 
 /// This returns the stack alignment field of an attribute as a byte alignment
@@ -88,13 +82,7 @@ void Attribute::setAlignment(unsigned Align) {
 unsigned Attribute::getStackAlignment() const {
   if (!hasAttribute(Attribute::StackAlignment))
     return 0;
-  return 1U << ((pImpl->getStackAlignment() >> 26) - 1);
-}
-
-void Attribute::setStackAlignment(unsigned Align) {
-  assert(hasAttribute(Attribute::StackAlignment) &&
-         "Trying to set the stack alignment on a non-alignment attribute!");
-  pImpl->setStackAlignment(Align);
+  return pImpl->getStackAlignment();
 }
 
 bool Attribute::operator==(AttrKind K) const {
@@ -104,8 +92,15 @@ bool Attribute::operator!=(AttrKind K) const {
   return !(*this == K);
 }
 
-uint64_t Attribute::getBitMask() const {
-  return pImpl ? pImpl->getBitMask() : 0;
+bool Attribute::operator<(Attribute A) const {
+  if (!pImpl && !A.pImpl) return false;
+  if (!pImpl) return true;
+  if (!A.pImpl) return false;
+  return *pImpl < *A.pImpl;
+}
+
+uint64_t Attribute::Raw() const {
+  return pImpl ? pImpl->Raw() : 0;
 }
 
 Attribute Attribute::typeIncompatible(Type *Ty) {
@@ -140,10 +135,10 @@ uint64_t Attribute::encodeLLVMAttributesForBitcode(Attribute Attrs) {
 
   // Store the alignment in the bitcode as a 16-bit raw value instead of a 5-bit
   // log2 encoded value. Shift the bits above the alignment up by 11 bits.
-  uint64_t EncodedAttrs = Attrs.getBitMask() & 0xffff;
+  uint64_t EncodedAttrs = Attrs.Raw() & 0xffff;
   if (Attrs.hasAttribute(Attribute::Alignment))
     EncodedAttrs |= Attrs.getAlignment() << 16;
-  EncodedAttrs |= (Attrs.getBitMask() & (0xffffULL << 21)) << 11;
+  EncodedAttrs |= (Attrs.Raw() & (0xffffULL << 21)) << 11;
   return EncodedAttrs;
 }
 
@@ -151,7 +146,7 @@ uint64_t Attribute::encodeLLVMAttributesForBitcode(Attribute Attrs) {
 /// the LLVM attributes that have been decoded from the given integer.  This
 /// function must stay in sync with 'encodeLLVMAttributesForBitcode'.
 Attribute Attribute::decodeLLVMAttributesForBitcode(LLVMContext &C,
-                                                      uint64_t EncodedAttrs) {
+                                                    uint64_t EncodedAttrs) {
   // The alignment is stored as a 16-bit raw value from bits 31--16.  We shift
   // the bits above 31 down by 11 bits.
   unsigned Alignment = (EncodedAttrs & (0xffffULL << 16)) >> 16;
@@ -207,6 +202,8 @@ std::string Attribute::getAsString() const {
     Result += "ssp ";
   if (hasAttribute(Attribute::StackProtectReq))
     Result += "sspreq ";
+  if (hasAttribute(Attribute::StackProtectStrong))
+    Result += "sspstrong ";
   if (hasAttribute(Attribute::NoRedZone))
     Result += "noredzone ";
   if (hasAttribute(Attribute::NoImplicitFloat))
@@ -240,6 +237,36 @@ std::string Attribute::getAsString() const {
 //===----------------------------------------------------------------------===//
 // AttrBuilder Method Implementations
 //===----------------------------------------------------------------------===//
+
+AttrBuilder::AttrBuilder(AttributeSet AS, unsigned Idx)
+  : Alignment(0), StackAlignment(0) {
+  AttributeSetImpl *pImpl = AS.AttrList;
+  if (!pImpl) return;
+
+  ArrayRef<AttributeWithIndex> AttrList = pImpl->getAttributes();
+  const AttributeWithIndex *AWI = 0;
+  for (unsigned I = 0, E = AttrList.size(); I != E; ++I)
+    if (AttrList[I].Index == Idx) {
+      AWI = &AttrList[I];
+      break;
+    }
+
+  if (!AWI) return;
+
+  uint64_t Mask = AWI->Attrs.Raw();
+
+  for (Attribute::AttrKind I = Attribute::None; I != Attribute::EndAttrKinds;
+       I = Attribute::AttrKind(I + 1)) {
+    if (uint64_t A = (Mask & AttributeImpl::getAttrMask(I))) {
+      Attrs.insert(I);
+
+      if (I == Attribute::Alignment)
+        Alignment = 1ULL << ((A >> 16) - 1);
+      else if (I == Attribute::StackAlignment)
+        StackAlignment = 1ULL << ((A >> 26)-1);
+    }
+  }
+}
 
 void AttrBuilder::clear() {
   Attrs.clear();
@@ -289,37 +316,34 @@ AttrBuilder &AttrBuilder::addRawValue(uint64_t Val) {
        I = Attribute::AttrKind(I + 1)) {
     if (uint64_t A = (Val & AttributeImpl::getAttrMask(I))) {
       Attrs.insert(I);
-
+ 
       if (I == Attribute::Alignment)
         Alignment = 1ULL << ((A >> 16) - 1);
       else if (I == Attribute::StackAlignment)
         StackAlignment = 1ULL << ((A >> 26)-1);
     }
   }
-
+ 
   return *this;
 }
 
-AttrBuilder &AttrBuilder::addAttributes(const Attribute &A) {
-  uint64_t Mask = A.getBitMask();
+AttrBuilder &AttrBuilder::addAttributes(const Attribute &Attr) {
+  uint64_t Mask = Attr.Raw();
 
   for (Attribute::AttrKind I = Attribute::None; I != Attribute::EndAttrKinds;
-       I = Attribute::AttrKind(I + 1)) {
-    if (uint64_t A = (Mask & AttributeImpl::getAttrMask(I))) {
+       I = Attribute::AttrKind(I + 1))
+    if ((Mask & AttributeImpl::getAttrMask(I)) != 0)
       Attrs.insert(I);
 
-      if (I == Attribute::Alignment)
-        Alignment = 1ULL << ((A >> 16) - 1);
-      else if (I == Attribute::StackAlignment)
-        StackAlignment = 1ULL << ((A >> 26)-1);
-    }
-  }
-
+  if (Attr.getAlignment())
+    Alignment = Attr.getAlignment();
+  if (Attr.getStackAlignment())
+    StackAlignment = Attr.getStackAlignment();
   return *this;
 }
 
 AttrBuilder &AttrBuilder::removeAttributes(const Attribute &A){
-  uint64_t Mask = A.getBitMask();
+  uint64_t Mask = A.Raw();
 
   for (Attribute::AttrKind I = Attribute::None; I != Attribute::EndAttrKinds;
        I = Attribute::AttrKind(I + 1)) {
@@ -345,14 +369,14 @@ bool AttrBuilder::hasAttributes() const {
 }
 
 bool AttrBuilder::hasAttributes(const Attribute &A) const {
-  return getBitMask() & A.getBitMask();
+  return Raw() & A.Raw();
 }
 
 bool AttrBuilder::hasAlignmentAttr() const {
   return Alignment != 0;
 }
 
-uint64_t AttrBuilder::getBitMask() const {
+uint64_t AttrBuilder::Raw() const {
   uint64_t Mask = 0;
 
   for (DenseSet<Attribute::AttrKind>::const_iterator I = Attrs.begin(),
@@ -415,11 +439,35 @@ bool AttributeImpl::operator==(StringRef Kind) const {
       return CDA->getAsString() == Kind;
   return false;
 }
+
 bool AttributeImpl::operator!=(StringRef Kind) const {
   return !(*this == Kind);
 }
 
-uint64_t AttributeImpl::getBitMask() const {
+bool AttributeImpl::operator<(const AttributeImpl &AI) const {
+  if (!Data && !AI.Data) return false;
+  if (!Data && AI.Data) return true;
+  if (Data && !AI.Data) return false;
+
+  ConstantInt *ThisCI = dyn_cast<ConstantInt>(Data);
+  ConstantInt *ThatCI = dyn_cast<ConstantInt>(AI.Data);
+
+  ConstantDataArray *ThisCDA = dyn_cast<ConstantDataArray>(Data);
+  ConstantDataArray *ThatCDA = dyn_cast<ConstantDataArray>(AI.Data);
+
+  if (ThisCI && ThatCI)
+    return ThisCI->getZExtValue() < ThatCI->getZExtValue();
+
+  if (ThisCI && ThatCDA)
+    return true;
+
+  if (ThisCDA && ThatCI)
+    return false;
+
+  return ThisCDA->getAsString() < ThatCDA->getAsString();
+}
+
+uint64_t AttributeImpl::Raw() const {
   // FIXME: Remove this.
   return cast<ConstantInt>(Data)->getZExtValue();
 }
@@ -461,37 +509,115 @@ uint64_t AttributeImpl::getAttrMask(Attribute::AttrKind Val) {
   case Attribute::AddressSafety:   return 1ULL << 32;
   case Attribute::MinSize:         return 1ULL << 33;
   case Attribute::NoDuplicate:     return 1ULL << 34;
+  case Attribute::StackProtectStrong: return 1ULL << 35;
   }
   llvm_unreachable("Unsupported attribute type");
 }
 
 bool AttributeImpl::hasAttribute(Attribute::AttrKind A) const {
-  return (getBitMask() & getAttrMask(A)) != 0;
+  return (Raw() & getAttrMask(A)) != 0;
 }
 
 bool AttributeImpl::hasAttributes() const {
-  return getBitMask() != 0;
+  return Raw() != 0;
 }
 
 uint64_t AttributeImpl::getAlignment() const {
-  return getBitMask() & getAttrMask(Attribute::Alignment);
-}
-
-void AttributeImpl::setAlignment(unsigned Align) {
-  Vals.push_back(ConstantInt::get(Type::getInt64Ty(Context), Align));
+  uint64_t Mask = Raw() & getAttrMask(Attribute::Alignment);
+  return 1U << ((Mask >> 16) - 1);
 }
 
 uint64_t AttributeImpl::getStackAlignment() const {
-  return getBitMask() & getAttrMask(Attribute::StackAlignment);
+  uint64_t Mask = Raw() & getAttrMask(Attribute::StackAlignment);
+  return 1U << ((Mask >> 26) - 1);
 }
 
-void AttributeImpl::setStackAlignment(unsigned Align) {
-  Vals.push_back(ConstantInt::get(Type::getInt64Ty(Context), Align));
+void AttributeImpl::Profile(FoldingSetNodeID &ID, Constant *Data,
+                            ArrayRef<Constant*> Vals) {
+  ID.AddInteger(cast<ConstantInt>(Data)->getZExtValue());
+#if 0
+  // FIXME: Not yet supported.
+  for (ArrayRef<Constant*>::iterator I = Vals.begin(), E = Vals.end();
+       I != E; ++I)
+    ID.AddPointer(*I);
+#endif
+}
+
+//===----------------------------------------------------------------------===//
+// AttributeWithIndex Definition
+//===----------------------------------------------------------------------===//
+
+AttributeWithIndex AttributeWithIndex::get(LLVMContext &C, unsigned Idx,
+                                           AttributeSet AS) {
+  // FIXME: This is temporary, but necessary for the conversion.
+  AttrBuilder B(AS, Idx);
+  return get(Idx, Attribute::get(C, B));
+}
+
+//===----------------------------------------------------------------------===//
+// AttributeSetNode Definition
+//===----------------------------------------------------------------------===//
+
+AttributeSetNode *AttributeSetNode::get(LLVMContext &C,
+                                        ArrayRef<Attribute> Attrs) {
+  if (Attrs.empty())
+    return 0;
+
+  // Otherwise, build a key to look up the existing attributes.
+  LLVMContextImpl *pImpl = C.pImpl;
+  FoldingSetNodeID ID;
+
+  SmallVector<Attribute, 8> SortedAttrs(Attrs.begin(), Attrs.end());
+  std::sort(SortedAttrs.begin(), SortedAttrs.end());
+
+  for (SmallVectorImpl<Attribute>::iterator I = SortedAttrs.begin(),
+         E = SortedAttrs.end(); I != E; ++I)
+    I->Profile(ID);
+
+  void *InsertPoint;
+  AttributeSetNode *PA =
+    pImpl->AttrsSetNodes.FindNodeOrInsertPos(ID, InsertPoint);
+
+  // If we didn't find any existing attributes of the same shape then create a
+  // new one and insert it.
+  if (!PA) {
+    PA = new AttributeSetNode(SortedAttrs);
+    pImpl->AttrsSetNodes.InsertNode(PA, InsertPoint);
+  }
+
+  // Return the AttributesListNode that we found or created.
+  return PA;
 }
 
 //===----------------------------------------------------------------------===//
 // AttributeSetImpl Definition
 //===----------------------------------------------------------------------===//
+
+AttributeSet AttributeSet::getParamAttributes(unsigned Idx) const {
+  // FIXME: Remove.
+  return AttrList && hasAttributes(Idx) ?
+    AttributeSet::get(AttrList->getContext(),
+                      AttributeWithIndex::get(Idx, getAttributes(Idx))) :
+    AttributeSet();
+}
+
+AttributeSet AttributeSet::getRetAttributes() const {
+  // FIXME: Remove.
+  return AttrList && hasAttributes(ReturnIndex) ?
+    AttributeSet::get(AttrList->getContext(),
+                      AttributeWithIndex::get(ReturnIndex,
+                                              getAttributes(ReturnIndex))) :
+    AttributeSet();
+}
+
+AttributeSet AttributeSet::getFnAttributes() const {
+  // FIXME: Remove.
+  return AttrList && hasAttributes(FunctionIndex) ?
+    AttributeSet::get(AttrList->getContext(),
+                      AttributeWithIndex::get(FunctionIndex,
+                                              getAttributes(FunctionIndex))) :
+    AttributeSet();
+}
 
 AttributeSet AttributeSet::get(LLVMContext &C,
                                ArrayRef<AttributeWithIndex> Attrs) {
@@ -528,20 +654,16 @@ AttributeSet AttributeSet::get(LLVMContext &C,
 }
 
 AttributeSet AttributeSet::get(LLVMContext &C, unsigned Idx, AttrBuilder &B) {
-  SmallVector<AttributeWithIndex, 8> Attrs;
-  for (AttrBuilder::iterator I = B.begin(), E = B.end(); I != E; ++I) {
-    Attribute::AttrKind Kind = *I;
-    Attribute A = Attribute::get(C, Kind);
+  // FIXME: This should be implemented as a loop that creates the
+  // AttributeWithIndexes that then are used to create the AttributeSet.
+  if (!B.hasAttributes())
+    return AttributeSet();
+  return get(C, AttributeWithIndex::get(Idx, Attribute::get(C, B)));
+}
 
-    if (Kind == Attribute::Alignment)
-      A.setAlignment(B.getAlignment());
-    else if (Kind == Attribute::StackAlignment)
-      A.setStackAlignment(B.getStackAlignment());
-
-    Attrs.push_back(AttributeWithIndex::get(Idx, A));
-  }
-
-  return get(C, Attrs);
+AttributeSet AttributeSet::get(LLVMContext &C, unsigned Idx,
+                               Attribute::AttrKind Kind) {
+  return get(C, AttributeWithIndex::get(Idx, Attribute::get(C, Kind)));
 }
 
 //===----------------------------------------------------------------------===//
@@ -580,18 +702,20 @@ std::string AttributeSet::getAsString(unsigned Index) const {
   return getAttributes(Index).getAsString();
 }
 
+unsigned AttributeSet::getParamAlignment(unsigned Idx) const {
+  return getAttributes(Idx).getAlignment();
+}
+
 unsigned AttributeSet::getStackAlignment(unsigned Index) const {
   return getAttributes(Index).getStackAlignment();
 }
 
-uint64_t AttributeSet::getBitMask(unsigned Index) const {
+uint64_t AttributeSet::Raw(unsigned Index) const {
   // FIXME: Remove this.
-  return getAttributes(Index).getBitMask();
+  return getAttributes(Index).Raw();
 }
 
 /// getAttributes - The attributes for the specified index are returned.
-/// Attributes for the result are denoted with Idx = 0.  Function attributes are
-/// denoted with Idx = ~0.
 Attribute AttributeSet::getAttributes(unsigned Idx) const {
   if (AttrList == 0) return Attribute();
 
@@ -614,6 +738,16 @@ bool AttributeSet::hasAttrSomewhere(Attribute::AttrKind Attr) const {
       return true;
 
   return false;
+}
+
+AttributeSet AttributeSet::addAttribute(LLVMContext &C, unsigned Idx,
+                                        Attribute::AttrKind Attr) const {
+  return addAttr(C, Idx, Attribute::get(C, Attr));
+}
+
+AttributeSet AttributeSet::addAttributes(LLVMContext &C, unsigned Idx,
+                                         AttributeSet Attrs) const {
+  return addAttr(C, Idx, Attrs.getAttributes(Idx));
 }
 
 AttributeSet AttributeSet::addAttr(LLVMContext &C, unsigned Idx,
@@ -659,6 +793,16 @@ AttributeSet AttributeSet::addAttr(LLVMContext &C, unsigned Idx,
   }
 
   return get(C, NewAttrList);
+}
+
+AttributeSet AttributeSet::removeAttribute(LLVMContext &C, unsigned Idx,
+                                           Attribute::AttrKind Attr) const {
+  return removeAttr(C, Idx, Attribute::get(C, Attr));
+}
+
+AttributeSet AttributeSet::removeAttributes(LLVMContext &C, unsigned Idx,
+                                            AttributeSet Attrs) const {
+  return removeAttr(C, Idx, Attrs.getAttributes(Idx));
 }
 
 AttributeSet AttributeSet::removeAttr(LLVMContext &C, unsigned Idx,
