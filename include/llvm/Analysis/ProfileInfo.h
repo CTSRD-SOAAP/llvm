@@ -25,7 +25,7 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/Format.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Instructions.h"
+#include "llvm/IR/Instructions.h"
 
 #include <cassert>
 #include <map>

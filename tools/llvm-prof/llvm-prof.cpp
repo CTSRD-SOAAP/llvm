@@ -32,7 +32,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/system_error.h"
 #include "llvm/Support/InstIterator.h"
-#include "llvm/Instructions.h"
+#include "llvm/IR/Instructions.h"
 
 #include <algorithm>
 #include <iomanip>
