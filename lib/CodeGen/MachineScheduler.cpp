@@ -467,7 +467,8 @@ void ScheduleDAGMI::initRegPressure() {
   // Cache the list of excess pressure sets in this region. This will also track
   // the max pressure in the scheduled code for these sets.
   RegionCriticalPSets.clear();
-  std::vector<unsigned> RegionPressure = RPTracker.getPressure().MaxSetPressure;
+  const std::vector<unsigned> &RegionPressure =
+    RPTracker.getPressure().MaxSetPressure;
   for (unsigned i = 0, e = RegionPressure.size(); i < e; ++i) {
     unsigned Limit = TRI->getRegPressureSetLimit(i);
     DEBUG(dbgs() << TRI->getRegPressureSetName(i)
@@ -586,17 +587,19 @@ void ScheduleDAGMI::findRootsAndBiasEdges(SmallVectorImpl<SUnit*> &TopRoots,
   for (std::vector<SUnit>::iterator
          I = SUnits.begin(), E = SUnits.end(); I != E; ++I) {
     SUnit *SU = &(*I);
+    assert(!SU->isBoundaryNode() && "Boundary node should not be in SUnits");
 
     // Order predecessors so DFSResult follows the critical path.
     SU->biasCriticalPath();
 
     // A SUnit is ready to top schedule if it has no predecessors.
-    if (!I->NumPredsLeft && SU != &EntrySU)
+    if (!I->NumPredsLeft)
       TopRoots.push_back(SU);
     // A SUnit is ready to bottom schedule if it has no successors.
-    if (!I->NumSuccsLeft && SU != &ExitSU)
+    if (!I->NumSuccsLeft)
       BotRoots.push_back(SU);
   }
+  ExitSU.biasCriticalPath();
 }
 
 /// Identify DAG roots and setup scheduler queues.

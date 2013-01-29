@@ -18,6 +18,7 @@
 
 #include "llvm/ADT/FoldingSet.h"
 #include "llvm/IR/Attributes.h"
+#include <string>
 
 namespace llvm {
 
@@ -32,20 +33,23 @@ class AttributeImpl : public FoldingSetNode {
   LLVMContext &Context;
   Constant *Data;
   SmallVector<Constant*, 0> Vals;
+
+  // AttributesImpl is uniqued, these should not be publicly available.
+  void operator=(const AttributeImpl &) LLVM_DELETED_FUNCTION;
+  AttributeImpl(const AttributeImpl &) LLVM_DELETED_FUNCTION;
 public:
-  explicit AttributeImpl(LLVMContext &C, uint64_t data);
+  AttributeImpl(LLVMContext &C, Constant *Data)
+    : Context(C), Data(Data) {}
   explicit AttributeImpl(LLVMContext &C, Attribute::AttrKind data);
   AttributeImpl(LLVMContext &C, Attribute::AttrKind data,
                 ArrayRef<Constant*> values);
   AttributeImpl(LLVMContext &C, StringRef data);
 
-  LLVMContext &getContext() { return Context; }
-
-  ArrayRef<Constant*> getValues() const { return Vals; }
-
   bool hasAttribute(Attribute::AttrKind A) const;
-
   bool hasAttributes() const;
+
+  LLVMContext &getContext() { return Context; }
+  ArrayRef<Constant*> getValues() const { return Vals; }
 
   uint64_t getAlignment() const;
   uint64_t getStackAlignment() const;
@@ -58,15 +62,19 @@ public:
 
   bool operator<(const AttributeImpl &AI) const;
 
-  uint64_t Raw() const;         // FIXME: Remove.
-
-  static uint64_t getAttrMask(Attribute::AttrKind Val);
-
   void Profile(FoldingSetNodeID &ID) const {
     Profile(ID, Data, Vals);
   }
   static void Profile(FoldingSetNodeID &ID, Constant *Data,
-                      ArrayRef<Constant*> Vals);
+                      ArrayRef<Constant*> Vals) {
+    ID.AddPointer(Data);
+    for (unsigned I = 0, E = Vals.size(); I != E; ++I)
+      ID.AddPointer(Vals[I]);
+  }
+
+  // FIXME: Remove these!
+  uint64_t Raw() const;
+  static uint64_t getAttrMask(Attribute::AttrKind Val);
 };
 
 //===----------------------------------------------------------------------===//
@@ -78,8 +86,19 @@ class AttributeSetNode : public FoldingSetNode {
 
   AttributeSetNode(ArrayRef<Attribute> Attrs)
     : AttrList(Attrs.begin(), Attrs.end()) {}
+
+  // AttributesSetNode is uniqued, these should not be publicly available.
+  void operator=(const AttributeSetNode &) LLVM_DELETED_FUNCTION;
+  AttributeSetNode(const AttributeSetNode &) LLVM_DELETED_FUNCTION;
 public:
   static AttributeSetNode *get(LLVMContext &C, ArrayRef<Attribute> Attrs);
+
+  bool hasAttribute(Attribute::AttrKind Kind) const;
+  bool hasAttributes() const { return !AttrList.empty(); }
+
+  unsigned getAlignment() const;
+  unsigned getStackAlignment() const;
+  std::string getAsString() const;
 
   typedef SmallVectorImpl<Attribute>::iterator       iterator;
   typedef SmallVectorImpl<Attribute>::const_iterator const_iterator;
@@ -104,43 +123,75 @@ public:
 /// \brief This class represents a set of attributes that apply to the function,
 /// return type, and parameters.
 class AttributeSetImpl : public FoldingSetNode {
-  LLVMContext &Context;
-  SmallVector<AttributeWithIndex, 4> AttrList;
+  friend class AttributeSet;
 
-  SmallVector<std::pair<uint64_t, AttributeSetNode*>, 4> AttrNodes;
+  LLVMContext &Context;
+
+  typedef std::pair<unsigned, AttributeSetNode*> IndexAttrPair;
+  SmallVector<IndexAttrPair, 4> AttrNodes;
 
   // AttributesSet is uniqued, these should not be publicly available.
   void operator=(const AttributeSetImpl &) LLVM_DELETED_FUNCTION;
   AttributeSetImpl(const AttributeSetImpl &) LLVM_DELETED_FUNCTION;
 public:
-  AttributeSetImpl(LLVMContext &C, ArrayRef<AttributeWithIndex> attrs)
-    : Context(C), AttrList(attrs.begin(), attrs.end()) {}
   AttributeSetImpl(LLVMContext &C,
-                   ArrayRef<std::pair<uint64_t, AttributeSetNode*> > attrs)
+                   ArrayRef<std::pair<unsigned, AttributeSetNode*> > attrs)
     : Context(C), AttrNodes(attrs.begin(), attrs.end()) {}
 
+  /// \brief Get the context that created this AttributeSetImpl.
   LLVMContext &getContext() { return Context; }
-  ArrayRef<AttributeWithIndex> getAttributes() const { return AttrList; }
-  unsigned getNumAttributes() const { return AttrList.size(); }
+
+  /// \brief Return the number of attributes this AttributeSet contains.
+  unsigned getNumAttributes() const { return AttrNodes.size(); }
+
+  /// \brief Get the index of the given "slot" in the AttrNodes list. This index
+  /// is the index of the return, parameter, or function object that the
+  /// attributes are applied to, not the index into the AttrNodes list where the
+  /// attributes reside.
+  uint64_t getSlotIndex(unsigned Slot) const {
+    return AttrNodes[Slot].first;
+  }
+
+  /// \brief Retrieve the attributes for the given "slot" in the AttrNode list.
+  /// \p Slot is an index into the AttrNodes list, not the index of the return /
+  /// parameter/ function which the attributes apply to.
+  AttributeSet getSlotAttributes(unsigned Slot) const {
+    // FIXME: This needs to use AttrNodes instead.
+    return AttributeSet::get(Context, AttrNodes[Slot]);
+  }
+
+  /// \brief Retrieve the attribute set node for the given "slot" in the
+  /// AttrNode list.
+  AttributeSetNode *getSlotNode(unsigned Slot) const {
+    return AttrNodes[Slot].second;
+  }
+
+  typedef AttributeSetNode::iterator       iterator;
+  typedef AttributeSetNode::const_iterator const_iterator;
+
+  iterator begin(unsigned Idx)
+    { return AttrNodes[Idx].second->begin(); }
+  iterator end(unsigned Idx)
+    { return AttrNodes[Idx].second->end(); }
+
+  const_iterator begin(unsigned Idx) const
+    { return AttrNodes[Idx].second->begin(); }
+  const_iterator end(unsigned Idx) const
+    { return AttrNodes[Idx].second->end(); }
 
   void Profile(FoldingSetNodeID &ID) const {
-    Profile(ID, AttrList);
+    Profile(ID, AttrNodes);
   }
   static void Profile(FoldingSetNodeID &ID,
-                      ArrayRef<AttributeWithIndex> AttrList) {
-    for (unsigned i = 0, e = AttrList.size(); i != e; ++i) {
-      ID.AddInteger(AttrList[i].Index);
-      ID.AddInteger(AttrList[i].Attrs.Raw());
-    }
-  }
-
-  static void Profile(FoldingSetNodeID &ID,
-                      ArrayRef<std::pair<uint64_t, AttributeSetNode*> > Nodes) {
+                      ArrayRef<std::pair<unsigned, AttributeSetNode*> > Nodes) {
     for (unsigned i = 0, e = Nodes.size(); i != e; ++i) {
       ID.AddInteger(Nodes[i].first);
       ID.AddPointer(Nodes[i].second);
     }
   }
+
+  // FIXME: This atrocity is temporary.
+  uint64_t Raw(uint64_t Index) const;
 };
 
 } // end llvm namespace
