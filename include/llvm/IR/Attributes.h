@@ -28,6 +28,7 @@ class AttrBuilder;
 class AttributeImpl;
 class AttributeSetImpl;
 class AttributeSetNode;
+class Constant;
 class LLVMContext;
 class Type;
 
@@ -40,13 +41,13 @@ class Type;
 class Attribute {
 public:
   /// This enumeration lists the attributes that can be associated with
-  /// parameters, function results or the function itself.
+  /// parameters, function results, or the function itself.
   ///
-  /// Note: uwtable is about the ABI or the user mandating an entry in the
-  /// unwind table. The nounwind attribute is about an exception passing by the
-  /// function.
+  /// Note: The `uwtable' attribute is about the ABI or the user mandating an
+  /// entry in the unwind table. The `nounwind' attribute is about an exception
+  /// passing by the function.
   ///
-  /// In a theoretical system that uses tables for profiling and sjlj for
+  /// In a theoretical system that uses tables for profiling and SjLj for
   /// exceptions, they would be fully independent. In a normal system that uses
   /// tables for both, the semantics are:
   ///
@@ -112,8 +113,8 @@ public:
   //===--------------------------------------------------------------------===//
 
   /// \brief Return a uniquified Attribute object.
-  static Attribute get(LLVMContext &Context, AttrKind Kind);
-  static Attribute get(LLVMContext &Context, AttrBuilder &B);
+  static Attribute get(LLVMContext &Context, AttrKind Kind, Constant *Val = 0);
+  static Attribute get(LLVMContext &Context, Constant *Kind, Constant *Val = 0);
 
   /// \brief Return a uniquified Attribute object that has the specific
   /// alignment set.
@@ -127,8 +128,11 @@ public:
   /// \brief Return true if the attribute is present.
   bool hasAttribute(AttrKind Val) const;
 
-  /// \brief Return true if attributes exist
-  bool hasAttributes() const;
+  /// \brief Return the kind of this attribute.
+  Constant *getAttributeKind() const;
+
+  /// \brief Return the value (if present) of the non-target-specific attribute.
+  ArrayRef<Constant*> getAttributeValues() const;
 
   /// \brief Returns the alignment field of an attribute as a byte alignment
   /// value.
@@ -155,9 +159,6 @@ public:
   void Profile(FoldingSetNodeID &ID) const {
     ID.AddPointer(pImpl);
   }
-
-  // FIXME: Remove this.
-  uint64_t Raw() const;
 };
 
 //===----------------------------------------------------------------------===//
@@ -174,12 +175,11 @@ private:
   friend class AttrBuilder;
   friend class AttributeSetImpl;
 
-  /// \brief The attributes that we are managing.  This can be null to represent
+  /// \brief The attributes that we are managing. This can be null to represent
   /// the empty attributes list.
   AttributeSetImpl *pImpl;
 
-  /// \brief The attributes for the specified index are returned.  Attributes
-  /// for the result are denoted with Idx = 0.
+  /// \brief The attributes for the specified index are returned.
   AttributeSetNode *getAttributes(unsigned Idx) const;
 
   /// \brief Create an AttributeSet with the specified parameters in it.
@@ -222,18 +222,6 @@ public:
   /// attribute sets are immutable, this returns a new set.
   AttributeSet addAttributes(LLVMContext &C, unsigned Idx,
                              AttributeSet Attrs) const;
-
-  /// \brief Add return attributes to this attribute set. Since attribute sets
-  /// are immutable, this returns a new set.
-  AttributeSet addRetAttributes(LLVMContext &C, AttributeSet Attrs) const {
-    return addAttributes(C, ReturnIndex, Attrs);
-  }
-
-  /// \brief Add function attributes to this attribute set. Since attribute sets
-  /// are immutable, this returns a new set.
-  AttributeSet addFnAttributes(LLVMContext &C, AttributeSet Attrs) const {
-    return addAttributes(C, FunctionIndex, Attrs);
-  }
 
   /// \brief Remove the specified attribute at the specified index from this
   /// attribute list. Since attribute lists are immutable, this returns the new
@@ -279,6 +267,11 @@ public:
   /// \brief Return the attributes at the index as a string.
   std::string getAsString(unsigned Index) const;
 
+  typedef ArrayRef<Attribute>::iterator iterator;
+
+  iterator begin(unsigned Idx) const;
+  iterator end(unsigned Idx) const;
+
   /// operator==/!= - Provide equality predicates.
   bool operator==(const AttributeSet &RHS) const {
     return pImpl == RHS.pImpl;
@@ -301,7 +294,7 @@ public:
 
   /// \brief Return true if there are no attributes.
   bool isEmpty() const {
-    return pImpl == 0;
+    return getNumSlots() == 0;
   }
 
   /// \brief Return the number of slots used in this attribute list.  This is
@@ -354,7 +347,7 @@ public:
     addRawValue(B);
   }
   AttrBuilder(const Attribute &A) : Alignment(0), StackAlignment(0) {
-    addAttributes(A);
+    addAttribute(A);
   }
   AttrBuilder(AttributeSet AS, unsigned Idx);
 
@@ -363,17 +356,14 @@ public:
   /// \brief Add an attribute to the builder.
   AttrBuilder &addAttribute(Attribute::AttrKind Val);
 
+  /// \brief Add the Attribute object to the builder.
+  AttrBuilder &addAttribute(Attribute A);
+
   /// \brief Remove an attribute from the builder.
   AttrBuilder &removeAttribute(Attribute::AttrKind Val);
 
-  /// \brief Add the attributes to the builder.
-  AttrBuilder &addAttributes(Attribute A);
-
   /// \brief Remove the attributes from the builder.
-  AttrBuilder &removeAttributes(Attribute A);
-
-  /// \brief Add the attributes to the builder.
-  AttrBuilder &addAttributes(AttributeSet A);
+  AttrBuilder &removeAttributes(AttributeSet A, uint64_t Index);
 
   /// \brief Return true if the builder has the specified attribute.
   bool contains(Attribute::AttrKind A) const;
@@ -383,7 +373,7 @@ public:
 
   /// \brief Return true if the builder has any attribute that's in the
   /// specified attribute.
-  bool hasAttributes(const Attribute &A) const;
+  bool hasAttributes(AttributeSet A, uint64_t Index) const;
 
   /// \brief Return true if the builder has an alignment attribute.
   bool hasAlignmentAttr() const;
@@ -454,7 +444,7 @@ public:
 namespace AttributeFuncs {
 
 /// \brief Which attributes cannot be applied to a type.
-Attribute typeIncompatible(Type *Ty);
+AttributeSet typeIncompatible(Type *Ty, uint64_t Index);
 
 /// \brief This returns an integer containing an encoding of all the LLVM
 /// attributes found in the given attribute bitset.  Any change to this encoding

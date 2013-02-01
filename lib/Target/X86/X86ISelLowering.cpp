@@ -1294,7 +1294,7 @@ X86TargetLowering::X86TargetLowering(X86TargetMachine &TM)
   if (Subtarget->hasSinCos()) {
     setLibcallName(RTLIB::SINCOS_F32, "sincosf");
     setLibcallName(RTLIB::SINCOS_F64, "sincos");
-    if (Subtarget->isTargetDarwin() && Subtarget->is64Bit()) {
+    if (Subtarget->isTargetDarwin()) {
       // For MacOSX, we don't want to the normal expansion of a libcall to
       // sincos. We want to issue a libcall to __sincos_stret to avoid memory
       // traffic.
@@ -12037,47 +12037,40 @@ static SDValue LowerADDC_ADDE_SUBC_SUBE(SDValue Op, SelectionDAG &DAG) {
 }
 
 SDValue X86TargetLowering::LowerFSINCOS(SDValue Op, SelectionDAG &DAG) const {
-  assert(Subtarget->isTargetDarwin());
- 
+  assert(Subtarget->isTargetDarwin() && Subtarget->is64Bit());
+
   // For MacOSX, we want to call an alternative entry point: __sincos_stret,
   // which returns the values in two XMM registers.
   DebugLoc dl = Op.getDebugLoc();
   SDValue Arg = Op.getOperand(0);
   EVT ArgVT = Arg.getValueType();
   Type *ArgTy = ArgVT.getTypeForEVT(*DAG.getContext());
-  
+
   ArgListTy Args;
   ArgListEntry Entry;
-  
+
   Entry.Node = Arg;
   Entry.Ty = ArgTy;
   Entry.isSExt = false;
   Entry.isZExt = false;
   Args.push_back(Entry);
-  
+
+  // Only optimize x86_64 for now. i386 is a bit messy. For f32,
+  // the small struct {f32, f32} is returned in (eax, edx). For f64,
+  // the results are returned via SRet in memory.
   const char *LibcallName = (ArgVT == MVT::f64)
     ? "__sincos_stret" : "__sincosf_stret";
   SDValue Callee = DAG.getExternalSymbol(LibcallName, getPointerTy());
-  
+
   StructType *RetTy = StructType::get(ArgTy, ArgTy, NULL);
   TargetLowering::
-  CallLoweringInfo CLI(DAG.getEntryNode(), RetTy,
-                       false, false, false, false, 0,
-                       CallingConv::C, /*isTaillCall=*/false,
-                       /*doesNotRet=*/false, /*isReturnValueUsed*/true,
-                       Callee, Args, DAG, dl);
+    CallLoweringInfo CLI(DAG.getEntryNode(), RetTy,
+                         false, false, false, false, 0,
+                         CallingConv::C, /*isTaillCall=*/false,
+                         /*doesNotRet=*/false, /*isReturnValueUsed*/true,
+                         Callee, Args, DAG, dl);
   std::pair<SDValue, SDValue> CallResult = LowerCallTo(CLI);
-#if 1
   return CallResult.first;
-#else
-  SDValue RetSin = DAG.getNode(ISD::EXTRACT_ELEMENT, dl, ArgVT,
-                               CallResult.first, DAG.getIntPtrConstant(0));
-  SDValue RetCos = DAG.getNode(ISD::EXTRACT_ELEMENT, dl, ArgVT,
-                               CallResult.first, DAG.getIntPtrConstant(1));
-  
-  SDVTList Tys = DAG.getVTList(ArgVT, ArgVT);
-  return DAG.getNode(ISD::MERGE_VALUES, dl, Tys, RetSin, RetCos);
-#endif
 }
 
 /// LowerOperation - Provide custom lowering hooks for some operations.
@@ -16519,8 +16512,8 @@ static SDValue PerformLOADCombine(SDNode *N, SelectionDAG &DAG,
 
     // Represent the data using the same element type that is stored in
     // memory. In practice, we ''widen'' MemVT.
-    EVT WideVecVT = 
-	  EVT::getVectorVT(*DAG.getContext(), MemVT.getScalarType(),
+    EVT WideVecVT =
+          EVT::getVectorVT(*DAG.getContext(), MemVT.getScalarType(),
                        loadRegZize/MemVT.getScalarType().getSizeInBits());
 
     assert(WideVecVT.getSizeInBits() == LoadUnitVecVT.getSizeInBits() &&
@@ -17206,8 +17199,8 @@ static SDValue PerformISDSETCCCombine(SDNode *N, SelectionDAG &DAG) {
   return SDValue();
 }
 
-// Helper function of PerformSETCCCombine. It is to materialize "setb reg" 
-// as "sbb reg,reg", since it can be extended without zext and produces 
+// Helper function of PerformSETCCCombine. It is to materialize "setb reg"
+// as "sbb reg,reg", since it can be extended without zext and produces
 // an all-ones bit which is more useful than 0/1 in some cases.
 static SDValue MaterializeSETB(DebugLoc DL, SDValue EFLAGS, SelectionDAG &DAG) {
   return DAG.getNode(ISD::AND, DL, MVT::i8,
@@ -17225,13 +17218,13 @@ static SDValue PerformSETCCCombine(SDNode *N, SelectionDAG &DAG,
   SDValue EFLAGS = N->getOperand(1);
 
   if (CC == X86::COND_A) {
-    // Try to convert COND_A into COND_B in an attempt to facilitate 
+    // Try to convert COND_A into COND_B in an attempt to facilitate
     // materializing "setb reg".
     //
     // Do not flip "e > c", where "c" is a constant, because Cmp instruction
     // cannot take an immediate as its first operand.
     //
-    if (EFLAGS.getOpcode() == X86ISD::SUB && EFLAGS.hasOneUse() && 
+    if (EFLAGS.getOpcode() == X86ISD::SUB && EFLAGS.hasOneUse() &&
         EFLAGS.getValueType().isInteger() &&
         !isa<ConstantSDNode>(EFLAGS.getOperand(1))) {
       SDValue NewSub = DAG.getNode(X86ISD::SUB, EFLAGS.getDebugLoc(),
@@ -18177,7 +18170,7 @@ X86TargetLowering::getRegForInlineAsmConstraint(const std::string &Constraint,
         Res.first = DestReg;
         Res.second = &X86::GR8RegClass;
       }
-    } else if (VT == MVT::i32) {
+    } else if (VT == MVT::i32 || VT == MVT::f32) {
       unsigned DestReg = 0;
       switch (Res.first) {
       default: break;
@@ -18194,7 +18187,7 @@ X86TargetLowering::getRegForInlineAsmConstraint(const std::string &Constraint,
         Res.first = DestReg;
         Res.second = &X86::GR32RegClass;
       }
-    } else if (VT == MVT::i64) {
+    } else if (VT == MVT::i64 || VT == MVT::f64) {
       unsigned DestReg = 0;
       switch (Res.first) {
       default: break;

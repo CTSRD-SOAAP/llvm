@@ -171,33 +171,36 @@ static const Value *FindSingleUseIdentifiedObject(const Value *Arg) {
   return 0;
 }
 
-/// \brief Test whether the given pointer, which is an Objective C block
-/// pointer, does not "escape".
+/// \brief Test whether the given retainable object pointer escapes.
 ///
 /// This differs from regular escape analysis in that a use as an
 /// argument to a call is not considered an escape.
 ///
-static bool DoesObjCBlockEscape(const Value *BlockPtr) {
-
-  DEBUG(dbgs() << "DoesObjCBlockEscape: Target: " << *BlockPtr << "\n");
+static bool DoesRetainableObjPtrEscape(const User *Ptr) {
+  DEBUG(dbgs() << "DoesRetainableObjPtrEscape: Target: " << *Ptr << "\n");
 
   // Walk the def-use chains.
   SmallVector<const Value *, 4> Worklist;
-  Worklist.push_back(BlockPtr);
+  Worklist.push_back(Ptr);
+  // If Ptr has any operands add them as well.
+  for (User::const_op_iterator I = Ptr->op_begin(), E = Ptr->op_end(); I != E;
+       ++I) {
+    Worklist.push_back(*I);
+  }
 
   // Ensure we do not visit any value twice.
-  SmallPtrSet<const Value *, 4> VisitedSet;
+  SmallPtrSet<const Value *, 8> VisitedSet;
 
   do {
     const Value *V = Worklist.pop_back_val();
 
-    DEBUG(dbgs() << "DoesObjCBlockEscape: Visiting: " << *V << "\n");
+    DEBUG(dbgs() << "DoesRetainableObjPtrEscape: Visiting: " << *V << "\n");
 
     for (Value::const_use_iterator UI = V->use_begin(), UE = V->use_end();
          UI != UE; ++UI) {
       const User *UUser = *UI;
 
-      DEBUG(dbgs() << "DoesObjCBlockEscape: User: " << *UUser << "\n");
+      DEBUG(dbgs() << "DoesRetainableObjPtrEscape: User: " << *UUser << "\n");
 
       // Special - Use by a call (callee or argument) is not considered
       // to be an escape.
@@ -207,8 +210,8 @@ static bool DoesObjCBlockEscape(const Value *BlockPtr) {
       case IC_StoreStrong:
       case IC_Autorelease:
       case IC_AutoreleaseRV: {
-        DEBUG(dbgs() << "DoesObjCBlockEscape: User copies pointer arguments. "
-                        "Block Escapes!\n");
+        DEBUG(dbgs() << "DoesRetainableObjPtrEscape: User copies pointer "
+              "arguments. Pointer Escapes!\n");
         // These special functions make copies of their pointer arguments.
         return true;
       }
@@ -220,11 +223,12 @@ static bool DoesObjCBlockEscape(const Value *BlockPtr) {
             isa<PHINode>(UUser) || isa<SelectInst>(UUser)) {
 
           if (!VisitedSet.insert(UUser)) {
-            DEBUG(dbgs() << "DoesObjCBlockEscape: User copies value. Escapes "
-                            "if result escapes. Adding to list.\n");
+            DEBUG(dbgs() << "DoesRetainableObjPtrEscape: User copies value. "
+                  "Ptr escapes if result escapes. Adding to list.\n");
             Worklist.push_back(UUser);
           } else {
-            DEBUG(dbgs() << "DoesObjCBlockEscape: Already visited node.\n");
+            DEBUG(dbgs() << "DoesRetainableObjPtrEscape: Already visited node."
+                  "\n");
           }
           continue;
         }
@@ -241,13 +245,13 @@ static bool DoesObjCBlockEscape(const Value *BlockPtr) {
         continue;
       }
       // Otherwise, conservatively assume an escape.
-      DEBUG(dbgs() << "DoesObjCBlockEscape: Assuming block escapes.\n");
+      DEBUG(dbgs() << "DoesRetainableObjPtrEscape: Assuming ptr escapes.\n");
       return true;
     }
   } while (!Worklist.empty());
 
   // No escapes found.
-  DEBUG(dbgs() << "DoesObjCBlockEscape: Block does not escape.\n");
+  DEBUG(dbgs() << "DoesRetainableObjPtrEscape: Ptr does not escape.\n");
   return false;
 }
 
@@ -309,13 +313,35 @@ namespace {
   /// objc_retain and objc_release are actually needed.
   enum Sequence {
     S_None,
-    S_Retain,         ///< objc_retain(x)
-    S_CanRelease,     ///< foo(x) -- x could possibly see a ref count decrement
-    S_Use,            ///< any use of x
-    S_Stop,           ///< like S_Release, but code motion is stopped
-    S_Release,        ///< objc_release(x)
-    S_MovableRelease  ///< objc_release(x), !clang.imprecise_release
+    S_Retain,         ///< objc_retain(x).
+    S_CanRelease,     ///< foo(x) -- x could possibly see a ref count decrement.
+    S_Use,            ///< any use of x.
+    S_Stop,           ///< like S_Release, but code motion is stopped.
+    S_Release,        ///< objc_release(x).
+    S_MovableRelease  ///< objc_release(x), !clang.imprecise_release.
   };
+
+  raw_ostream &operator<<(raw_ostream &OS, const Sequence S)
+    LLVM_ATTRIBUTE_UNUSED;
+  raw_ostream &operator<<(raw_ostream &OS, const Sequence S) {
+    switch (S) {
+    case S_None:
+      return OS << "S_None";
+    case S_Retain:
+      return OS << "S_Retain";
+    case S_CanRelease:
+      return OS << "S_CanRelease";
+    case S_Use:
+      return OS << "S_Use";
+    case S_Release:
+      return OS << "S_Release";
+    case S_MovableRelease:
+      return OS << "S_MovableRelease";
+    case S_Stop:
+      return OS << "S_Stop";
+    }
+    llvm_unreachable("Unknown sequence type.");
+  }
 }
 
 static Sequence MergeSeqs(Sequence A, Sequence B, bool TopDown) {
@@ -425,31 +451,31 @@ namespace {
     PtrState() : KnownPositiveRefCount(false), Partial(false),
                  Seq(S_None) {}
 
-    void SetKnownPositiveRefCount() {
+    inline void SetKnownPositiveRefCount() {
       KnownPositiveRefCount = true;
     }
 
-    void ClearRefCount() {
+    inline void ClearRefCount() {
       KnownPositiveRefCount = false;
     }
 
-    bool IsKnownIncremented() const {
+    inline bool IsKnownIncremented() const {
       return KnownPositiveRefCount;
     }
 
-    void SetSeq(Sequence NewSeq) {
+    inline void SetSeq(Sequence NewSeq) {
       Seq = NewSeq;
     }
 
-    Sequence GetSeq() const {
+    inline Sequence GetSeq() const {
       return Seq;
     }
 
-    void ClearSequenceProgress() {
+    inline void ClearSequenceProgress() {
       ResetSequenceProgress(S_None);
     }
 
-    void ResetSequenceProgress(Sequence NewSeq) {
+    inline void ResetSequenceProgress(Sequence NewSeq) {
       Seq = NewSeq;
       Partial = false;
       RRI.clear();
@@ -822,7 +848,7 @@ bool ObjCARCOpt::IsRetainBlockOptimizable(const Instruction *Inst) {
 
   // If the pointer "escapes" (not including being used in a call),
   // the copy may be needed.
-  if (DoesObjCBlockEscape(Inst))
+  if (DoesRetainableObjPtrEscape(Inst))
     return false;
 
   // Otherwise, it's not needed.

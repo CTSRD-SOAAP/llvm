@@ -751,7 +751,7 @@ void PEI::replaceFrameIndices(MachineFunction &Fn) {
 
       MachineInstr *MI = I;
       bool DoIncr = true;
-      for (unsigned i = 0, e = MI->getNumOperands(); i != e; ++i)
+      for (unsigned i = 0, e = MI->getNumOperands(); i != e; ++i) {
         if (MI->getOperand(i).isFI()) {
           // Some instructions (e.g. inline asm instructions) can have
           // multiple frame indices and/or cause eliminateFrameIndex
@@ -766,7 +766,7 @@ void PEI::replaceFrameIndices(MachineFunction &Fn) {
           // If this instruction has a FrameIndex operand, we need to
           // use that target machine register info object to eliminate
           // it.
-          TRI.eliminateFrameIndex(MI, SPAdj,
+          TRI.eliminateFrameIndex(MI, SPAdj, i,
                                   FrameIndexVirtualScavenging ?  NULL : RS);
 
           // Reset the iterator if we were at the beginning of the BB.
@@ -778,6 +778,7 @@ void PEI::replaceFrameIndices(MachineFunction &Fn) {
           MI = 0;
           break;
         }
+      }
 
       if (DoIncr && I != BB->end()) ++I;
 

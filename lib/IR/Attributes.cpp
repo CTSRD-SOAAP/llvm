@@ -30,21 +30,11 @@ using namespace llvm;
 // Attribute Construction Methods
 //===----------------------------------------------------------------------===//
 
-Attribute Attribute::get(LLVMContext &Context, AttrKind Kind) {
-  AttrBuilder B;
-  return Attribute::get(Context, B.addAttribute(Kind));
-}
-
-Attribute Attribute::get(LLVMContext &Context, AttrBuilder &B) {
-  // If there are no attributes, return an empty Attribute class.
-  if (!B.hasAttributes())
-    return Attribute();
-
-  // Otherwise, build a key to look up the existing attributes.
+Attribute Attribute::get(LLVMContext &Context, Constant *Kind, Constant *Val) {
   LLVMContextImpl *pImpl = Context.pImpl;
   FoldingSetNodeID ID;
-  ConstantInt *CI = ConstantInt::get(Type::getInt64Ty(Context), B.Raw());
-  ID.AddPointer(CI);
+  ID.AddPointer(Kind);
+  if (Val) ID.AddPointer(Val);
 
   void *InsertPoint;
   AttributeImpl *PA = pImpl->AttrsSet.FindNodeOrInsertPos(ID, InsertPoint);
@@ -52,7 +42,9 @@ Attribute Attribute::get(LLVMContext &Context, AttrBuilder &B) {
   if (!PA) {
     // If we didn't find any existing attributes of the same shape then create a
     // new one and insert it.
-    PA = new AttributeImpl(Context, CI);
+    PA = (!Val) ?
+      new AttributeImpl(Context, Kind) :
+      new AttributeImpl(Context, Kind, Val);
     pImpl->AttrsSet.InsertNode(PA, InsertPoint);
   }
 
@@ -60,15 +52,24 @@ Attribute Attribute::get(LLVMContext &Context, AttrBuilder &B) {
   return Attribute(PA);
 }
 
+Attribute Attribute::get(LLVMContext &Context, AttrKind Kind, Constant *Val) {
+  ConstantInt *KindVal = ConstantInt::get(Type::getInt64Ty(Context), Kind);
+  return get(Context, KindVal, Val);
+}
+
 Attribute Attribute::getWithAlignment(LLVMContext &Context, uint64_t Align) {
-  AttrBuilder B;
-  return get(Context, B.addAlignmentAttr(Align));
+  assert(isPowerOf2_32(Align) && "Alignment must be a power of two.");
+  assert(Align <= 0x40000000 && "Alignment too large.");
+  return get(Context, Alignment,
+             ConstantInt::get(Type::getInt64Ty(Context), Align));
 }
 
 Attribute Attribute::getWithStackAlignment(LLVMContext &Context,
                                            uint64_t Align) {
-  AttrBuilder B;
-  return get(Context, B.addStackAlignmentAttr(Align));
+  assert(isPowerOf2_32(Align) && "Alignment must be a power of two.");
+  assert(Align <= 0x100 && "Alignment too large.");
+  return get(Context, StackAlignment,
+             ConstantInt::get(Type::getInt64Ty(Context), Align));
 }
 
 //===----------------------------------------------------------------------===//
@@ -79,80 +80,94 @@ bool Attribute::hasAttribute(AttrKind Val) const {
   return pImpl && pImpl->hasAttribute(Val);
 }
 
-bool Attribute::hasAttributes() const {
-  return pImpl && pImpl->hasAttributes();
+Constant *Attribute::getAttributeKind() const {
+  return pImpl ? pImpl->getAttributeKind() : 0;
+}
+
+ArrayRef<Constant*> Attribute::getAttributeValues() const {
+  return pImpl ? pImpl->getAttributeValues() : ArrayRef<Constant*>();
 }
 
 /// This returns the alignment field of an attribute as a byte alignment value.
 unsigned Attribute::getAlignment() const {
-  if (!hasAttribute(Attribute::Alignment))
-    return 0;
+  assert(hasAttribute(Attribute::Alignment) &&
+         "Trying to get alignment from non-alignment attribute!");
   return pImpl->getAlignment();
 }
 
 /// This returns the stack alignment field of an attribute as a byte alignment
 /// value.
 unsigned Attribute::getStackAlignment() const {
-  if (!hasAttribute(Attribute::StackAlignment))
-    return 0;
+  assert(hasAttribute(Attribute::StackAlignment) &&
+         "Trying to get alignment from non-alignment attribute!");
   return pImpl->getStackAlignment();
 }
 
 std::string Attribute::getAsString() const {
-  if (hasAttribute(Attribute::ZExt))
-    return "zeroext";
-  if (hasAttribute(Attribute::SExt))
-    return "signext";
-  if (hasAttribute(Attribute::NoReturn))
-    return "noreturn";
-  if (hasAttribute(Attribute::NoUnwind))
-    return "nounwind";
-  if (hasAttribute(Attribute::UWTable))
-    return "uwtable";
-  if (hasAttribute(Attribute::ReturnsTwice))
-    return "returns_twice";
+  if (!pImpl) return "";
+
+  if (hasAttribute(Attribute::AddressSafety))
+    return "address_safety";
+  if (hasAttribute(Attribute::AlwaysInline))
+    return "alwaysinline";
+  if (hasAttribute(Attribute::ByVal))
+    return "byval";
+  if (hasAttribute(Attribute::InlineHint))
+    return "inlinehint";
   if (hasAttribute(Attribute::InReg))
     return "inreg";
+  if (hasAttribute(Attribute::MinSize))
+    return "minsize";
+  if (hasAttribute(Attribute::Naked))
+    return "naked";
+  if (hasAttribute(Attribute::Nest))
+    return "nest";
   if (hasAttribute(Attribute::NoAlias))
     return "noalias";
   if (hasAttribute(Attribute::NoCapture))
     return "nocapture";
-  if (hasAttribute(Attribute::StructRet))
-    return "sret";
-  if (hasAttribute(Attribute::ByVal))
-    return "byval";
-  if (hasAttribute(Attribute::Nest))
-    return "nest";
+  if (hasAttribute(Attribute::NoDuplicate))
+    return "noduplicate";
+  if (hasAttribute(Attribute::NoImplicitFloat))
+    return "noimplicitfloat";
+  if (hasAttribute(Attribute::NoInline))
+    return "noinline";
+  if (hasAttribute(Attribute::NonLazyBind))
+    return "nonlazybind";
+  if (hasAttribute(Attribute::NoRedZone))
+    return "noredzone";
+  if (hasAttribute(Attribute::NoReturn))
+    return "noreturn";
+  if (hasAttribute(Attribute::NoUnwind))
+    return "nounwind";
+  if (hasAttribute(Attribute::OptimizeForSize))
+    return "optsize";
   if (hasAttribute(Attribute::ReadNone))
     return "readnone";
   if (hasAttribute(Attribute::ReadOnly))
     return "readonly";
-  if (hasAttribute(Attribute::OptimizeForSize))
-    return "optsize";
-  if (hasAttribute(Attribute::NoInline))
-    return "noinline";
-  if (hasAttribute(Attribute::InlineHint))
-    return "inlinehint";
-  if (hasAttribute(Attribute::AlwaysInline))
-    return "alwaysinline";
+  if (hasAttribute(Attribute::ReturnsTwice))
+    return "returns_twice";
+  if (hasAttribute(Attribute::SExt))
+    return "signext";
   if (hasAttribute(Attribute::StackProtect))
     return "ssp";
   if (hasAttribute(Attribute::StackProtectReq))
     return "sspreq";
   if (hasAttribute(Attribute::StackProtectStrong))
     return "sspstrong";
-  if (hasAttribute(Attribute::NoRedZone))
-    return "noredzone";
-  if (hasAttribute(Attribute::NoImplicitFloat))
-    return "noimplicitfloat";
-  if (hasAttribute(Attribute::Naked))
-    return "naked";
-  if (hasAttribute(Attribute::NonLazyBind))
-    return "nonlazybind";
-  if (hasAttribute(Attribute::AddressSafety))
-    return "address_safety";
-  if (hasAttribute(Attribute::MinSize))
-    return "minsize";
+  if (hasAttribute(Attribute::StructRet))
+    return "sret";
+  if (hasAttribute(Attribute::UWTable))
+    return "uwtable";
+  if (hasAttribute(Attribute::ZExt))
+    return "zeroext";
+
+  // FIXME: These should be output like this:
+  //
+  //   align=4
+  //   alignstack=8
+  //
   if (hasAttribute(Attribute::StackAlignment)) {
     std::string Result;
     Result += "alignstack(";
@@ -164,17 +179,39 @@ std::string Attribute::getAsString() const {
     std::string Result;
     Result += "align ";
     Result += utostr(getAlignment());
-    Result += "";
     return Result;
   }
-  if (hasAttribute(Attribute::NoDuplicate))
-    return "noduplicate";
+
+  // Convert target-dependent attributes to strings of the form:
+  //
+  //   "kind"
+  //   "kind" = "value"
+  //   "kind" = ("value1" "value2" "value3" )
+  //
+  if (ConstantDataArray *CDA =
+      dyn_cast<ConstantDataArray>(pImpl->getAttributeKind())) {
+    std::string Result;
+    Result += '\"' + CDA->getAsString().str() + '"';
+
+    ArrayRef<Constant*> Vals = pImpl->getAttributeValues();
+    if (Vals.empty()) return Result;
+    Result += " = ";
+    if (Vals.size() > 1) Result += '(';
+    for (ArrayRef<Constant*>::iterator I = Vals.begin(), E = Vals.end();
+         I != E; ) {
+      ConstantDataArray *CDA = cast<ConstantDataArray>(*I++);
+      Result += '\"' + CDA->getAsString().str() + '"';
+      if (I != E) Result += ' ';
+    }
+    if (Vals.size() > 1) Result += ')';
+    return Result;
+  }
 
   llvm_unreachable("Unknown attribute");
 }
 
 bool Attribute::operator==(AttrKind K) const {
-  return pImpl && *pImpl == K;
+  return (pImpl && *pImpl == K) || (!pImpl && K == None);
 }
 bool Attribute::operator!=(AttrKind K) const {
   return !(*this == K);
@@ -187,78 +224,61 @@ bool Attribute::operator<(Attribute A) const {
   return *pImpl < *A.pImpl;
 }
 
-uint64_t Attribute::Raw() const {
-  return pImpl ? pImpl->Raw() : 0;
-}
-
 //===----------------------------------------------------------------------===//
 // AttributeImpl Definition
 //===----------------------------------------------------------------------===//
 
-AttributeImpl::AttributeImpl(LLVMContext &C, Attribute::AttrKind data)
-  : Context(C) {
-  Data = ConstantInt::get(Type::getInt64Ty(C), data);
-}
-AttributeImpl::AttributeImpl(LLVMContext &C, Attribute::AttrKind data,
-                             ArrayRef<Constant*> values)
-  : Context(C) {
-  Data = ConstantInt::get(Type::getInt64Ty(C), data);
-  Vals.reserve(values.size());
-  Vals.append(values.begin(), values.end());
-}
-AttributeImpl::AttributeImpl(LLVMContext &C, StringRef data)
-  : Context(C) {
-  Data = ConstantDataArray::getString(C, data);
-}
-
 bool AttributeImpl::hasAttribute(Attribute::AttrKind A) const {
-  return (Raw() & getAttrMask(A)) != 0;
-}
-
-bool AttributeImpl::hasAttributes() const {
-  return Raw() != 0;
+  if (ConstantInt *CI = dyn_cast<ConstantInt>(Kind))
+    return CI->getZExtValue() == A;
+  return false;
 }
 
 uint64_t AttributeImpl::getAlignment() const {
-  uint64_t Mask = Raw() & getAttrMask(Attribute::Alignment);
-  return 1ULL << ((Mask >> 16) - 1);
+  assert(hasAttribute(Attribute::Alignment) &&
+         "Trying to retrieve the alignment from a non-alignment attr!");
+  return cast<ConstantInt>(Vals[0])->getZExtValue();
 }
 
 uint64_t AttributeImpl::getStackAlignment() const {
-  uint64_t Mask = Raw() & getAttrMask(Attribute::StackAlignment);
-  return 1ULL << ((Mask >> 26) - 1);
+  assert(hasAttribute(Attribute::StackAlignment) &&
+         "Trying to retrieve the stack alignment from a non-alignment attr!");
+  return cast<ConstantInt>(Vals[0])->getZExtValue();
 }
 
-bool AttributeImpl::operator==(Attribute::AttrKind Kind) const {
-  if (ConstantInt *CI = dyn_cast<ConstantInt>(Data))
-    return CI->getZExtValue() == Kind;
+bool AttributeImpl::operator==(Attribute::AttrKind kind) const {
+  if (ConstantInt *CI = dyn_cast<ConstantInt>(Kind))
+    return CI->getZExtValue() == kind;
   return false;
 }
-bool AttributeImpl::operator!=(Attribute::AttrKind Kind) const {
-  return !(*this == Kind);
+bool AttributeImpl::operator!=(Attribute::AttrKind kind) const {
+  return !(*this == kind);
 }
 
-bool AttributeImpl::operator==(StringRef Kind) const {
-  if (ConstantDataArray *CDA = dyn_cast<ConstantDataArray>(Data))
+bool AttributeImpl::operator==(StringRef kind) const {
+  if (ConstantDataArray *CDA = dyn_cast<ConstantDataArray>(Kind))
     if (CDA->isString())
-      return CDA->getAsString() == Kind;
+      return CDA->getAsString() == kind;
   return false;
 }
 
-bool AttributeImpl::operator!=(StringRef Kind) const {
-  return !(*this == Kind);
+bool AttributeImpl::operator!=(StringRef kind) const {
+  return !(*this == kind);
 }
 
 bool AttributeImpl::operator<(const AttributeImpl &AI) const {
-  if (!Data && !AI.Data) return false;
-  if (!Data && AI.Data) return true;
-  if (Data && !AI.Data) return false;
+  // This sorts the attributes with Attribute::AttrKinds coming first (sorted
+  // relative to their enum value) and then strings.
 
-  ConstantInt *ThisCI = dyn_cast<ConstantInt>(Data);
-  ConstantInt *ThatCI = dyn_cast<ConstantInt>(AI.Data);
+  if (!Kind && !AI.Kind) return false;
+  if (!Kind && AI.Kind) return true;
+  if (Kind && !AI.Kind) return false;
 
-  ConstantDataArray *ThisCDA = dyn_cast<ConstantDataArray>(Data);
-  ConstantDataArray *ThatCDA = dyn_cast<ConstantDataArray>(AI.Data);
+  ConstantInt *ThisCI = dyn_cast<ConstantInt>(Kind);
+  ConstantInt *ThatCI = dyn_cast<ConstantInt>(AI.Kind);
+
+  ConstantDataArray *ThisCDA = dyn_cast<ConstantDataArray>(Kind);
+  ConstantDataArray *ThatCDA = dyn_cast<ConstantDataArray>(AI.Kind);
 
   if (ThisCI && ThatCI)
     return ThisCI->getZExtValue() < ThatCI->getZExtValue();
@@ -270,11 +290,6 @@ bool AttributeImpl::operator<(const AttributeImpl &AI) const {
     return false;
 
   return ThisCDA->getAsString() < ThatCDA->getAsString();
-}
-
-uint64_t AttributeImpl::Raw() const {
-  // FIXME: Remove this.
-  return cast<ConstantInt>(Data)->getZExtValue();
 }
 
 uint64_t AttributeImpl::getAttrMask(Attribute::AttrKind Val) {
@@ -382,9 +397,9 @@ unsigned AttributeSetNode::getStackAlignment() const {
 std::string AttributeSetNode::getAsString() const {
   std::string Str = "";
   for (SmallVectorImpl<Attribute>::const_iterator I = AttrList.begin(),
-         E = AttrList.end(); I != E; ++I) {
-    if (I != AttrList.begin()) Str += " ";
+         E = AttrList.end(); I != E; ) {
     Str += I->getAsString();
+    if (++I != E) Str += " ";
   }
   return Str;
 }
@@ -401,7 +416,7 @@ uint64_t AttributeSetImpl::Raw(uint64_t Index) const {
 
     for (AttributeSetNode::const_iterator II = ASN->begin(),
            IE = ASN->end(); II != IE; ++II)
-      B.addAttributes(*II);
+      B.addAttribute(*II);
     return B.Raw();
   }
 
@@ -443,7 +458,7 @@ AttributeSet AttributeSet::get(LLVMContext &C,
   for (unsigned i = 0, e = Attrs.size(); i != e; ++i) {
     assert((!i || Attrs[i-1].first <= Attrs[i].first) &&
            "Misordered Attributes list!");
-    assert(Attrs[i].second.hasAttributes() &&
+    assert(Attrs[i].second != Attribute::None &&
            "Pointless attribute!");
   }
 #endif
@@ -455,7 +470,7 @@ AttributeSet AttributeSet::get(LLVMContext &C,
          E = Attrs.end(); I != E; ) {
     unsigned Index = I->first;
     SmallVector<Attribute, 4> AttrVec;
-    while (I->first == Index && I != E) {
+    while (I != E && I->first == Index) {
       AttrVec.push_back(I->second);
       ++I;
     }
@@ -560,7 +575,7 @@ AttributeSet AttributeSet::addAttributes(LLVMContext &C, unsigned Idx,
     if (Attrs.getSlotIndex(I) == Idx) {
       for (AttributeSetImpl::const_iterator II = Attrs.pImpl->begin(I),
              IE = Attrs.pImpl->end(I); II != IE; ++II)
-        B.addAttributes(*II);
+        B.addAttribute(*II);
       break;
     }
 
@@ -604,15 +619,13 @@ AttributeSet AttributeSet::removeAttributes(LLVMContext &C, unsigned Idx,
     AttrSet.push_back(getSlotAttributes(I));
   }
 
-  // Now add the attribute into the correct slot. There may already be an
+  // Now remove the attribute from the correct slot. There may already be an
   // AttributeSet there.
   AttrBuilder B(AS, Idx);
 
   for (unsigned I = 0, E = Attrs.pImpl->getNumAttributes(); I != E; ++I)
     if (Attrs.getSlotIndex(I) == Idx) {
-      for (AttributeSetImpl::const_iterator II = Attrs.pImpl->begin(I),
-             IE = Attrs.pImpl->end(I); II != IE; ++II)
-        B.removeAttributes(*II);
+      B.removeAttributes(Attrs.pImpl->getSlotAttributes(I), Idx);
       break;
     }
 
@@ -706,6 +719,18 @@ AttributeSetNode *AttributeSet::getAttributes(unsigned Idx) const {
   return 0;
 }
 
+AttributeSet::iterator AttributeSet::begin(unsigned Idx) const {
+  if (!pImpl)
+    return ArrayRef<Attribute>().begin();
+  return pImpl->begin(Idx);
+}
+
+AttributeSet::iterator AttributeSet::end(unsigned Idx) const {
+  if (!pImpl)
+    return ArrayRef<Attribute>().end();
+  return pImpl->end(Idx);
+}
+
 //===----------------------------------------------------------------------===//
 // AttributeSet Introspection Methods
 //===----------------------------------------------------------------------===//
@@ -759,32 +784,14 @@ AttrBuilder::AttrBuilder(AttributeSet AS, unsigned Idx)
   AttributeSetImpl *pImpl = AS.pImpl;
   if (!pImpl) return;
 
-  AttrBuilder B;
-
   for (unsigned I = 0, E = pImpl->getNumAttributes(); I != E; ++I) {
     if (pImpl->getSlotIndex(I) != Idx) continue;
 
-    for (AttributeSetNode::const_iterator II = pImpl->begin(I),
+    for (AttributeSetImpl::const_iterator II = pImpl->begin(I),
            IE = pImpl->end(I); II != IE; ++II)
-      B.addAttributes(*II);
+      addAttribute(*II);
 
     break;
-  }
-
-  if (!B.hasAttributes()) return;
-
-  uint64_t Mask = B.Raw();
-
-  for (Attribute::AttrKind I = Attribute::None; I != Attribute::EndAttrKinds;
-       I = Attribute::AttrKind(I + 1)) {
-    if (uint64_t A = (Mask & AttributeImpl::getAttrMask(I))) {
-      Attrs.insert(I);
-
-      if (I == Attribute::Alignment)
-        Alignment = 1ULL << ((A >> 16) - 1);
-      else if (I == Attribute::StackAlignment)
-        StackAlignment = 1ULL << ((A >> 26)-1);
-    }
   }
 }
 
@@ -794,12 +801,27 @@ void AttrBuilder::clear() {
 }
 
 AttrBuilder &AttrBuilder::addAttribute(Attribute::AttrKind Val) {
+  assert(Val != Attribute::Alignment && Val != Attribute::StackAlignment &&
+         "Adding alignment attribute without adding alignment value!");
   Attrs.insert(Val);
+  return *this;
+}
+
+AttrBuilder &AttrBuilder::addAttribute(Attribute Attr) {
+  ConstantInt *Kind = cast<ConstantInt>(Attr.getAttributeKind());
+  Attribute::AttrKind KindVal = Attribute::AttrKind(Kind->getZExtValue());
+  Attrs.insert(KindVal);
+
+  if (KindVal == Attribute::Alignment)
+    Alignment = Attr.getAlignment();
+  else if (KindVal == Attribute::StackAlignment)
+    StackAlignment = Attr.getStackAlignment();
   return *this;
 }
 
 AttrBuilder &AttrBuilder::removeAttribute(Attribute::AttrKind Val) {
   Attrs.erase(Val);
+
   if (Val == Attribute::Alignment)
     Alignment = 0;
   else if (Val == Attribute::StackAlignment)
@@ -808,34 +830,25 @@ AttrBuilder &AttrBuilder::removeAttribute(Attribute::AttrKind Val) {
   return *this;
 }
 
-AttrBuilder &AttrBuilder::addAttributes(Attribute Attr) {
-  uint64_t Mask = Attr.Raw();
-
-  for (Attribute::AttrKind I = Attribute::None; I != Attribute::EndAttrKinds;
-       I = Attribute::AttrKind(I + 1))
-    if ((Mask & AttributeImpl::getAttrMask(I)) != 0)
-      Attrs.insert(I);
-
-  if (Attr.getAlignment())
-    Alignment = Attr.getAlignment();
-  if (Attr.getStackAlignment())
-    StackAlignment = Attr.getStackAlignment();
-  return *this;
-}
-
-AttrBuilder &AttrBuilder::removeAttributes(Attribute A) {
-  uint64_t Mask = A.Raw();
-
-  for (Attribute::AttrKind I = Attribute::None; I != Attribute::EndAttrKinds;
-       I = Attribute::AttrKind(I + 1)) {
-    if (Mask & AttributeImpl::getAttrMask(I)) {
-      Attrs.erase(I);
-
-      if (I == Attribute::Alignment)
-        Alignment = 0;
-      else if (I == Attribute::StackAlignment)
-        StackAlignment = 0;
+AttrBuilder &AttrBuilder::removeAttributes(AttributeSet A, uint64_t Index) {
+  unsigned Idx = ~0U;
+  for (unsigned I = 0, E = A.getNumSlots(); I != E; ++I)
+    if (A.getSlotIndex(I) == Index) {
+      Idx = I;
+      break;
     }
+
+  assert(Idx != ~0U && "Couldn't find index in AttributeSet!");
+
+  for (AttributeSet::iterator I = A.begin(Idx), E = A.end(Idx); I != E; ++I) {
+    ConstantInt *CI = cast<ConstantInt>(I->getAttributeKind());
+    Attribute::AttrKind Kind = Attribute::AttrKind(CI->getZExtValue());
+    Attrs.erase(Kind);
+
+    if (Kind == Attribute::Alignment)
+      Alignment = 0;
+    else if (Kind == Attribute::StackAlignment)
+      StackAlignment = 0;
   }
 
   return *this;
@@ -872,8 +885,8 @@ bool AttrBuilder::hasAttributes() const {
   return !Attrs.empty();
 }
 
-bool AttrBuilder::hasAttributes(const Attribute &A) const {
-  return Raw() & A.Raw();
+bool AttrBuilder::hasAttributes(AttributeSet A, uint64_t Index) const {
+  return Raw() & A.Raw(Index);
 }
 
 bool AttrBuilder::hasAlignmentAttr() const {
@@ -926,7 +939,8 @@ uint64_t AttrBuilder::Raw() const {
 // AttributeFuncs Function Defintions
 //===----------------------------------------------------------------------===//
 
-Attribute AttributeFuncs::typeIncompatible(Type *Ty) {
+/// \brief Which attributes cannot be applied to a type.
+AttributeSet AttributeFuncs::typeIncompatible(Type *Ty, uint64_t Index) {
   AttrBuilder Incompatible;
 
   if (!Ty->isIntegerTy())
@@ -942,7 +956,7 @@ Attribute AttributeFuncs::typeIncompatible(Type *Ty) {
       .addAttribute(Attribute::NoCapture)
       .addAttribute(Attribute::StructRet);
 
-  return Attribute::get(Ty->getContext(), Incompatible);
+  return AttributeSet::get(Ty->getContext(), Index, Incompatible);
 }
 
 /// \brief This returns an integer containing an encoding of all the LLVM
