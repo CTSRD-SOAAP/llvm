@@ -91,11 +91,16 @@ def UP : InstFlag <"printUpdatePred">;
 // default to 0.
 def LAST : InstFlag<"printLast", 1>;
 
+def FRAMEri : Operand<iPTR> {
+  let MIOperandInfo = (ops R600_Reg32:$ptr, i32imm:$index);
+}
+
 def ADDRParam : ComplexPattern<i32, 2, "SelectADDRParam", [], []>;
 def ADDRDWord : ComplexPattern<i32, 1, "SelectADDRDWord", [], []>;
 def ADDRVTX_READ : ComplexPattern<i32, 2, "SelectADDRVTX_READ", [], []>;
 def ADDRGA_CONST_OFFSET : ComplexPattern<i32, 1, "SelectGlobalValueConstantOffset", [], []>;
 def ADDRGA_VAR_OFFSET : ComplexPattern<i32, 2, "SelectGlobalValueVariableOffset", [], []>;
+def ADDRIndirect : ComplexPattern<iPTR, 2, "SelectADDRIndirect", [], []>;
 
 class R600ALU_Word0 {
   field bits<32> Word0;
@@ -394,7 +399,7 @@ class R600_TEX <bits<11> inst, string opName, list<dag> pattern,
 def TEX_SHADOW : PatLeaf<
   (imm),
   [{uint32_t TType = (uint32_t)N->getZExtValue();
-    return (TType >= 6 && TType <= 8) || (TType >= 11 && TType <= 13);
+    return (TType >= 6 && TType <= 8) || TType == 13;
   }]
 >;
 
@@ -402,6 +407,20 @@ def TEX_RECT : PatLeaf<
   (imm),
   [{uint32_t TType = (uint32_t)N->getZExtValue();
     return TType == 5;
+  }]
+>;
+
+def TEX_ARRAY : PatLeaf<
+  (imm),
+  [{uint32_t TType = (uint32_t)N->getZExtValue();
+    return TType == 9 || TType == 10 || TType == 15 || TType == 16;
+  }]
+>;
+
+def TEX_SHADOW_ARRAY : PatLeaf<
+  (imm),
+  [{uint32_t TType = (uint32_t)N->getZExtValue();
+    return TType == 11 || TType == 12 || TType == 17;
   }]
 >;
 
@@ -480,13 +499,17 @@ def isR600toCayman : Predicate<
 // R600 SDNodes
 //===----------------------------------------------------------------------===//
 
-def INTERP: SDNode<"AMDGPUISD::INTERP",
-  SDTypeProfile<1, 2, [SDTCisFP<0>, SDTCisInt<1>, SDTCisInt<2>]>
-  >;
+def INTERP_PAIR_XY :  AMDGPUShaderInst <
+  (outs R600_TReg32_X:$dst0, R600_TReg32_Y:$dst1),
+  (ins i32imm:$src0, R600_Reg32:$src1, R600_Reg32:$src2),
+  "INTERP_PAIR_XY $src0 $src1 $src2 : $dst0 dst1",
+  []>;
 
-def INTERP_P0: SDNode<"AMDGPUISD::INTERP_P0",
-  SDTypeProfile<1, 1, [SDTCisFP<0>, SDTCisInt<1>]>
-  >;
+def INTERP_PAIR_ZW :  AMDGPUShaderInst <
+  (outs R600_TReg32_Z:$dst0, R600_TReg32_W:$dst1),
+  (ins i32imm:$src0, R600_Reg32:$src1, R600_Reg32:$src2),
+  "INTERP_PAIR_ZW $src0 $src1 $src2 : $dst0 dst1",
+  []>;
 
 def CONST_ADDRESS: SDNode<"AMDGPUISD::CONST_ADDRESS",
   SDTypeProfile<1, 1, [SDTCisInt<0>, SDTCisPtrTy<1>]>,
@@ -497,21 +520,11 @@ def CONST_ADDRESS: SDNode<"AMDGPUISD::CONST_ADDRESS",
 // Interpolation Instructions
 //===----------------------------------------------------------------------===//
 
-let usesCustomInserter = 1 in {
-def input_perspective :  AMDGPUShaderInst <
+def INTERP_VEC_LOAD :  AMDGPUShaderInst <
   (outs R600_Reg128:$dst),
-  (ins i32imm:$src0, i32imm:$src1),
-  "input_perspective $src0 $src1 : dst",
-  [(set R600_Reg128:$dst, (INTERP (i32 imm:$src0), (i32 imm:$src1)))]>;
-}  // End usesCustomInserter = 1
-
-def input_constant :  AMDGPUShaderInst <
-  (outs R600_Reg128:$dst),
-  (ins i32imm:$src),
-  "input_perspective $src : dst",
-  [(set R600_Reg128:$dst, (INTERP_P0 (i32 imm:$src)))]>;
-
-
+  (ins i32imm:$src0),
+  "INTERP_LOAD $src0 : $dst",
+  []>;
 
 def INTERP_XY : R600_2OP <0xD6, "INTERP_XY", []> {
   let bank_swizzle = 5;
@@ -579,13 +592,13 @@ class ExportBufWord1 {
 multiclass ExportPattern<Instruction ExportInst, bits<8> cf_inst> {
   def : Pat<(int_R600_store_pixel_depth R600_Reg32:$reg),
     (ExportInst
-        (INSERT_SUBREG (v4f32 (IMPLICIT_DEF)), R600_Reg32:$reg, sel_x),
+        (INSERT_SUBREG (v4f32 (IMPLICIT_DEF)), R600_Reg32:$reg, sub0),
         0, 61, 0, 7, 7, 7, cf_inst, 0)
   >;
 
   def : Pat<(int_R600_store_pixel_stencil R600_Reg32:$reg),
     (ExportInst
-        (INSERT_SUBREG (v4f32 (IMPLICIT_DEF)), R600_Reg32:$reg, sel_x),
+        (INSERT_SUBREG (v4f32 (IMPLICIT_DEF)), R600_Reg32:$reg, sub0),
         0, 61, 7, 0, 7, 7, cf_inst, 0)
   >;
 
@@ -712,6 +725,34 @@ def SNE : R600_2OP <
     COND_NE))]
 >;
 
+def SETE_DX10 : R600_2OP <
+  0xC, "SETE_DX10",
+  [(set R600_Reg32:$dst,
+   (selectcc (f32 R600_Reg32:$src0), R600_Reg32:$src1, (i32 -1), (i32 0),
+    COND_EQ))]
+>;
+
+def SETGT_DX10 : R600_2OP <
+  0xD, "SETGT_DX10",
+  [(set R600_Reg32:$dst,
+   (selectcc (f32 R600_Reg32:$src0), R600_Reg32:$src1, (i32 -1), (i32 0),
+    COND_GT))]
+>;
+
+def SETGE_DX10 : R600_2OP <
+  0xE, "SETGE_DX10",
+  [(set R600_Reg32:$dst,
+   (selectcc (f32 R600_Reg32:$src0), R600_Reg32:$src1, (i32 -1), (i32 0),
+    COND_GE))]
+>;
+
+def SETNE_DX10 : R600_2OP <
+  0xF, "SETNE_DX10",
+  [(set R600_Reg32:$dst,
+    (selectcc (f32 R600_Reg32:$src0), R600_Reg32:$src1, (i32 -1), (i32 0),
+     COND_NE))]
+>;
+
 def FRACT : R600_1OP_Helper <0x10, "FRACT", AMDGPUfract>;
 def TRUNC : R600_1OP_Helper <0x11, "TRUNC", int_AMDGPU_trunc>;
 def CEIL : R600_1OP_Helper <0x12, "CEIL", fceil>;
@@ -772,7 +813,7 @@ def SETE_INT : R600_2OP <
 >;
 
 def SETGT_INT : R600_2OP <
-  0x3B, "SGT_INT",
+  0x3B, "SETGT_INT",
   [(set (i32 R600_Reg32:$dst),
    (selectcc (i32 R600_Reg32:$src0), R600_Reg32:$src1, -1, 0, SETGT))]
 >;
@@ -1226,6 +1267,10 @@ let Predicates = [isEGorCayman] in {
   defm DOT4_eg : DOT4_Common<0xBE>;
   defm CUBE_eg : CUBE_Common<0xC0>;
 
+let hasSideEffects = 1 in {
+  def MOVA_INT_eg : R600_1OP <0xCC, "MOVA_INT", []>;
+}
+
   def TGSI_LIT_Z_eg : TGSI_LIT_Z_Common<MUL_LIT_eg, LOG_CLAMPED_eg, EXP_IEEE_eg>;
 
   def FLT_TO_INT_eg : FLT_TO_INT_Common<0x50> {
@@ -1476,6 +1521,12 @@ def CONSTANT_LOAD_eg : VTX_READ_32_eg <1,
 
 }
 
+//===----------------------------------------------------------------------===//
+// Regist loads and stores - for indirect addressing
+//===----------------------------------------------------------------------===//
+
+defm R600_ : RegisterLoadStore <R600_Reg32, FRAMEri, ADDRIndirect>;
+
 let Predicates = [isCayman] in {
 
 let isVector = 1 in { 
@@ -1562,12 +1613,6 @@ def MASK_WRITE : AMDGPUShaderInst <
 } // End mayLoad = 0, mayStore = 0, hasSideEffects = 1
 
 
-def RESERVE_REG : AMDGPUShaderInst <
-  (outs),
-  (ins i32imm:$src),
-  "RESERVE_REG $src",
-  [(int_AMDGPU_reserve_reg imm:$src)]
->;
 def TXD: AMDGPUShaderInst <
   (outs R600_Reg128:$dst),
   (ins R600_Reg128:$src0, R600_Reg128:$src1, R600_Reg128:$src2, i32imm:$resourceId, i32imm:$samplerId, i32imm:$textureTarget),
@@ -1592,7 +1637,8 @@ def FNEG_R600 : FNEG<R600_Reg32>;
 //===---------------------------------------------------------------------===//
 // Return instruction
 //===---------------------------------------------------------------------===//
-let isTerminator = 1, isReturn = 1, isBarrier = 1, hasCtrlDep = 1 in {
+let isTerminator = 1, isReturn = 1, isBarrier = 1, hasCtrlDep = 1,
+    usesCustomInserter = 1 in {
   def RETURN          : ILFormat<(outs), (ins variable_ops),
       "RETURN", [(IL_retflag)]>;
 }
@@ -1768,6 +1814,18 @@ def : Pat <
   (SGE R600_Reg32:$src1, R600_Reg32:$src0) 
 >;
 
+// SETGT_DX10 reverse args
+def : Pat <
+  (selectcc (f32 R600_Reg32:$src0), R600_Reg32:$src1, -1, 0, COND_LT),
+  (SETGT_DX10 R600_Reg32:$src1, R600_Reg32:$src0)
+>;
+
+// SETGE_DX10 reverse args
+def : Pat <
+  (selectcc (f32 R600_Reg32:$src0), R600_Reg32:$src1, -1, 0, COND_LE),
+  (SETGE_DX10 R600_Reg32:$src1, R600_Reg32:$src0)
+>;
+
 // SETGT_INT reverse args
 def : Pat <
   (selectcc (i32 R600_Reg32:$src0), R600_Reg32:$src1, -1, 0, SETLT),
@@ -1806,31 +1864,43 @@ def : Pat <
   (SETE R600_Reg32:$src0, R600_Reg32:$src1)
 >;
 
+//SETE_DX10 - 'true if ordered'
+def : Pat <
+  (selectcc (f32 R600_Reg32:$src0), R600_Reg32:$src1, -1, 0, SETO),
+  (SETE_DX10 R600_Reg32:$src0, R600_Reg32:$src1)
+>;
+
 //SNE - 'true if unordered'
 def : Pat <
   (selectcc (f32 R600_Reg32:$src0), R600_Reg32:$src1, FP_ONE, FP_ZERO, SETUO),
   (SNE R600_Reg32:$src0, R600_Reg32:$src1)
 >;
 
-def : Extract_Element <f32, v4f32, R600_Reg128, 0, sel_x>;
-def : Extract_Element <f32, v4f32, R600_Reg128, 1, sel_y>;
-def : Extract_Element <f32, v4f32, R600_Reg128, 2, sel_z>;
-def : Extract_Element <f32, v4f32, R600_Reg128, 3, sel_w>;
+//SETNE_DX10 - 'true if ordered'
+def : Pat <
+  (selectcc (f32 R600_Reg32:$src0), R600_Reg32:$src1, -1, 0, SETUO),
+  (SETNE_DX10 R600_Reg32:$src0, R600_Reg32:$src1)
+>;
 
-def : Insert_Element <f32, v4f32, R600_Reg32, R600_Reg128, 0, sel_x>;
-def : Insert_Element <f32, v4f32, R600_Reg32, R600_Reg128, 1, sel_y>;
-def : Insert_Element <f32, v4f32, R600_Reg32, R600_Reg128, 2, sel_z>;
-def : Insert_Element <f32, v4f32, R600_Reg32, R600_Reg128, 3, sel_w>;
+def : Extract_Element <f32, v4f32, R600_Reg128, 0, sub0>;
+def : Extract_Element <f32, v4f32, R600_Reg128, 1, sub1>;
+def : Extract_Element <f32, v4f32, R600_Reg128, 2, sub2>;
+def : Extract_Element <f32, v4f32, R600_Reg128, 3, sub3>;
 
-def : Extract_Element <i32, v4i32, R600_Reg128, 0, sel_x>;
-def : Extract_Element <i32, v4i32, R600_Reg128, 1, sel_y>;
-def : Extract_Element <i32, v4i32, R600_Reg128, 2, sel_z>;
-def : Extract_Element <i32, v4i32, R600_Reg128, 3, sel_w>;
+def : Insert_Element <f32, v4f32, R600_Reg32, R600_Reg128, 0, sub0>;
+def : Insert_Element <f32, v4f32, R600_Reg32, R600_Reg128, 1, sub1>;
+def : Insert_Element <f32, v4f32, R600_Reg32, R600_Reg128, 2, sub2>;
+def : Insert_Element <f32, v4f32, R600_Reg32, R600_Reg128, 3, sub3>;
 
-def : Insert_Element <i32, v4i32, R600_Reg32, R600_Reg128, 0, sel_x>;
-def : Insert_Element <i32, v4i32, R600_Reg32, R600_Reg128, 1, sel_y>;
-def : Insert_Element <i32, v4i32, R600_Reg32, R600_Reg128, 2, sel_z>;
-def : Insert_Element <i32, v4i32, R600_Reg32, R600_Reg128, 3, sel_w>;
+def : Extract_Element <i32, v4i32, R600_Reg128, 0, sub0>;
+def : Extract_Element <i32, v4i32, R600_Reg128, 1, sub1>;
+def : Extract_Element <i32, v4i32, R600_Reg128, 2, sub2>;
+def : Extract_Element <i32, v4i32, R600_Reg128, 3, sub3>;
+
+def : Insert_Element <i32, v4i32, R600_Reg32, R600_Reg128, 0, sub0>;
+def : Insert_Element <i32, v4i32, R600_Reg32, R600_Reg128, 1, sub1>;
+def : Insert_Element <i32, v4i32, R600_Reg32, R600_Reg128, 2, sub2>;
+def : Insert_Element <i32, v4i32, R600_Reg32, R600_Reg128, 3, sub3>;
 
 def : Vector_Build <v4f32, R600_Reg128, f32, R600_Reg32>;
 def : Vector_Build <v4i32, R600_Reg128, i32, R600_Reg32>;

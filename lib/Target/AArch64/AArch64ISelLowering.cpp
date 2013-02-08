@@ -18,7 +18,7 @@
 #include "AArch64MachineFunctionInfo.h"
 #include "AArch64TargetMachine.h"
 #include "AArch64TargetObjectFile.h"
-#include "MCTargetDesc/AArch64BaseInfo.h"
+#include "Utils/AArch64BaseInfo.h"
 #include "llvm/CodeGen/Analysis.h"
 #include "llvm/CodeGen/CallingConvLower.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
@@ -841,7 +841,8 @@ AArch64TargetLowering::SaveVarArgRegisters(CCState &CCInfo, SelectionDAG &DAG,
                                            DebugLoc DL, SDValue &Chain) const {
   MachineFunction &MF = DAG.getMachineFunction();
   MachineFrameInfo *MFI = MF.getFrameInfo();
-  AArch64MachineFunctionInfo *FuncInfo = MF.getInfo<AArch64MachineFunctionInfo>();
+  AArch64MachineFunctionInfo *FuncInfo
+    = MF.getInfo<AArch64MachineFunctionInfo>();
 
   SmallVector<SDValue, 8> MemOps;
 
@@ -1034,21 +1035,15 @@ AArch64TargetLowering::LowerReturn(SDValue Chain,
   // Analyze outgoing return values.
   CCInfo.AnalyzeReturn(Outs, CCAssignFnForNode(CallConv));
 
-  // If this is the first return lowered for this function, add
-  // the regs to the liveout set for the function.
-  if (DAG.getMachineFunction().getRegInfo().liveout_empty()) {
-    for (unsigned i = 0; i != RVLocs.size(); ++i)
-      if (RVLocs[i].isRegLoc())
-        DAG.getMachineFunction().getRegInfo().addLiveOut(RVLocs[i].getLocReg());
-  }
-
   SDValue Flag;
+  SmallVector<SDValue, 4> RetOps(1, Chain);
 
   for (unsigned i = 0, e = RVLocs.size(); i != e; ++i) {
-    // PCS: "If the type, T, of the result of a function is such that void func(T
-    // arg) would require that arg be passed as a value in a register (or set of
-    // registers) according to the rules in 5.4, then the result is returned in
-    // the same registers as would be used for such an argument.
+    // PCS: "If the type, T, of the result of a function is such that
+    // void func(T arg) would require that arg be passed as a value in a
+    // register (or set of registers) according to the rules in 5.4, then the
+    // result is returned in the same registers as would be used for such an
+    // argument.
     //
     // Otherwise, the caller shall reserve a block of memory of sufficient
     // size and alignment to hold the result. The address of the memory block
@@ -1085,13 +1080,17 @@ AArch64TargetLowering::LowerReturn(SDValue Chain,
 
     Chain = DAG.getCopyToReg(Chain, dl, VA.getLocReg(), Arg, Flag);
     Flag = Chain.getValue(1);
+    RetOps.push_back(DAG.getRegister(VA.getLocReg(), VA.getLocVT()));
   }
 
-  if (Flag.getNode()) {
-    return DAG.getNode(AArch64ISD::Ret, dl, MVT::Other, Chain, Flag);
-  } else {
-    return DAG.getNode(AArch64ISD::Ret, dl, MVT::Other, Chain);
-  }
+  RetOps[0] = Chain;  // Update chain.
+
+  // Add the flag if we have it.
+  if (Flag.getNode())
+    RetOps.push_back(Flag);
+
+  return DAG.getNode(AArch64ISD::Ret, dl, MVT::Other,
+                     &RetOps[0], RetOps.size());
 }
 
 SDValue
@@ -1166,7 +1165,8 @@ AArch64TargetLowering::LowerCall(CallLoweringInfo &CLI,
   if (!IsSibCall)
     Chain = DAG.getCALLSEQ_START(Chain, DAG.getIntPtrConstant(NumBytes, true));
 
-  SDValue StackPtr = DAG.getCopyFromReg(Chain, dl, AArch64::XSP, getPointerTy());
+  SDValue StackPtr = DAG.getCopyFromReg(Chain, dl, AArch64::XSP,
+                                        getPointerTy());
 
   SmallVector<SDValue, 8> MemOpChains;
   SmallVector<std::pair<unsigned, SDValue>, 8> RegsToPass;
@@ -1863,7 +1863,7 @@ AArch64TargetLowering::LowerGlobalAddressELF(SDValue Op,
   // TableGen doesn't have easy access to the CodeModel or RelocationModel, so
   // we make that distinction here.
 
-  // We support the static, small memory model for now.
+  // We support the small memory model for now.
   assert(getTargetMachine().getCodeModel() == CodeModel::Small);
 
   EVT PtrVT = getPointerTy();
@@ -1871,12 +1871,25 @@ AArch64TargetLowering::LowerGlobalAddressELF(SDValue Op,
   const GlobalAddressSDNode *GN = cast<GlobalAddressSDNode>(Op);
   const GlobalValue *GV = GN->getGlobal();
   unsigned Alignment = GV->getAlignment();
+  Reloc::Model RelocM = getTargetMachine().getRelocationModel();
+
+  if (GV->isWeakForLinker() && RelocM == Reloc::Static) {
+    // Weak symbols can't use ADRP/ADD pair since they should evaluate to
+    // zero when undefined. In PIC mode the GOT can take care of this, but in
+    // absolute mode we use a constant pool load.
+    return DAG.getLoad(PtrVT, dl, DAG.getEntryNode(),
+                       DAG.getConstantPool(GV, GN->getValueType(0)),
+                       MachinePointerInfo::getConstantPool(),
+                       /*isVolatile=*/ false,  /*isNonTemporal=*/ true,
+                       /*isInvariant=*/ true, 8);
+  }
 
   if (Alignment == 0) {
     const PointerType *GVPtrTy = cast<PointerType>(GV->getType());
-    if (GVPtrTy->getElementType()->isSized())
-      Alignment = getDataLayout()->getABITypeAlignment(GVPtrTy->getElementType());
-    else {
+    if (GVPtrTy->getElementType()->isSized()) {
+      Alignment
+        = getDataLayout()->getABITypeAlignment(GVPtrTy->getElementType());
+    } else {
       // Be conservative if we can't guess, not that it really matters:
       // functions and labels aren't valid for loads, and the methods used to
       // actually calculate an address work with any alignment.
@@ -1885,7 +1898,6 @@ AArch64TargetLowering::LowerGlobalAddressELF(SDValue Op,
   }
 
   unsigned char HiFixup, LoFixup;
-  Reloc::Model RelocM = getTargetMachine().getRelocationModel();
   bool UseGOT = Subtarget->GVIsIndirectSymbol(GV, RelocM);
 
   if (UseGOT) {
@@ -1954,7 +1966,8 @@ SDValue AArch64TargetLowering::LowerTLSDescCall(SDValue SymAddr,
   Ops.push_back(Glue);
 
   SDVTList NodeTys = DAG.getVTList(MVT::Other, MVT::Glue);
-  Chain = DAG.getNode(AArch64ISD::TLSDESCCALL, DL, NodeTys, &Ops[0], Ops.size());
+  Chain = DAG.getNode(AArch64ISD::TLSDESCCALL, DL, NodeTys, &Ops[0],
+                      Ops.size());
   Glue = Chain.getValue(1);
 
   // After the call, the offset from TPIDR_EL0 is in X0, copy it out and pass it
@@ -1995,7 +2008,8 @@ AArch64TargetLowering::LowerGlobalTLSAddress(SDValue Op,
 
     TPOff = SDValue(DAG.getMachineNode(AArch64::MOVZxii, DL, PtrVT, HiVar,
                                        DAG.getTargetConstant(0, MVT::i32)), 0);
-    TPOff = SDValue(DAG.getMachineNode(AArch64::MOVKxii, DL, PtrVT, TPOff, LoVar,
+    TPOff = SDValue(DAG.getMachineNode(AArch64::MOVKxii, DL, PtrVT,
+                                       TPOff, LoVar,
                                        DAG.getTargetConstant(0, MVT::i32)), 0);
   } else if (Model == TLSModel::GeneralDynamic) {
     // Accesses used in this sequence go via the TLS descriptor which lives in
@@ -2005,7 +2019,8 @@ AArch64TargetLowering::LowerGlobalTLSAddress(SDValue Op,
     SDValue LoDesc = DAG.getTargetGlobalAddress(GV, DL, PtrVT, 0,
                                                 AArch64II::MO_TLSDESC_LO12);
     SDValue DescAddr = DAG.getNode(AArch64ISD::WrapperSmall, DL, PtrVT,
-                                   HiDesc, LoDesc, DAG.getConstant(8, MVT::i32));
+                                   HiDesc, LoDesc,
+                                   DAG.getConstant(8, MVT::i32));
     SDValue SymAddr = DAG.getTargetGlobalAddress(GV, DL, PtrVT, 0);
 
     TPOff = LowerTLSDescCall(SymAddr, DescAddr, DL, DAG);
@@ -2027,7 +2042,8 @@ AArch64TargetLowering::LowerGlobalTLSAddress(SDValue Op,
     SDValue LoDesc = DAG.getTargetExternalSymbol("_TLS_MODULE_BASE_", PtrVT,
                                                 AArch64II::MO_TLSDESC_LO12);
     SDValue DescAddr = DAG.getNode(AArch64ISD::WrapperSmall, DL, PtrVT,
-                                   HiDesc, LoDesc, DAG.getConstant(8, MVT::i32));
+                                   HiDesc, LoDesc,
+                                   DAG.getConstant(8, MVT::i32));
     SDValue SymAddr = DAG.getTargetExternalSymbol("_TLS_MODULE_BASE_", PtrVT);
 
     ThreadBase = LowerTLSDescCall(SymAddr, DescAddr, DL, DAG);
@@ -2040,7 +2056,8 @@ AArch64TargetLowering::LowerGlobalTLSAddress(SDValue Op,
 
     TPOff = SDValue(DAG.getMachineNode(AArch64::MOVZxii, DL, PtrVT, HiVar,
                                        DAG.getTargetConstant(0, MVT::i32)), 0);
-    TPOff = SDValue(DAG.getMachineNode(AArch64::MOVKxii, DL, PtrVT, TPOff, LoVar,
+    TPOff = SDValue(DAG.getMachineNode(AArch64::MOVKxii, DL, PtrVT,
+                                       TPOff, LoVar,
                                        DAG.getTargetConstant(0, MVT::i32)), 0);
   } else
       llvm_unreachable("Unsupported TLS access model");
@@ -2123,7 +2140,8 @@ AArch64TargetLowering::LowerSELECT_CC(SDValue Op, SelectionDAG &DAG) const {
   SDValue A64cc = DAG.getConstant(CondCode, MVT::i32);
   SDValue SetCC = DAG.getNode(AArch64ISD::SETCC, dl, MVT::i32, LHS, RHS,
                               DAG.getCondCode(CC));
-  SDValue A64SELECT_CC = DAG.getNode(AArch64ISD::SELECT_CC, dl, Op.getValueType(),
+  SDValue A64SELECT_CC = DAG.getNode(AArch64ISD::SELECT_CC, dl,
+                                     Op.getValueType(),
                                      SetCC, IfTrue, IfFalse, A64cc);
 
   if (Alternative != A64CC::Invalid) {
@@ -2231,7 +2249,8 @@ AArch64TargetLowering::LowerVASTART(SDValue Op, SelectionDAG &DAG) const {
   // The layout of the va_list struct is specified in the AArch64 Procedure Call
   // Standard, section B.3.
   MachineFunction &MF = DAG.getMachineFunction();
-  AArch64MachineFunctionInfo *FuncInfo = MF.getInfo<AArch64MachineFunctionInfo>();
+  AArch64MachineFunctionInfo *FuncInfo
+    = MF.getInfo<AArch64MachineFunctionInfo>();
   DebugLoc DL = Op.getDebugLoc();
 
   SDValue Chain = Op.getOperand(0);
@@ -2365,7 +2384,7 @@ static SDValue PerformANDCombine(SDNode *N,
 }
 
 static SDValue PerformATOMIC_FENCECombine(SDNode *FenceNode,
-                                          TargetLowering::DAGCombinerInfo &DCI) {
+                                         TargetLowering::DAGCombinerInfo &DCI) {
   // An atomic operation followed by an acquiring atomic fence can be reduced to
   // an acquiring load. The atomic operation provides a convenient pointer to
   // load from. If the original operation was a load anyway we can actually
@@ -2378,8 +2397,10 @@ static SDValue PerformATOMIC_FENCECombine(SDNode *FenceNode,
   if (!AtomicNode)
     return SDValue();
 
-  uint64_t FenceOrder = FenceNode->getConstantOperandVal(1);
-  uint64_t FenceScope = FenceNode->getConstantOperandVal(2);
+  AtomicOrdering FenceOrder
+    = static_cast<AtomicOrdering>(FenceNode->getConstantOperandVal(1));
+  SynchronizationScope FenceScope
+    = static_cast<SynchronizationScope>(FenceNode->getConstantOperandVal(2));
 
   if (FenceOrder != Acquire || FenceScope != AtomicNode->getSynchScope())
     return SDValue();
@@ -2398,7 +2419,7 @@ static SDValue PerformATOMIC_FENCECombine(SDNode *FenceNode,
                              Chain,                  // Chain
                              AtomicOp.getOperand(1), // Pointer
                              AtomicNode->getMemOperand(), Acquire,
-                             static_cast<SynchronizationScope>(FenceScope));
+                             FenceScope);
 
   if (AtomicNode->getOpcode() == ISD::ATOMIC_LOAD)
     DAG.ReplaceAllUsesWith(AtomicNode, Op.getNode());
@@ -2407,7 +2428,7 @@ static SDValue PerformATOMIC_FENCECombine(SDNode *FenceNode,
 }
 
 static SDValue PerformATOMIC_STORECombine(SDNode *N,
-                                          TargetLowering::DAGCombinerInfo &DCI) {
+                                         TargetLowering::DAGCombinerInfo &DCI) {
   // A releasing atomic fence followed by an atomic store can be combined into a
   // single store operation.
   SelectionDAG &DAG = DCI.DAG;
@@ -2417,10 +2438,10 @@ static SDValue PerformATOMIC_STORECombine(SDNode *N,
   if (FenceOp.getOpcode() != ISD::ATOMIC_FENCE)
     return SDValue();
 
-  uint64_t FenceOrder
-    = cast<ConstantSDNode>(FenceOp.getOperand(1))->getZExtValue();
-  uint64_t FenceScope
-    = cast<ConstantSDNode>(FenceOp.getOperand(2))->getZExtValue();
+  AtomicOrdering FenceOrder
+    = static_cast<AtomicOrdering>(FenceOp->getConstantOperandVal(1));
+  SynchronizationScope FenceScope
+    = static_cast<SynchronizationScope>(FenceOp->getConstantOperandVal(2));
 
   if (FenceOrder != Release || FenceScope != AtomicNode->getSynchScope())
     return SDValue();
@@ -2431,7 +2452,7 @@ static SDValue PerformATOMIC_STORECombine(SDNode *N,
                        AtomicNode->getOperand(1),       // Pointer
                        AtomicNode->getOperand(2),       // Value
                        AtomicNode->getMemOperand(), Release,
-                       static_cast<SynchronizationScope>(FenceScope));
+                       FenceScope);
 }
 
 /// For a true bitfield insert, the bits getting into that contiguous mask
@@ -2821,7 +2842,8 @@ AArch64TargetLowering::getConstraintType(const std::string &Constraint) const {
   }
 
   // FIXME: Ump, Utf, Usa, Ush
-  // Ump: A memory address suitable for ldp/stp in SI, DI, SF and DF modes, whatever they may be
+  // Ump: A memory address suitable for ldp/stp in SI, DI, SF and DF modes,
+  //      whatever they may be
   // Utf: A memory address suitable for ldp/stp in TF mode, whatever it may be
   // Usa: An absolute symbolic address
   // Ush: The high part (bits 32:12) of a pc-relative symbolic address
@@ -2893,7 +2915,8 @@ AArch64TargetLowering::LowerAsmOperandForConstraint(SDValue Op,
     if (const GlobalAddressSDNode *GA = dyn_cast<GlobalAddressSDNode>(Op)) {
       Result = DAG.getTargetGlobalAddress(GA->getGlobal(), Op.getDebugLoc(),
                                           GA->getValueType(0));
-    } else if (const BlockAddressSDNode *BA = dyn_cast<BlockAddressSDNode>(Op)) {
+    } else if (const BlockAddressSDNode *BA
+                 = dyn_cast<BlockAddressSDNode>(Op)) {
       Result = DAG.getTargetBlockAddress(BA->getBlockAddress(),
                                          BA->getValueType(0));
     } else if (const ExternalSymbolSDNode *ES
@@ -2924,8 +2947,9 @@ AArch64TargetLowering::LowerAsmOperandForConstraint(SDValue Op,
 }
 
 std::pair<unsigned, const TargetRegisterClass*>
-AArch64TargetLowering::getRegForInlineAsmConstraint(const std::string &Constraint,
-                                                    EVT VT) const {
+AArch64TargetLowering::getRegForInlineAsmConstraint(
+                                                  const std::string &Constraint,
+                                                  EVT VT) const {
   if (Constraint.size() == 1) {
     switch (Constraint[0]) {
     case 'r':

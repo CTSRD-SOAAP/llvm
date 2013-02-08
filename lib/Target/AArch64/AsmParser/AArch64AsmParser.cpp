@@ -8,9 +8,9 @@
 //===----------------------------------------------------------------------===//
 
 
-#include "MCTargetDesc/AArch64BaseInfo.h"
 #include "MCTargetDesc/AArch64MCTargetDesc.h"
 #include "MCTargetDesc/AArch64MCExpr.h"
+#include "Utils/AArch64BaseInfo.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/StringSwitch.h"
@@ -53,7 +53,7 @@ public:
 
   // These are the public interface of the MCTargetAsmParser
   bool ParseRegister(unsigned &RegNo, SMLoc &StartLoc, SMLoc &EndLoc);
-  bool ParseInstruction(ParseInstructionInfo &Info, StringRef Name, 
+  bool ParseInstruction(ParseInstructionInfo &Info, StringRef Name,
                         SMLoc NameLoc,
                         SmallVectorImpl<MCParsedAsmOperand*> &Operands);
 
@@ -116,7 +116,7 @@ public:
   ParseSysRegOperand(SmallVectorImpl<MCParsedAsmOperand*> &Operands);
 
   bool validateInstruction(MCInst &Inst,
-                           const SmallVectorImpl<MCParsedAsmOperand*> &Operands);
+                          const SmallVectorImpl<MCParsedAsmOperand*> &Operands);
 
   /// Scan the next token (which had better be an identifier) and determine
   /// whether it represents a general-purpose or vector register. It returns
@@ -1207,8 +1207,8 @@ AArch64AsmParser::ParseRelocPrefix(AArch64MCExpr::VariantKind &RefKind) {
     return MatchOperand_ParseFail;
   }
 
-  StringRef lowerCase = Parser.getTok().getIdentifier().lower();
-  RefKind = StringSwitch<AArch64MCExpr::VariantKind>(lowerCase)
+  std::string LowerCase = Parser.getTok().getIdentifier().lower();
+  RefKind = StringSwitch<AArch64MCExpr::VariantKind>(LowerCase)
     .Case("got",              AArch64MCExpr::VK_AARCH64_GOT)
     .Case("got_lo12",         AArch64MCExpr::VK_AARCH64_GOT_LO12)
     .Case("lo12",             AArch64MCExpr::VK_AARCH64_LO12)
@@ -1343,7 +1343,8 @@ AArch64AsmParser::ParseCRxOperand(
     return MatchOperand_ParseFail;
   }
 
-  StringRef Tok = Parser.getTok().getIdentifier().lower();
+  std::string LowerTok = Parser.getTok().getIdentifier().lower();
+  StringRef Tok(LowerTok);
   if (Tok[0] != 'c') {
     Error(S, "Expected cN operand where 0 <= N <= 15");
     return MatchOperand_ParseFail;
@@ -1441,8 +1442,8 @@ AArch64AsmParser::IdentifyRegister(unsigned &RegNum, SMLoc &RegEndLoc,
     // gives us a permanent string to use in the token (a pointer into LowerReg
     // would go out of scope when we return).
     LayoutLoc = SMLoc::getFromPointer(S.getPointer() + DotPos + 1);
-    Layout = LowerReg.substr(DotPos, StringRef::npos);
-    Layout = StringSwitch<const char *>(Layout)
+    std::string LayoutText = LowerReg.substr(DotPos, StringRef::npos);
+    Layout = StringSwitch<const char *>(LayoutText)
       .Case(".d", ".d").Case(".1d", ".1d").Case(".2d", ".2d")
       .Case(".s", ".s").Case(".2s", ".2s").Case(".4s", ".4s")
       .Case(".h", ".h").Case(".4h", ".4h").Case(".8h", ".8h")
@@ -1673,7 +1674,8 @@ AArch64AsmParser::ParseShiftExtend(
     if (Parser.getTok().is(AsmToken::Comma) ||
         Parser.getTok().is(AsmToken::EndOfStatement) ||
         Parser.getTok().is(AsmToken::RBrac)) {
-      Operands.push_back(AArch64Operand::CreateShiftExtend(Spec, 0, true, S, E));
+      Operands.push_back(AArch64Operand::CreateShiftExtend(Spec, 0, true,
+                                                           S, E));
       return MatchOperand_Success;
     }
   }
@@ -1696,7 +1698,8 @@ AArch64AsmParser::ParseShiftExtend(
   Parser.Lex();
   E = Parser.getTok().getLoc();
 
-  Operands.push_back(AArch64Operand::CreateShiftExtend(Spec, Amount, false, S, E));
+  Operands.push_back(AArch64Operand::CreateShiftExtend(Spec, Amount, false,
+                                                       S, E));
 
   return MatchOperand_Success;
 }
@@ -1941,7 +1944,7 @@ bool AArch64AsmParser::MatchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
                                  bool MatchingInlineAsm) {
   MCInst Inst;
   unsigned MatchResult;
-  MatchResult = MatchInstructionImpl(Operands, Inst, ErrorInfo, 
+  MatchResult = MatchInstructionImpl(Operands, Inst, ErrorInfo,
                                      MatchingInlineAsm);
   switch (MatchResult) {
   default: break;

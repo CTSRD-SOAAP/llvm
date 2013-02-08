@@ -17,7 +17,6 @@
 #ifndef LLVM_AARCH64_BASEINFO_H
 #define LLVM_AARCH64_BASEINFO_H
 
-#include "AArch64MCTargetDesc.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -249,6 +248,12 @@ namespace A64PRFM {
     PLDL2STRM = 0x03,
     PLDL3KEEP = 0x04,
     PLDL3STRM = 0x05,
+    PLIL1KEEP = 0x08,
+    PLIL1STRM = 0x09,
+    PLIL2KEEP = 0x0a,
+    PLIL2STRM = 0x0b,
+    PLIL3KEEP = 0x0c,
+    PLIL3STRM = 0x0d,
     PSTL1KEEP = 0x10,
     PSTL1STRM = 0x11,
     PSTL2KEEP = 0x12,

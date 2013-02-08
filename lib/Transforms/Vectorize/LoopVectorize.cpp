@@ -102,8 +102,11 @@ EnableIfConversion("enable-if-conversion", cl::init(true), cl::Hidden,
 
 /// We don't vectorize loops with a known constant trip count below this number.
 static cl::opt<unsigned>
-TinyTripCountVectorThreshold("vectorizer-min-trip-count", cl::init(16), cl::Hidden,
-                             cl::desc("The minimum trip count in the loops to vectorize."));
+TinyTripCountVectorThreshold("vectorizer-min-trip-count", cl::init(16),
+                             cl::Hidden,
+                             cl::desc("Don't vectorize loops with a constant "
+                                      "trip count that is smaller than this "
+                                      "value."));
 
 /// We don't unroll loops with a known constant trip count below this number.
 static const unsigned TinyTripCountUnrollThreshold = 128;
@@ -518,8 +521,9 @@ class LoopVectorizationCostModel {
 public:
   LoopVectorizationCostModel(Loop *L, ScalarEvolution *SE, LoopInfo *LI,
                              LoopVectorizationLegality *Legal,
-                             const TargetTransformInfo &TTI)
-      : TheLoop(L), SE(SE), LI(LI), Legal(Legal), TTI(TTI) {}
+                             const TargetTransformInfo &TTI,
+                             DataLayout *DL)
+      : TheLoop(L), SE(SE), LI(LI), Legal(Legal), TTI(TTI), DL(DL) {}
 
   /// Information about vectorization costs
   struct VectorizationFactor {
@@ -530,7 +534,8 @@ public:
   /// This method checks every power of two up to VF. If UserVF is not ZERO
   /// then this vectorization factor will be selected if vectorization is
   /// possible.
-  VectorizationFactor selectVectorizationFactor(bool OptForSize, unsigned UserVF);
+  VectorizationFactor selectVectorizationFactor(bool OptForSize,
+                                                unsigned UserVF);
 
   /// \return The size (in bits) of the widest type in the code that
   /// needs to be vectorized. We ignore values that remain scalar such as
@@ -575,6 +580,10 @@ private:
   /// the scalar type.
   static Type* ToVectorTy(Type *Scalar, unsigned VF);
 
+  /// Returns whether the instruction is a load or store and will be a emitted
+  /// as a vector operation.
+  bool isConsecutiveLoadOrStore(Instruction *I);
+
   /// The loop that we evaluate.
   Loop *TheLoop;
   /// Scev analysis.
@@ -585,6 +594,8 @@ private:
   LoopVectorizationLegality *Legal;
   /// Vector target information.
   const TargetTransformInfo &TTI;
+  /// Target data layout information.
+  DataLayout *DL;
 };
 
 /// The LoopVectorize Pass.
@@ -624,7 +635,7 @@ struct LoopVectorize : public LoopPass {
     }
 
     // Use the cost model.
-    LoopVectorizationCostModel CM(L, SE, LI, &LVL, *TTI);
+    LoopVectorizationCostModel CM(L, SE, LI, &LVL, *TTI, DL);
 
     // Check the function attribues to find out if this function should be
     // optimized for size.
@@ -2786,14 +2797,17 @@ unsigned LoopVectorizationCostModel::getWidestType() {
           continue;
 
       // Examine the stored values.
-      if (StoreInst *ST = dyn_cast<StoreInst>(it))
+      StoreInst *ST = 0;
+      if ((ST = dyn_cast<StoreInst>(it)))
         T = ST->getValueOperand()->getType();
 
-      // Ignore stored/loaded pointer types.
-      if (T->isPointerTy())
-        continue;
-
-      MaxWidth = std::max(MaxWidth, T->getScalarSizeInBits());
+      // Ignore loaded pointer types and stored pointer types that are not
+      // consecutive. However, we do want to take consecutive stores/loads of
+      // pointer vectors into account.
+      if (T->isPointerTy() && isConsecutiveLoadOrStore(it))
+        MaxWidth = std::max(MaxWidth, DL->getPointerSizeInBits());
+      else
+        MaxWidth = std::max(MaxWidth, T->getScalarSizeInBits());
     }
   }
 
@@ -3087,81 +3101,52 @@ LoopVectorizationCostModel::getInstructionCost(Instruction *I, unsigned VF) {
     VectorTy = ToVectorTy(ValTy, VF);
     return TTI.getCmpSelInstrCost(I->getOpcode(), VectorTy);
   }
-  case Instruction::Store: {
-    StoreInst *SI = cast<StoreInst>(I);
-    Type *ValTy = SI->getValueOperand()->getType();
+  case Instruction::Store:
+  case Instruction::Load: {
+    StoreInst *SI = dyn_cast<StoreInst>(I);
+    LoadInst *LI = dyn_cast<LoadInst>(I);
+    Type *ValTy = (SI ? SI->getValueOperand()->getType() :
+                   LI->getType());
     VectorTy = ToVectorTy(ValTy, VF);
 
-    if (VF == 1)
-      return TTI.getMemoryOpCost(I->getOpcode(), VectorTy,
-                                   SI->getAlignment(),
-                                   SI->getPointerAddressSpace());
+    unsigned Alignment = SI ? SI->getAlignment() : LI->getAlignment();
+    unsigned AS = SI ? SI->getPointerAddressSpace() :
+      LI->getPointerAddressSpace();
+    Value *Ptr = SI ? SI->getPointerOperand() : LI->getPointerOperand();
 
-    // Scalarized stores.
-    int Stride = Legal->isConsecutivePtr(SI->getPointerOperand());
+    if (VF == 1)
+      return TTI.getMemoryOpCost(I->getOpcode(), VectorTy, Alignment, AS);
+
+    // Scalarized loads/stores.
+    int Stride = Legal->isConsecutivePtr(Ptr);
     bool Reverse = Stride < 0;
     if (0 == Stride) {
       unsigned Cost = 0;
-
       // The cost of extracting from the value vector and pointer vector.
-      Type *PtrTy = ToVectorTy(I->getOperand(0)->getType(), VF);
+      Type *PtrTy = ToVectorTy(Ptr->getType(), VF);
       for (unsigned i = 0; i < VF; ++i) {
-        Cost += TTI.getVectorInstrCost(Instruction::ExtractElement, VectorTy,
-                                       i);
+        //  The cost of extracting the pointer operand.
         Cost += TTI.getVectorInstrCost(Instruction::ExtractElement, PtrTy, i);
+        // In case of STORE, the cost of ExtractElement from the vector.
+        // In case of LOAD, the cost of InsertElement into the returned
+        // vector.
+        Cost += TTI.getVectorInstrCost(SI ? Instruction::ExtractElement :
+                                            Instruction::InsertElement,
+                                            VectorTy, i);
       }
 
       // The cost of the scalar stores.
       Cost += VF * TTI.getMemoryOpCost(I->getOpcode(), ValTy->getScalarType(),
-                                       SI->getAlignment(),
-                                       SI->getPointerAddressSpace());
+                                       Alignment, AS);
       return Cost;
     }
 
-    // Wide stores.
+    // Wide load/stores.
     unsigned Cost = TTI.getMemoryOpCost(I->getOpcode(), VectorTy,
-                                        SI->getAlignment(),
-                                        SI->getPointerAddressSpace());
+                                        Alignment, AS);
     if (Reverse)
       Cost += TTI.getShuffleCost(TargetTransformInfo::SK_Reverse,
                                   VectorTy, 0);
-    return Cost;
-  }
-  case Instruction::Load: {
-    LoadInst *LI = cast<LoadInst>(I);
-
-    if (VF == 1)
-      return TTI.getMemoryOpCost(I->getOpcode(), VectorTy, LI->getAlignment(),
-                                 LI->getPointerAddressSpace());
-
-    // Scalarized loads.
-    int Stride = Legal->isConsecutivePtr(LI->getPointerOperand());
-    bool Reverse = Stride < 0;
-    if (0 == Stride) {
-      unsigned Cost = 0;
-      Type *PtrTy = ToVectorTy(I->getOperand(0)->getType(), VF);
-
-      // The cost of extracting from the pointer vector.
-      for (unsigned i = 0; i < VF; ++i)
-        Cost += TTI.getVectorInstrCost(Instruction::ExtractElement, PtrTy, i);
-
-      // The cost of inserting data to the result vector.
-      for (unsigned i = 0; i < VF; ++i)
-        Cost += TTI.getVectorInstrCost(Instruction::InsertElement, VectorTy, i);
-
-      // The cost of the scalar stores.
-      Cost += VF * TTI.getMemoryOpCost(I->getOpcode(), RetTy->getScalarType(),
-                                       LI->getAlignment(),
-                                       LI->getPointerAddressSpace());
-      return Cost;
-    }
-
-    // Wide loads.
-    unsigned Cost = TTI.getMemoryOpCost(I->getOpcode(), VectorTy,
-                                        LI->getAlignment(),
-                                        LI->getPointerAddressSpace());
-    if (Reverse)
-      Cost += TTI.getShuffleCost(TargetTransformInfo::SK_Reverse, VectorTy, 0);
     return Cost;
   }
   case Instruction::ZExt:
@@ -3241,4 +3226,16 @@ namespace llvm {
   }
 }
 
+bool LoopVectorizationCostModel::isConsecutiveLoadOrStore(Instruction *Inst) {
+  // Check for a store.
+  StoreInst *ST = dyn_cast<StoreInst>(Inst);
+  if (ST)
+    return Legal->isConsecutivePtr(ST->getPointerOperand()) != 0;
 
+  // Check for a load.
+  LoadInst *LI = dyn_cast<LoadInst>(Inst);
+  if (LI)
+    return Legal->isConsecutivePtr(LI->getPointerOperand()) != 0;
+
+  return false;
+}

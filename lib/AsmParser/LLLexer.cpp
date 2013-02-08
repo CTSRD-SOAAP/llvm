@@ -226,6 +226,7 @@ lltok::Kind LLLexer::LexToken() {
     SkipLineComment();
     return LexToken();
   case '!': return LexExclaim();
+  case '#': return LexHash();
   case '0': case '1': case '2': case '3': case '4':
   case '5': case '6': case '7': case '8': case '9':
   case '-':
@@ -394,6 +395,24 @@ lltok::Kind LLLexer::LexExclaim() {
   return lltok::exclaim;
 }
 
+/// LexHash - Lex all tokens that start with a # character:
+///    AttrGrpID ::= #[0-9]+
+lltok::Kind LLLexer::LexHash() {
+  // Handle AttrGrpID: #[0-9]+
+  if (isdigit(CurPtr[0])) {
+    for (++CurPtr; isdigit(CurPtr[0]); ++CurPtr)
+      /*empty*/;
+
+    uint64_t Val = atoull(TokStart+1, CurPtr);
+    if ((unsigned)Val != Val)
+      Error("invalid value number (too large)!");
+    UIntVal = unsigned(Val);
+    return lltok::AttrGrpID;
+  }
+
+  return lltok::Error;
+}
+
 /// LexIdentifier: Handle several related productions:
 ///    Label           [-a-zA-Z$._0-9]+:
 ///    IntegerType     i[0-9]+
@@ -436,9 +455,11 @@ lltok::Kind LLLexer::LexIdentifier() {
   CurPtr = KeywordEnd;
   --StartChar;
   unsigned Len = CurPtr-StartChar;
-#define KEYWORD(STR) \
-  if (Len == strlen(#STR) && !memcmp(StartChar, #STR, strlen(#STR))) \
-    return lltok::kw_##STR;
+#define KEYWORD(STR)                                                    \
+  do {                                                                  \
+    if (Len == strlen(#STR) && !memcmp(StartChar, #STR, strlen(#STR)))  \
+      return lltok::kw_##STR;                                           \
+  } while (0)
 
   KEYWORD(true);    KEYWORD(false);
   KEYWORD(declare); KEYWORD(define);
@@ -463,6 +484,7 @@ lltok::Kind LLLexer::LexIdentifier() {
   KEYWORD(hidden);
   KEYWORD(protected);
   KEYWORD(unnamed_addr);
+  KEYWORD(externally_initialized);
   KEYWORD(extern_weak);
   KEYWORD(external);
   KEYWORD(thread_local);
@@ -489,11 +511,11 @@ lltok::Kind LLLexer::LexIdentifier() {
   KEYWORD(seq_cst);
   KEYWORD(singlethread);
 
-  KEYWORD(nnan)
-  KEYWORD(ninf)
-  KEYWORD(nsz)
-  KEYWORD(arcp)
-  KEYWORD(fast)
+  KEYWORD(nnan);
+  KEYWORD(ninf);
+  KEYWORD(nsz);
+  KEYWORD(arcp);
+  KEYWORD(fast);
   KEYWORD(nuw);
   KEYWORD(nsw);
   KEYWORD(exact);
@@ -528,35 +550,36 @@ lltok::Kind LLLexer::LexIdentifier() {
   KEYWORD(cc);
   KEYWORD(c);
 
-  KEYWORD(signext);
-  KEYWORD(zeroext);
+  KEYWORD(attributes);
+
+  KEYWORD(address_safety);
+  KEYWORD(alwaysinline);
+  KEYWORD(byval);
+  KEYWORD(inlinehint);
   KEYWORD(inreg);
-  KEYWORD(sret);
-  KEYWORD(nounwind);
-  KEYWORD(noreturn);
+  KEYWORD(minsize);
+  KEYWORD(naked);
+  KEYWORD(nest);
   KEYWORD(noalias);
   KEYWORD(nocapture);
-  KEYWORD(byval);
-  KEYWORD(nest);
+  KEYWORD(noduplicate);
+  KEYWORD(noimplicitfloat);
+  KEYWORD(noinline);
+  KEYWORD(nonlazybind);
+  KEYWORD(noredzone);
+  KEYWORD(noreturn);
+  KEYWORD(nounwind);
+  KEYWORD(optsize);
   KEYWORD(readnone);
   KEYWORD(readonly);
-  KEYWORD(uwtable);
   KEYWORD(returns_twice);
-
-  KEYWORD(inlinehint);
-  KEYWORD(noinline);
-  KEYWORD(alwaysinline);
-  KEYWORD(optsize);
+  KEYWORD(signext);
+  KEYWORD(sret);
   KEYWORD(ssp);
   KEYWORD(sspreq);
   KEYWORD(sspstrong);
-  KEYWORD(noredzone);
-  KEYWORD(noimplicitfloat);
-  KEYWORD(naked);
-  KEYWORD(nonlazybind);
-  KEYWORD(address_safety);
-  KEYWORD(minsize);
-  KEYWORD(noduplicate);
+  KEYWORD(uwtable);
+  KEYWORD(zeroext);
 
   KEYWORD(type);
   KEYWORD(opaque);
