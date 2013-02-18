@@ -102,7 +102,7 @@ bool LLParser::ValidateEndOfModule() {
       AttrBuilder FnAttrs(AS.getFnAttributes(), AttributeSet::FunctionIndex);
       AS = AS.removeAttributes(Context, AttributeSet::FunctionIndex,
                                AS.getFnAttributes());
-
+      FnAttrs.merge(B);
       AS = AS.addAttributes(Context, AttributeSet::FunctionIndex,
                             AttributeSet::get(Context,
                                               AttributeSet::FunctionIndex,
@@ -113,7 +113,7 @@ bool LLParser::ValidateEndOfModule() {
       AttrBuilder FnAttrs(AS.getFnAttributes(), AttributeSet::FunctionIndex);
       AS = AS.removeAttributes(Context, AttributeSet::FunctionIndex,
                                AS.getFnAttributes());
-
+      FnAttrs.merge(B);
       AS = AS.addAttributes(Context, AttributeSet::FunctionIndex,
                             AttributeSet::get(Context,
                                               AttributeSet::FunctionIndex,
@@ -233,7 +233,6 @@ bool LLParser::ParseTopLevelEntities() {
     case lltok::GlobalVar:  if (ParseNamedGlobal()) return true; break;
     case lltok::exclaim:    if (ParseStandaloneMetadata()) return true; break;
     case lltok::MetadataVar:if (ParseNamedMetadata()) return true; break;
-    case lltok::AttrGrpID:  if (ParseUnnamedAttrGrp()) return true; break;
 
     // The Global variable production with no name can have many different
     // optional leading prefixes, the production is:
@@ -279,6 +278,8 @@ bool LLParser::ParseTopLevelEntities() {
     case lltok::kw_global:        // GlobalType
       if (ParseGlobal("", SMLoc(), 0, false, 0)) return true;
       break;
+
+    case lltok::kw_attributes: if (ParseUnnamedAttrGrp()) return true; break;
     }
   }
 }
@@ -800,16 +801,18 @@ bool LLParser::ParseGlobal(const std::string &Name, LocTy NameLoc,
 }
 
 /// ParseUnnamedAttrGrp
-///   ::= AttrGrpID '=' '{' AttrValPair+ '}'
+///   ::= 'attributes' AttrGrpID '=' '{' AttrValPair+ '}'
 bool LLParser::ParseUnnamedAttrGrp() {
-  assert(Lex.getKind() == lltok::AttrGrpID);
+  assert(Lex.getKind() == lltok::kw_attributes);
   LocTy AttrGrpLoc = Lex.getLoc();
+  Lex.Lex();
+
+  assert(Lex.getKind() == lltok::AttrGrpID);
   unsigned VarID = Lex.getUIntVal();
   std::vector<unsigned> unused;
   Lex.Lex();
 
   if (ParseToken(lltok::equal, "expected '=' here") ||
-      ParseToken(lltok::kw_attributes, "expected 'attributes' keyword here") ||
       ParseToken(lltok::lbrace, "expected '{' here") ||
       ParseFnAttributeValuePairs(NumberedAttrBuilders[VarID], unused, true) ||
       ParseToken(lltok::rbrace, "expected end of attribute group"))
@@ -866,7 +869,7 @@ bool LLParser::ParseFnAttributeValuePairs(AttrBuilder &B,
         return true;
 
       B.addAttribute(Attr, Val);
-      break;
+      continue;
     }
 
     // Target-independent attributes:
@@ -875,6 +878,7 @@ bool LLParser::ParseFnAttributeValuePairs(AttrBuilder &B,
       // 2".
       unsigned Alignment;
       if (inAttrGrp) {
+        Lex.Lex();
         if (ParseToken(lltok::equal, "expected '=' here") ||
             ParseUInt32(Alignment))
           return true;
@@ -888,6 +892,7 @@ bool LLParser::ParseFnAttributeValuePairs(AttrBuilder &B,
     case lltok::kw_alignstack: {
       unsigned Alignment;
       if (inAttrGrp) {
+        Lex.Lex();
         if (ParseToken(lltok::equal, "expected '=' here") ||
             ParseUInt32(Alignment))
           return true;
@@ -917,6 +922,8 @@ bool LLParser::ParseFnAttributeValuePairs(AttrBuilder &B,
     case lltok::kw_ssp:             B.addAttribute(Attribute::StackProtect); break;
     case lltok::kw_sspreq:          B.addAttribute(Attribute::StackProtectReq); break;
     case lltok::kw_sspstrong:       B.addAttribute(Attribute::StackProtectStrong); break;
+    case lltok::kw_thread_safety:   B.addAttribute(Attribute::ThreadSafety); break;
+    case lltok::kw_uninitialized_checks: B.addAttribute(Attribute::UninitializedChecks); break;
     case lltok::kw_uwtable:         B.addAttribute(Attribute::UWTable); break;
 
     // Error handling.
@@ -1156,7 +1163,8 @@ bool LLParser::ParseOptionalParamAttrs(AttrBuilder &B) {
     case lltok::kw_noredzone:      case lltok::kw_noimplicitfloat:
     case lltok::kw_naked:          case lltok::kw_nonlazybind:
     case lltok::kw_address_safety: case lltok::kw_minsize:
-    case lltok::kw_alignstack:
+    case lltok::kw_alignstack:     case lltok::kw_thread_safety:
+    case lltok::kw_uninitialized_checks:
       HaveError |= Error(Lex.getLoc(), "invalid use of function-only attribute");
       break;
     }
@@ -1198,6 +1206,7 @@ bool LLParser::ParseOptionalReturnAttrs(AttrBuilder &B) {
     case lltok::kw_nonlazybind:    case lltok::kw_address_safety:
     case lltok::kw_minsize:        case lltok::kw_alignstack:
     case lltok::kw_align:          case lltok::kw_noduplicate:
+    case lltok::kw_thread_safety:  case lltok::kw_uninitialized_checks:
       HaveError |= Error(Lex.getLoc(), "invalid use of function-only attribute");
       break;
     }
@@ -2303,7 +2312,8 @@ bool LLParser::ParseValID(ValID &ID, PerFunctionState *PFS) {
     return false;
 
   case lltok::kw_asm: {
-    // ValID ::= 'asm' SideEffect? AlignStack? STRINGCONSTANT ',' STRINGCONSTANT
+    // ValID ::= 'asm' SideEffect? AlignStack? IntelDialect? STRINGCONSTANT ','
+    //             STRINGCONSTANT
     bool HasSideEffect, AlignStack, AsmDialect;
     Lex.Lex();
     if (ParseOptionalToken(lltok::kw_sideeffect, HasSideEffect) ||

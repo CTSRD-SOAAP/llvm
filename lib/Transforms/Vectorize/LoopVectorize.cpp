@@ -9,10 +9,10 @@
 //
 // This is the LLVM loop vectorizer. This pass modifies 'vectorizable' loops
 // and generates target-independent LLVM-IR. Legalization of the IR is done
-// in the codegen. However, the vectorizes uses (will use) the codegen
+// in the codegen. However, the vectorizer uses (will use) the codegen
 // interfaces to generate IR that is likely to result in an optimal binary.
 //
-// The loop vectorizer combines consecutive loop iteration into a single
+// The loop vectorizer combines consecutive loop iterations into a single
 // 'wide' iteration. After this transformation the index is incremented
 // by the SIMD vector width, and not by one.
 //
@@ -32,7 +32,7 @@
 //  D. Nuzman and R. Henderson. Multi-platform Auto-vectorization.
 //
 // Variable uniformity checks are inspired by:
-// Karrenberg, R. and Hack, S. Whole Function Vectorization.
+//  Karrenberg, R. and Hack, S. Whole Function Vectorization.
 //
 // Other ideas/concepts are from:
 //  A. Zaks and D. Nuzman. Autovectorization in GCC-two years later.
@@ -637,7 +637,7 @@ struct LoopVectorize : public LoopPass {
     // Use the cost model.
     LoopVectorizationCostModel CM(L, SE, LI, &LVL, *TTI, DL);
 
-    // Check the function attribues to find out if this function should be
+    // Check the function attributes to find out if this function should be
     // optimized for size.
     Function *F = L->getHeader()->getParent();
     Attribute::AttrKind SzAttr = Attribute::OptimizeForSize;
@@ -668,7 +668,7 @@ struct LoopVectorize : public LoopPass {
           F->getParent()->getModuleIdentifier()<<"\n");
     DEBUG(dbgs() << "LV: Unroll Factor is " << UF << "\n");
 
-    // If we decided that it is *legal* to vectorizer the loop then do it.
+    // If we decided that it is *legal* to vectorize the loop then do it.
     InnerLoopVectorizer LB(L, SE, LI, DT, DL, VF.Width, UF);
     LB.vectorize(&LVL);
 
@@ -2276,6 +2276,14 @@ void LoopVectorizationLegality::collectLoopUniforms() {
 }
 
 bool LoopVectorizationLegality::canVectorizeMemory() {
+
+  if (TheLoop->isAnnotatedParallel()) {
+    DEBUG(dbgs()
+          << "LV: A loop annotated parallel, ignore memory dependency "
+          << "checks.\n");
+    return true;
+  }
+
   typedef SmallVector<Value*, 16> ValueVector;
   typedef SmallPtrSet<Value*, 16> ValueSet;
   // Holds the Load and Store *instructions*.
@@ -2797,17 +2805,17 @@ unsigned LoopVectorizationCostModel::getWidestType() {
           continue;
 
       // Examine the stored values.
-      StoreInst *ST = 0;
-      if ((ST = dyn_cast<StoreInst>(it)))
+      if (StoreInst *ST = dyn_cast<StoreInst>(it))
         T = ST->getValueOperand()->getType();
 
       // Ignore loaded pointer types and stored pointer types that are not
       // consecutive. However, we do want to take consecutive stores/loads of
       // pointer vectors into account.
-      if (T->isPointerTy() && isConsecutiveLoadOrStore(it))
-        MaxWidth = std::max(MaxWidth, DL->getPointerSizeInBits());
-      else
-        MaxWidth = std::max(MaxWidth, T->getScalarSizeInBits());
+      if (T->isPointerTy() && !isConsecutiveLoadOrStore(it))
+        continue;
+
+      MaxWidth = std::max(MaxWidth,
+                          (unsigned)DL->getTypeSizeInBits(T->getScalarType()));
     }
   }
 
@@ -3056,9 +3064,10 @@ LoopVectorizationCostModel::getInstructionCost(Instruction *I, unsigned VF) {
   // TODO: We need to estimate the cost of intrinsic calls.
   switch (I->getOpcode()) {
   case Instruction::GetElementPtr:
-    // We mark this instruction as zero-cost because scalar GEPs are usually
-    // lowered to the intruction addressing mode. At the moment we don't
-    // generate vector geps.
+    // We mark this instruction as zero-cost because the cost of GEPs in
+    // vectorized code depends on whether the corresponding memory instruction
+    // is scalarized or not. Therefore, we handle GEPs with the memory
+    // instruction cost.
     return 0;
   case Instruction::Br: {
     return TTI.getCFInstrCost(I->getOpcode());
@@ -3113,9 +3122,12 @@ LoopVectorizationCostModel::getInstructionCost(Instruction *I, unsigned VF) {
     unsigned AS = SI ? SI->getPointerAddressSpace() :
       LI->getPointerAddressSpace();
     Value *Ptr = SI ? SI->getPointerOperand() : LI->getPointerOperand();
-
+    // We add the cost of address computation here instead of with the gep
+    // instruction because only here we know whether the operation is
+    // scalarized.
     if (VF == 1)
-      return TTI.getMemoryOpCost(I->getOpcode(), VectorTy, Alignment, AS);
+      return TTI.getAddressComputationCost(VectorTy) +
+        TTI.getMemoryOpCost(I->getOpcode(), VectorTy, Alignment, AS);
 
     // Scalarized loads/stores.
     int Stride = Legal->isConsecutivePtr(Ptr);
@@ -3135,15 +3147,17 @@ LoopVectorizationCostModel::getInstructionCost(Instruction *I, unsigned VF) {
                                             VectorTy, i);
       }
 
-      // The cost of the scalar stores.
+      // The cost of the scalar loads/stores.
+      Cost += VF * TTI.getAddressComputationCost(ValTy->getScalarType());
       Cost += VF * TTI.getMemoryOpCost(I->getOpcode(), ValTy->getScalarType(),
                                        Alignment, AS);
       return Cost;
     }
 
     // Wide load/stores.
-    unsigned Cost = TTI.getMemoryOpCost(I->getOpcode(), VectorTy,
-                                        Alignment, AS);
+    unsigned Cost = TTI.getAddressComputationCost(VectorTy);
+    Cost += TTI.getMemoryOpCost(I->getOpcode(), VectorTy, Alignment, AS);
+
     if (Reverse)
       Cost += TTI.getShuffleCost(TargetTransformInfo::SK_Reverse,
                                   VectorTy, 0);
@@ -3228,13 +3242,11 @@ namespace llvm {
 
 bool LoopVectorizationCostModel::isConsecutiveLoadOrStore(Instruction *Inst) {
   // Check for a store.
-  StoreInst *ST = dyn_cast<StoreInst>(Inst);
-  if (ST)
+  if (StoreInst *ST = dyn_cast<StoreInst>(Inst))
     return Legal->isConsecutivePtr(ST->getPointerOperand()) != 0;
 
   // Check for a load.
-  LoadInst *LI = dyn_cast<LoadInst>(Inst);
-  if (LI)
+  if (LoadInst *LI = dyn_cast<LoadInst>(Inst))
     return Legal->isConsecutivePtr(LI->getPointerOperand()) != 0;
 
   return false;

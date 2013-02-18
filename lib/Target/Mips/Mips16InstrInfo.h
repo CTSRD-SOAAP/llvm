@@ -86,6 +86,19 @@ public:
                          MachineBasicBlock::iterator II, DebugLoc DL,
                          unsigned &NewImm) const;
 
+  static bool validSpImm8(int offset) {
+    return ((offset & 7) == 0) && isInt<11>(offset);
+  }
+
+  //
+  // build the proper one based on the Imm field
+  //
+
+  const MCInstrDesc& AddiuSpImm(int64_t Imm) const;
+
+  void BuildAddiuSpImm
+    (MachineBasicBlock &MBB, MachineBasicBlock::iterator I, int64_t Imm) const;
+
 private:
   virtual unsigned GetAnalyzableBrOpc(unsigned Opc) const;
 
@@ -102,7 +115,9 @@ private:
                                      MachineBasicBlock &MBB,
                                      MachineBasicBlock::iterator I) const;
 
-
+  void ExpandFEXT_T8I816_ins(MachineBasicBlock &MBB,
+                             MachineBasicBlock::iterator I,
+                             unsigned BtOpc, unsigned CmpOpc) const;
 };
 
 }

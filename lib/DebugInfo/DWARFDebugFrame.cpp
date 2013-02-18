@@ -46,7 +46,7 @@ protected:
   uint64_t Length;
 };
 
-
+namespace {
 /// \brief DWARF Common Information Entry (CIE)
 class CIE : public FrameEntry {
 public:
@@ -69,9 +69,9 @@ public:
        << "\n";
     OS << format("  Version:               %d\n", Version);
     OS << "  Augmentation:          \"" << Augmentation << "\"\n";
-    OS << format("  Code alignment factor: %u\n", CodeAlignmentFactor);
-    OS << format("  Data alignment factor: %d\n", DataAlignmentFactor);
-    OS << format("  Return address column: %d\n", ReturnAddressRegister);
+    OS << format("  Code alignment factor: %u\n", (uint32_t)CodeAlignmentFactor);
+    OS << format("  Data alignment factor: %d\n", (int32_t)DataAlignmentFactor);
+    OS << format("  Return address column: %d\n", (int32_t)ReturnAddressRegister);
     OS << "\n";
   }
 
@@ -128,6 +128,7 @@ private:
   uint64_t AddressRange;
   CIE *LinkedCIE;
 };
+} // end anonymous namespace
 
 
 DWARFDebugFrame::DWARFDebugFrame() {
