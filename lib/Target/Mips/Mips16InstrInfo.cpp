@@ -132,32 +132,9 @@ loadRegFromStackSlot(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
 
 bool Mips16InstrInfo::expandPostRAPseudo(MachineBasicBlock::iterator MI) const {
   MachineBasicBlock &MBB = *MI->getParent();
-
   switch(MI->getDesc().getOpcode()) {
   default:
     return false;
-  case Mips::BteqzT8CmpX16:
-    ExpandFEXT_T8I816_ins(MBB, MI, Mips::BteqzX16, Mips::CmpRxRy16);
-    break;
-  case Mips::BteqzT8SltX16:
-    ExpandFEXT_T8I816_ins(MBB, MI, Mips::BteqzX16, Mips::SltRxRy16);
-    break;
-  case Mips::BteqzT8SltuX16:
-    // TBD: figure out a way to get this or remove the instruction
-    // altogether.
-    ExpandFEXT_T8I816_ins(MBB, MI, Mips::BteqzX16, Mips::SltuRxRy16);
-    break;
-  case Mips::BtnezT8CmpX16:
-    ExpandFEXT_T8I816_ins(MBB, MI, Mips::BtnezX16, Mips::CmpRxRy16);
-    break;
-  case Mips::BtnezT8SltX16:
-    ExpandFEXT_T8I816_ins(MBB, MI, Mips::BtnezX16, Mips::SltRxRy16);
-    break;
-  case Mips::BtnezT8SltuX16:
-    // TBD: figure out a way to get this or remove the instruction
-    // altogether.
-    ExpandFEXT_T8I816_ins(MBB, MI, Mips::BtnezX16, Mips::SltuRxRy16);
-    break;
   case Mips::RetRA16:
     ExpandRetRA16(MBB, MI, Mips::JrcRa16);
     break;
@@ -423,16 +400,6 @@ void Mips16InstrInfo::ExpandRetRA16(MachineBasicBlock &MBB,
 }
 
 
-void Mips16InstrInfo::ExpandFEXT_T8I816_ins(
-  MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
-  unsigned BtOpc, unsigned CmpOpc) const {
-  unsigned regX = I->getOperand(0).getReg();
-  unsigned regY = I->getOperand(1).getReg();
-  MachineBasicBlock *target = I->getOperand(2).getMBB();
-  BuildMI(MBB, I, I->getDebugLoc(), get(CmpOpc)).addReg(regX).addReg(regY);
-  BuildMI(MBB, I, I->getDebugLoc(), get(BtOpc)).addMBB(target);
-
-}
 const MCInstrDesc &Mips16InstrInfo::AddiuSpImm(int64_t Imm) const {
   if (validSpImm8(Imm))
     return get(Mips::AddiuSpImm16);

@@ -91,9 +91,12 @@ namespace llvm {
     ///                 by a tool analyzing generated debugging information.
     /// @param RV       This indicates runtime version for languages like 
     ///                 Objective-C.
+    /// @param SplitName The name of the file that we'll split debug info out
+    ///                  into.
     void createCompileUnit(unsigned Lang, StringRef File, StringRef Dir, 
-                           StringRef Producer,
-                           bool isOptimized, StringRef Flags, unsigned RV);
+                           StringRef Producer, bool isOptimized,
+                           StringRef Flags, unsigned RV,
+                           StringRef SplitName = StringRef());
 
     /// createFile - Create a file descriptor to hold debugging information
     /// for a file.
@@ -262,12 +265,13 @@ namespace llvm {
     ///                     DW_AT_containing_type. See DWARF documentation
     ///                     for more info.
     /// @param TemplateParms Template type parameters.
-    DIType createClassType(DIDescriptor Scope, StringRef Name, DIFile File,
-                           unsigned LineNumber, uint64_t SizeInBits,
-                           uint64_t AlignInBits, uint64_t OffsetInBits,
-                           unsigned Flags, DIType DerivedFrom, 
-                           DIArray Elements, MDNode *VTableHolder = 0,
-                           MDNode *TemplateParms = 0);
+    DICompositeType createClassType(DIDescriptor Scope, StringRef Name,
+                                    DIFile File, unsigned LineNumber,
+                                    uint64_t SizeInBits, uint64_t AlignInBits,
+                                    uint64_t OffsetInBits, unsigned Flags,
+                                    DIType DerivedFrom, DIArray Elements,
+                                    MDNode *VTableHolder = 0,
+                                    MDNode *TemplateParms = 0);
 
     /// createStructType - Create debugging information entry for a struct.
     /// @param Scope        Scope in which this struct is defined.
@@ -279,10 +283,12 @@ namespace llvm {
     /// @param Flags        Flags to encode member attribute, e.g. private
     /// @param Elements     Struct elements.
     /// @param RunTimeLang  Optional parameter, Objective-C runtime version.
-    DIType createStructType(DIDescriptor Scope, StringRef Name, DIFile File,
-                            unsigned LineNumber, uint64_t SizeInBits,
-                            uint64_t AlignInBits, unsigned Flags,
-                            DIArray Elements, unsigned RunTimeLang = 0);
+    DICompositeType createStructType(DIDescriptor Scope, StringRef Name,
+                                     DIFile File, unsigned LineNumber,
+                                     uint64_t SizeInBits, uint64_t AlignInBits,
+                                     unsigned Flags, DIType DerivedFrom,
+                                     DIArray Elements, unsigned RunTimeLang = 0,
+                                     MDNode *VTableHolder = 0);
 
     /// createUnionType - Create debugging information entry for an union.
     /// @param Scope        Scope in which this union is defined.
@@ -370,10 +376,6 @@ namespace llvm {
     /// flag set.
     DIType createObjectPointerType(DIType Ty);
 
-    /// createTemporaryType - Create a temporary forward-declared type.
-    DIType createTemporaryType();
-    DIType createTemporaryType(DIFile F);
-
     /// createForwardDecl - Create a temporary forward-declared type.
     DIType createForwardDecl(unsigned Tag, StringRef Name, DIDescriptor Scope,
                              DIFile F, unsigned Line, unsigned RuntimeLang = 0,
@@ -406,6 +408,19 @@ namespace llvm {
     createGlobalVariable(StringRef Name, DIFile File, unsigned LineNo,
                          DIType Ty, bool isLocalToUnit, llvm::Value *Val);
 
+    /// \brief Create a new descriptor for the specified global.
+    /// @param Name        Name of the variable.
+    /// @param LinkageName Mangled variable name.
+    /// @param File        File where this variable is defined.
+    /// @param LineNo      Line number.
+    /// @param Ty          Variable Type.
+    /// @param isLocalToUnit Boolean flag indicate whether this variable is
+    ///                      externally visible or not.
+    /// @param Val         llvm::Value of the variable.
+    DIGlobalVariable
+    createGlobalVariable(StringRef Name, StringRef LinkageName, DIFile File,
+                         unsigned LineNo, DIType Ty, bool isLocalToUnit,
+                         llvm::Value *Val);
 
     /// createStaticVariable - Create a new descriptor for the specified 
     /// variable.

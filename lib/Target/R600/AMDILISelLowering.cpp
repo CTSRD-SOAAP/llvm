@@ -33,11 +33,6 @@
 
 using namespace llvm;
 //===----------------------------------------------------------------------===//
-// Calling Convention Implementation
-//===----------------------------------------------------------------------===//
-#include "AMDGPUGenCallingConv.inc"
-
-//===----------------------------------------------------------------------===//
 // TargetLowering Implementation Help Functions End
 //===----------------------------------------------------------------------===//
 
@@ -220,9 +215,9 @@ void AMDGPUTargetLowering::InitAMDILLowering() {
   setSelectIsExpensive(true);
   setJumpIsExpensive(true);
 
-  maxStoresPerMemcpy  = 4096;
-  maxStoresPerMemmove = 4096;
-  maxStoresPerMemset  = 4096;
+  MaxStoresPerMemcpy  = 4096;
+  MaxStoresPerMemmove = 4096;
+  MaxStoresPerMemset  = 4096;
 
 }
 

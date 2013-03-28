@@ -2539,18 +2539,6 @@ SDValue SelectionDAGLegalize::ExpandBSWAP(SDValue Op, DebugLoc dl) {
   }
 }
 
-/// SplatByte - Distribute ByteVal over NumBits bits.
-// FIXME: Move this helper to a common place.
-static APInt SplatByte(unsigned NumBits, uint8_t ByteVal) {
-  APInt Val = APInt(NumBits, ByteVal);
-  unsigned Shift = 8;
-  for (unsigned i = NumBits; i > 8; i >>= 1) {
-    Val = (Val << Shift) | Val;
-    Shift <<= 1;
-  }
-  return Val;
-}
-
 /// ExpandBitCount - Expand the specified bitcount instruction into operations.
 ///
 SDValue SelectionDAGLegalize::ExpandBitCount(unsigned Opc, SDValue Op,
@@ -2568,10 +2556,10 @@ SDValue SelectionDAGLegalize::ExpandBitCount(unsigned Opc, SDValue Op,
     // This is the "best" algorithm from
     // http://graphics.stanford.edu/~seander/bithacks.html#CountBitsSetParallel
 
-    SDValue Mask55 = DAG.getConstant(SplatByte(Len, 0x55), VT);
-    SDValue Mask33 = DAG.getConstant(SplatByte(Len, 0x33), VT);
-    SDValue Mask0F = DAG.getConstant(SplatByte(Len, 0x0F), VT);
-    SDValue Mask01 = DAG.getConstant(SplatByte(Len, 0x01), VT);
+    SDValue Mask55 = DAG.getConstant(APInt::getSplat(Len, APInt(8, 0x55)), VT);
+    SDValue Mask33 = DAG.getConstant(APInt::getSplat(Len, APInt(8, 0x33)), VT);
+    SDValue Mask0F = DAG.getConstant(APInt::getSplat(Len, APInt(8, 0x0F)), VT);
+    SDValue Mask01 = DAG.getConstant(APInt::getSplat(Len, APInt(8, 0x01)), VT);
 
     // v = v - ((v >> 1) & 0x55555555...)
     Op = DAG.getNode(ISD::SUB, dl, VT, Op,
@@ -3644,8 +3632,19 @@ void SelectionDAGLegalize::ExpandNode(SDNode *Node) {
     // Otherwise, SETCC for the given comparison type must be completely
     // illegal; expand it into a SELECT_CC.
     EVT VT = Node->getValueType(0);
+    int TrueValue;
+    switch (TLI.getBooleanContents(VT.isVector())) {
+    case TargetLowering::ZeroOrOneBooleanContent:
+    case TargetLowering::UndefinedBooleanContent:
+      TrueValue = 1;
+      break;
+    case TargetLowering::ZeroOrNegativeOneBooleanContent:
+      TrueValue = -1;
+      break;
+    }
     Tmp1 = DAG.getNode(ISD::SELECT_CC, dl, VT, Tmp1, Tmp2,
-                       DAG.getConstant(1, VT), DAG.getConstant(0, VT), Tmp3);
+                       DAG.getConstant(TrueValue, VT), DAG.getConstant(0, VT),
+                       Tmp3);
     Results.push_back(Tmp1);
     break;
   }

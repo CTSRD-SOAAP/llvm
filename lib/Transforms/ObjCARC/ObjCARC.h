@@ -89,6 +89,7 @@ enum InstructionClass {
   IC_CopyWeak,            ///< objc_copyWeak (derived)
   IC_DestroyWeak,         ///< objc_destroyWeak (derived)
   IC_StoreStrong,         ///< objc_storeStrong (derived)
+  IC_IntrinsicUser,       ///< clang.arc.use
   IC_CallOrUser,          ///< could call objc_release and/or "use" pointers
   IC_Call,                ///< could call objc_release
   IC_User,                ///< could "use" a pointer
@@ -96,6 +97,13 @@ enum InstructionClass {
 };
 
 raw_ostream &operator<<(raw_ostream &OS, const InstructionClass Class);
+
+/// \brief Test if the given class is a kind of user.
+inline static bool IsUser(InstructionClass Class) {
+  return Class == IC_User ||
+         Class == IC_CallOrUser ||
+         Class == IC_IntrinsicUser;
+}
 
 /// \brief Test if the given class is objc_retain or equivalent.
 static inline bool IsRetain(InstructionClass Class) {
@@ -112,13 +120,10 @@ static inline bool IsAutorelease(InstructionClass Class) {
 /// \brief Test if the given class represents instructions which return their
 /// argument verbatim.
 static inline bool IsForwarding(InstructionClass Class) {
-  // objc_retainBlock technically doesn't always return its argument
-  // verbatim, but it doesn't matter for our purposes here.
   return Class == IC_Retain ||
          Class == IC_RetainRV ||
          Class == IC_Autorelease ||
          Class == IC_AutoreleaseRV ||
-         Class == IC_RetainBlock ||
          Class == IC_NoopCast;
 }
 
@@ -256,11 +261,11 @@ static inline Value *GetObjCArg(Value *Inst) {
   return StripPointerCastsAndObjCCalls(cast<CallInst>(Inst)->getArgOperand(0));
 }
 
-static inline bool isNullOrUndef(const Value *V) {
+static inline bool IsNullOrUndef(const Value *V) {
   return isa<ConstantPointerNull>(V) || isa<UndefValue>(V);
 }
 
-static inline bool isNoopInstruction(const Instruction *I) {
+static inline bool IsNoopInstruction(const Instruction *I) {
   return isa<BitCastInst>(I) ||
     (isa<GetElementPtrInst>(I) &&
      cast<GetElementPtrInst>(I)->hasAllZeroIndices());

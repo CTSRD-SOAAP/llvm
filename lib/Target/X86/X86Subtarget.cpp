@@ -283,6 +283,10 @@ void X86Subtarget::AutoDetectSubtargetFeatures() {
         HasLZCNT = true;
         ToggleFeature(X86::FeatureLZCNT);
       }
+      if (IsIntel && ((ECX >> 8) & 0x1)) {
+        HasPRFCHW = true;
+        ToggleFeature(X86::FeaturePRFCHW);
+      }
       if (IsAMD) {
         if ((ECX >> 6) & 0x1) {
           HasSSE4A = true;
@@ -310,6 +314,10 @@ void X86Subtarget::AutoDetectSubtargetFeatures() {
         HasBMI = true;
         ToggleFeature(X86::FeatureBMI);
       }
+      if ((EBX >> 4) & 0x1) {
+        HasHLE = true;
+        ToggleFeature(X86::FeatureHLE);
+      }
       if (IsIntel && ((EBX >> 5) & 0x1)) {
         X86SSELevel = AVX2;
         ToggleFeature(X86::FeatureAVX2);
@@ -321,6 +329,10 @@ void X86Subtarget::AutoDetectSubtargetFeatures() {
       if (IsIntel && ((EBX >> 11) & 0x1)) {
         HasRTM = true;
         ToggleFeature(X86::FeatureRTM);
+      }
+      if (IsIntel && ((EBX >> 19) & 0x1)) {
+        HasADX = true;
+        ToggleFeature(X86::FeatureADX);
       }
     }
   }
@@ -439,7 +451,9 @@ void X86Subtarget::initializeEnvironment() {
   HasBMI = false;
   HasBMI2 = false;
   HasRTM = false;
+  HasHLE = false;
   HasADX = false;
+  HasPRFCHW = false;
   IsBTMemSlow = false;
   IsUAMemFast = false;
   HasVectorUAMem = false;
@@ -448,6 +462,7 @@ void X86Subtarget::initializeEnvironment() {
   HasSlowDivide = false;
   PostRAScheduler = false;
   PadShortFunctions = false;
+  CallRegIndirect = false;
   stackAlignment = 4;
   // FIXME: this is a known good value for Yonah. How about others?
   MaxInlineSizeThreshold = 128;
