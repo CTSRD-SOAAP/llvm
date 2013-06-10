@@ -35,6 +35,7 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetFrameLowering.h"
 #include "llvm/Target/TargetInstrInfo.h"
 #include "llvm/Target/TargetMachine.h"
@@ -45,6 +46,11 @@ using namespace llvm;
 
 char PEI::ID = 0;
 char &llvm::PrologEpilogCodeInserterID = PEI::ID;
+
+static cl::opt<unsigned>
+WarnStackSize("warn-stack-size", cl::Hidden, cl::init((unsigned)-1),
+              cl::desc("Warn for stack size bigger than the given"
+                       " number"));
 
 INITIALIZE_PASS_BEGIN(PEI, "prologepilog",
                 "Prologue/Epilogue Insertion", false, false)
@@ -127,6 +133,13 @@ bool PEI::runOnMachineFunction(MachineFunction &Fn) {
 
   // Clear any vregs created by virtual scavenging.
   Fn.getRegInfo().clearVirtRegs();
+
+  // Warn on stack size when we exceeds the given limit.
+  MachineFrameInfo *MFI = Fn.getFrameInfo();
+  if (WarnStackSize.getNumOccurrences() > 0 &&
+      WarnStackSize < MFI->getStackSize())
+    errs() << "warning: Stack size limit exceeded (" << MFI->getStackSize()
+           << ") in " << Fn.getName()  << ".\n";
 
   delete RS;
   clearAllSets();
@@ -824,8 +837,16 @@ void PEI::scavengeFrameVirtualRegs(MachineFunction &Fn) {
     // The instruction stream may change in the loop, so check BB->end()
     // directly.
     for (MachineBasicBlock::iterator I = BB->begin(); I != BB->end(); ) {
+      // We might end up here again with a NULL iterator if we scavenged a
+      // register for which we inserted spill code for definition by what was
+      // originally the first instruction in BB.
+      if (I == MachineBasicBlock::iterator(NULL))
+        I = BB->begin();
+
       MachineInstr *MI = I;
       MachineBasicBlock::iterator J = llvm::next(I);
+      MachineBasicBlock::iterator P = I == BB->begin() ?
+        MachineBasicBlock::iterator(NULL) : llvm::prior(I);
 
       // RS should process this instruction before we might scavenge at this
       // location. This is because we might be replacing a virtual register
@@ -869,8 +890,18 @@ void PEI::scavengeFrameVirtualRegs(MachineFunction &Fn) {
       // problem because we need the spill code before I: Move I to just
       // prior to J.
       if (I != llvm::prior(J)) {
-        BB->splice(J, BB, I++);
-        RS->skipTo(I == BB->begin() ? NULL : llvm::prior(I));
+        BB->splice(J, BB, I);
+
+        // Before we move I, we need to prepare the RS to visit I again.
+        // Specifically, RS will assert if it sees uses of registers that
+        // it believes are undefined. Because we have already processed
+        // register kills in I, when it visits I again, it will believe that
+        // those registers are undefined. To avoid this situation, unprocess
+        // the instruction I.
+        assert(RS->getCurrentPosition() == I &&
+          "The register scavenger has an unexpected position");
+        I = P;
+        RS->unprocess(P);
       } else
         ++I;
     }

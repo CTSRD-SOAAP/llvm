@@ -24,7 +24,7 @@ using namespace llvm;
 
 SIInstrInfo::SIInstrInfo(AMDGPUTargetMachine &tm)
   : AMDGPUInstrInfo(tm),
-    RI(tm, *this)
+    RI(tm)
     { }
 
 const SIRegisterInfo &SIInstrInfo::getRegisterInfo() const {
@@ -56,6 +56,10 @@ SIInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
 
   const int16_t Sub0_3[] = {
     AMDGPU::sub0, AMDGPU::sub1, AMDGPU::sub2, AMDGPU::sub3, 0
+  };
+
+  const int16_t Sub0_2[] = {
+    AMDGPU::sub0, AMDGPU::sub1, AMDGPU::sub2, 0
   };
 
   const int16_t Sub0_1[] = {
@@ -124,6 +128,11 @@ SIInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
 	   AMDGPU::SReg_64RegClass.contains(SrcReg));
     Opcode = AMDGPU::V_MOV_B32_e32;
     SubIndices = Sub0_1;
+
+  } else if (AMDGPU::VReg_96RegClass.contains(DestReg)) {
+    assert(AMDGPU::VReg_96RegClass.contains(SrcReg));
+    Opcode = AMDGPU::V_MOV_B32_e32;
+    SubIndices = Sub0_2;
 
   } else if (AMDGPU::VReg_128RegClass.contains(DestReg)) {
     assert(AMDGPU::VReg_128RegClass.contains(SrcReg) ||

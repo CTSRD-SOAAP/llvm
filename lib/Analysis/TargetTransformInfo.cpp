@@ -108,6 +108,14 @@ bool TargetTransformInfo::isLegalAddressingMode(Type *Ty, GlobalValue *BaseGV,
                                         Scale);
 }
 
+int TargetTransformInfo::getScalingFactorCost(Type *Ty, GlobalValue *BaseGV,
+                                              int64_t BaseOffset,
+                                              bool HasBaseReg,
+                                              int64_t Scale) const {
+  return PrevTTI->getScalingFactorCost(Ty, BaseGV, BaseOffset, HasBaseReg,
+                                       Scale);
+}
+
 bool TargetTransformInfo::isTruncateFree(Type *Ty1, Type *Ty2) const {
   return PrevTTI->isTruncateFree(Ty1, Ty2);
 }
@@ -150,8 +158,10 @@ unsigned TargetTransformInfo::getMaximumUnrollFactor() const {
 }
 
 unsigned TargetTransformInfo::getArithmeticInstrCost(unsigned Opcode,
-                                                     Type *Ty) const {
-  return PrevTTI->getArithmeticInstrCost(Opcode, Ty);
+                                                Type *Ty,
+                                                OperandValueKind Op1Info,
+                                                OperandValueKind Op2Info) const {
+  return PrevTTI->getArithmeticInstrCost(Opcode, Ty, Op1Info, Op2Info);
 }
 
 unsigned TargetTransformInfo::getShuffleCost(ShuffleKind Kind, Type *Tp,
@@ -455,6 +465,15 @@ struct NoTTI : ImmutablePass, TargetTransformInfo {
     return !BaseGV && BaseOffset == 0 && Scale <= 1;
   }
 
+  int getScalingFactorCost(Type *Ty, GlobalValue *BaseGV, int64_t BaseOffset,
+                           bool HasBaseReg, int64_t Scale) const {
+    // Guess that all legal addressing mode are free.
+    if(isLegalAddressingMode(Ty, BaseGV, BaseOffset, HasBaseReg, Scale))
+      return 0;
+    return -1;
+  }
+
+
   bool isTruncateFree(Type *Ty1, Type *Ty2) const {
     return false;
   }
@@ -495,7 +514,8 @@ struct NoTTI : ImmutablePass, TargetTransformInfo {
     return 1;
   }
 
-  unsigned getArithmeticInstrCost(unsigned Opcode, Type *Ty) const {
+  unsigned getArithmeticInstrCost(unsigned Opcode, Type *Ty, OperandValueKind,
+                                  OperandValueKind) const {
     return 1;
   }
 

@@ -15,7 +15,7 @@
 
 using namespace llvm;
 
-HexagonMCAsmInfo::HexagonMCAsmInfo(const Target &T, StringRef TT) {
+HexagonMCAsmInfo::HexagonMCAsmInfo(StringRef TT) {
   Data16bitsDirective = "\t.half\t";
   Data32bitsDirective = "\t.word\t";
   Data64bitsDirective = 0;  // .xword is only supported by V9.
@@ -32,7 +32,6 @@ HexagonMCAsmInfo::HexagonMCAsmInfo(const Target &T, StringRef TT) {
   WeakRefDirective = "\t.weak\t";
 
   SupportsDebugInformation = true;
-  DwarfUsesInlineInfoSection = true;
   UsesELFSectionDirectiveForBSS  = true;
   ExceptionsType = ExceptionHandling::DwarfCFI;
 }

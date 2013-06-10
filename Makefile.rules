@@ -639,22 +639,17 @@ endif
 ifneq ($(HOST_OS), $(filter $(HOST_OS), Cygwin MingW))
   ifneq ($(HOST_OS), Darwin)
     ifdef TOOLNAME
-      LD.Flags += $(RPATH) -Wl,'$$ORIGIN/../lib'
-      ifdef EXAMPLE_TOOL
-        LD.Flags += $(RPATH) -Wl,$(ExmplDir) $(DynamicFlag)
-      else
-        LD.Flags += $(RPATH) -Wl,$(ToolDir) $(DynamicFlag)
+      LD.Flags += $(RPATH) -Wl,'$$ORIGIN/../lib' $(DynamicFlag)
+    endif
+  else
+    ifneq ($(DARWIN_MAJVERS),4)
+      LD.Flags += $(RPATH) -Wl,@executable_path/../lib
+    endif
+    ifeq ($(RC_XBS),YES)
+      TempFile := $(shell mkdir -p ${OBJROOT}/dSYMs ; mktemp ${OBJROOT}/dSYMs/llvm-lto.XXXXXX)
+      LD.Flags += -Wl,-object_path_lto -Wl,$(TempFile)
     endif
   endif
-else
-  ifneq ($(DARWIN_MAJVERS),4)
-    LD.Flags += $(RPATH) -Wl,@executable_path/../lib
-  endif
-  ifeq ($(RC_XBS),YES)
-    TempFile := $(shell mkdir -p ${OBJROOT}/dSYMs ; mktemp ${OBJROOT}/dSYMs/llvm-lto.XXXXXX)
-    LD.Flags += -Wl,-object_path_lto -Wl,$(TempFile)
-  endif
-endif
 endif
 
 
@@ -1515,6 +1510,8 @@ $(ToolBuildPath): $(ToolDir)/.dir
 endif
 
 ifdef CODESIGN_TOOLS
+TOOL_CODESIGN_IDENTITY ?= -
+
 $(ToolBuildPath): $(ObjectsO) $(ProjLibsPaths) $(LLVMLibsPaths)
 	$(Echo) Linking $(BuildMode) executable $(TOOLNAME) $(StripWarnMsg)
 	$(Verb) $(Link) -o $@ $(TOOLLINKOPTS) $(ObjectsO) $(ProjLibsOptions) \
@@ -1522,7 +1519,7 @@ $(ToolBuildPath): $(ObjectsO) $(ProjLibsPaths) $(LLVMLibsPaths)
 	$(Echo) ======= Finished Linking $(BuildMode) Executable $(TOOLNAME) \
           $(StripWarnMsg)
 	$(Echo) ======= Code-Signing $(BuildMode) Executable $(TOOLNAME)
-	$(Verb) codesign -s - $@
+	$(Verb) codesign -s $(TOOL_CODESIGN_IDENTITY) $@
 else
 $(ToolBuildPath): $(ObjectsO) $(ProjLibsPaths) $(LLVMLibsPaths)
 	$(Echo) Linking $(BuildMode) executable $(TOOLNAME) $(StripWarnMsg)
@@ -1967,7 +1964,7 @@ endif
 # CHECK: Running the test suite
 ###############################################################################
 
-check::
+check:: all
 	$(Verb) if test -d "$(PROJ_OBJ_ROOT)/test" ; then \
 	  if test -f "$(PROJ_OBJ_ROOT)/test/Makefile" ; then \
 	    $(EchoCmd) Running test suite ; \

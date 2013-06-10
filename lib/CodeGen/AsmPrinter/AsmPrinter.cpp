@@ -133,9 +133,13 @@ const DataLayout &AsmPrinter::getDataLayout() const {
   return *TM.getDataLayout();
 }
 
+StringRef AsmPrinter::getTargetTriple() const {
+  return TM.getTargetTriple();
+}
+
 /// getCurrentSection() - Return the current section we are emitting to.
 const MCSection *AsmPrinter::getCurrentSection() const {
-  return OutStreamer.getCurrentSection();
+  return OutStreamer.getCurrentSection().first;
 }
 
 
@@ -159,7 +163,7 @@ bool AsmPrinter::doInitialization(Module &M) {
   const_cast<TargetLoweringObjectFile&>(getObjFileLowering())
     .Initialize(OutContext, TM);
 
-  Mang = new Mangler(OutContext, *TM.getDataLayout());
+  Mang = new Mangler(OutContext, &TM);
 
   // Allow the target to emit any magic that it wants at the start of the file.
   EmitStartOfAsmFile(M);
@@ -632,13 +636,13 @@ void AsmPrinter::emitPrologLabel(const MachineInstr &MI) {
     OutStreamer.EmitCompactUnwindEncoding(MMI->getCompactUnwindEncoding());
 
   MachineModuleInfo &MMI = MF->getMMI();
-  std::vector<MachineMove> &Moves = MMI.getFrameMoves();
+  std::vector<MCCFIInstruction> Instructions = MMI.getFrameInstructions();
   bool FoundOne = false;
   (void)FoundOne;
-  for (std::vector<MachineMove>::iterator I = Moves.begin(),
-         E = Moves.end(); I != E; ++I) {
+  for (std::vector<MCCFIInstruction>::iterator I = Instructions.begin(),
+         E = Instructions.end(); I != E; ++I) {
     if (I->getLabel() == Label) {
-      EmitCFIFrameMove(*I);
+      emitCFIInstruction(*I);
       FoundOne = true;
     }
   }
@@ -813,7 +817,7 @@ void AsmPrinter::EmitDwarfRegOp(const MachineLocation &MLoc) const {
   // caller might be in the middle of an dwarf expression. We should
   // probably assert that Reg >= 0 once debug info generation is more mature.
 
-  if (int Offset =  MLoc.getOffset()) {
+  if (MLoc.isIndirect()) {
     if (Reg < 32) {
       OutStreamer.AddComment(
         dwarf::OperationEncodingString(dwarf::DW_OP_breg0 + Reg));
@@ -824,7 +828,7 @@ void AsmPrinter::EmitDwarfRegOp(const MachineLocation &MLoc) const {
       OutStreamer.AddComment(Twine(Reg));
       EmitULEB128(Reg);
     }
-    EmitSLEB128(Offset);
+    EmitSLEB128(MLoc.getOffset());
   } else {
     if (Reg < 32) {
       OutStreamer.AddComment(
@@ -1213,7 +1217,7 @@ void AsmPrinter::EmitJumpTableEntry(const MachineJumpTableInfo *MJTI,
 bool AsmPrinter::EmitSpecialLLVMGlobal(const GlobalVariable *GV) {
   if (GV->getName() == "llvm.used") {
     if (MAI->hasNoDeadStrip())    // No need to emit this at all.
-      EmitLLVMUsedList(GV->getInitializer());
+      EmitLLVMUsedList(cast<ConstantArray>(GV->getInitializer()));
     return true;
   }
 
@@ -1256,11 +1260,8 @@ bool AsmPrinter::EmitSpecialLLVMGlobal(const GlobalVariable *GV) {
 /// EmitLLVMUsedList - For targets that define a MAI::UsedDirective, mark each
 /// global in the specified llvm.used list for which emitUsedDirectiveFor
 /// is true, as being used with this directive.
-void AsmPrinter::EmitLLVMUsedList(const Constant *List) {
+void AsmPrinter::EmitLLVMUsedList(const ConstantArray *InitList) {
   // Should be an array of 'i8*'.
-  const ConstantArray *InitList = dyn_cast<ConstantArray>(List);
-  if (InitList == 0) return;
-
   for (unsigned i = 0, e = InitList->getNumOperands(); i != e; ++i) {
     const GlobalValue *GV =
       dyn_cast<GlobalValue>(InitList->getOperand(i)->stripPointerCasts());
@@ -1794,15 +1795,56 @@ static void emitGlobalConstantLargeInt(const ConstantInt *CI,
                                        unsigned AddrSpace, AsmPrinter &AP) {
   const DataLayout *TD = AP.TM.getDataLayout();
   unsigned BitWidth = CI->getBitWidth();
-  assert((BitWidth & 63) == 0 && "only support multiples of 64-bits");
+
+  // Copy the value as we may massage the layout for constants whose bit width
+  // is not a multiple of 64-bits.
+  APInt Realigned(CI->getValue());
+  uint64_t ExtraBits = 0;
+  unsigned ExtraBitsSize = BitWidth & 63;
+
+  if (ExtraBitsSize) {
+    // The bit width of the data is not a multiple of 64-bits.
+    // The extra bits are expected to be at the end of the chunk of the memory.
+    // Little endian:
+    // * Nothing to be done, just record the extra bits to emit.
+    // Big endian:
+    // * Record the extra bits to emit.
+    // * Realign the raw data to emit the chunks of 64-bits.
+    if (TD->isBigEndian()) {
+      // Basically the structure of the raw data is a chunk of 64-bits cells:
+      //    0        1         BitWidth / 64
+      // [chunk1][chunk2] ... [chunkN].
+      // The most significant chunk is chunkN and it should be emitted first.
+      // However, due to the alignment issue chunkN contains useless bits.
+      // Realign the chunks so that they contain only useless information:
+      // ExtraBits     0       1       (BitWidth / 64) - 1
+      //       chu[nk1 chu][nk2 chu] ... [nkN-1 chunkN]
+      ExtraBits = Realigned.getRawData()[0] &
+        (((uint64_t)-1) >> (64 - ExtraBitsSize));
+      Realigned = Realigned.lshr(ExtraBitsSize);
+    } else
+      ExtraBits = Realigned.getRawData()[BitWidth / 64];
+  }
 
   // We don't expect assemblers to support integer data directives
   // for more than 64 bits, so we emit the data in at most 64-bit
   // quantities at a time.
-  const uint64_t *RawData = CI->getValue().getRawData();
+  const uint64_t *RawData = Realigned.getRawData();
   for (unsigned i = 0, e = BitWidth / 64; i != e; ++i) {
     uint64_t Val = TD->isBigEndian() ? RawData[e - i - 1] : RawData[i];
     AP.OutStreamer.EmitIntValue(Val, 8, AddrSpace);
+  }
+
+  if (ExtraBitsSize) {
+    // Emit the extra bits after the 64-bits chunks.
+
+    // Emit a directive that fills the expected size.
+    uint64_t Size = AP.TM.getDataLayout()->getTypeAllocSize(CI->getType());
+    Size -= (BitWidth / 64) * 8;
+    assert(Size && Size * 8 >= ExtraBitsSize &&
+           (ExtraBits & (((uint64_t)-1) >> (64 - ExtraBitsSize)))
+           == ExtraBits && "Directive too small for extra bits.");
+    AP.OutStreamer.EmitIntValue(ExtraBits, Size, AddrSpace);
   }
 }
 

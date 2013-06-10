@@ -35,25 +35,27 @@ def MRM_C3 : Format<35>;
 def MRM_C4 : Format<36>;
 def MRM_C8 : Format<37>;
 def MRM_C9 : Format<38>;
-def MRM_E8 : Format<39>;
-def MRM_F0 : Format<40>;
-def MRM_F8 : Format<41>;
-def MRM_F9 : Format<42>;
+def MRM_CA : Format<39>;
+def MRM_CB : Format<40>;
+def MRM_E8 : Format<41>;
+def MRM_F0 : Format<42>;
 def RawFrmImm8 : Format<43>;
 def RawFrmImm16 : Format<44>;
-def MRM_D0 : Format<45>;
-def MRM_D1 : Format<46>;
-def MRM_D4 : Format<47>;
-def MRM_D5 : Format<48>;
-def MRM_D6 : Format<49>;
-def MRM_D8 : Format<50>;
-def MRM_D9 : Format<51>;
-def MRM_DA : Format<52>;
-def MRM_DB : Format<53>;
-def MRM_DC : Format<54>;
-def MRM_DD : Format<55>;
-def MRM_DE : Format<56>;
-def MRM_DF : Format<57>;
+def MRM_F8 : Format<45>;
+def MRM_F9 : Format<46>;
+def MRM_D0 : Format<47>;
+def MRM_D1 : Format<48>;
+def MRM_D4 : Format<49>;
+def MRM_D5 : Format<50>;
+def MRM_D6 : Format<51>;
+def MRM_D8 : Format<52>;
+def MRM_D9 : Format<53>;
+def MRM_DA : Format<54>;
+def MRM_DB : Format<55>;
+def MRM_DC : Format<56>;
+def MRM_DD : Format<57>;
+def MRM_DE : Format<58>;
+def MRM_DF : Format<59>;
 
 // ImmType - This specifies the immediate type used by an instruction. This is
 // part of the ad-hoc solution used to emit machine instruction encodings by our
@@ -290,13 +292,16 @@ class Iseg32 <bits<8> o, Format f, dag outs, dag ins, string asm,
 }
 
 def __xs : XS;
+def __xd : XD;
 
 // SI - SSE 1 & 2 scalar instructions
 class SI<bits<8> o, Format F, dag outs, dag ins, string asm,
          list<dag> pattern, InstrItinClass itin = NoItinerary>
       : I<o, F, outs, ins, asm, pattern, itin> {
   let Predicates = !if(hasVEXPrefix /* VEX */, [HasAVX],
-            !if(!eq(Prefix, __xs.Prefix), [UseSSE1], [UseSSE2]));
+                   !if(!eq(Prefix, __xs.Prefix), [UseSSE1],
+                   !if(!eq(Prefix, __xd.Prefix), [UseSSE2],
+                   !if(hasOpSizePrefix, [UseSSE2], [UseSSE1]))));
 
   // AVX instructions have a 'v' prefix in the mnemonic
   let AsmString = !if(hasVEXPrefix, !strconcat("v", asm), asm);
@@ -348,7 +353,7 @@ class PIi8<bits<8> o, Format F, dag outs, dag ins, string asm,
 //   PSI   - SSE1 instructions with TB prefix.
 //   PSIi8 - SSE1 instructions with ImmT == Imm8 and TB prefix.
 //   VSSI  - SSE1 instructions with XS prefix in AVX form.
-//   VPSI  - SSE1 instructions with TB prefix in AVX form.
+//   VPSI  - SSE1 instructions with TB prefix in AVX form, packed single.
 
 class SSI<bits<8> o, Format F, dag outs, dag ins, string asm,
           list<dag> pattern, InstrItinClass itin = NoItinerary>
@@ -379,10 +384,13 @@ class VPSI<bits<8> o, Format F, dag outs, dag ins, string asm,
 //   SDIi8  - SSE2 instructions with ImmT == Imm8 and XD prefix.
 //   S2SI   - SSE2 instructions with XS prefix.
 //   SSDIi8 - SSE2 instructions with ImmT == Imm8 and XS prefix.
-//   PDI    - SSE2 instructions with TB and OpSize prefixes.
+//   PDI    - SSE2 instructions with TB and OpSize prefixes, packed double domain.
 //   PDIi8  - SSE2 instructions with ImmT == Imm8 and TB and OpSize prefixes.
-//   VSDI   - SSE2 instructions with XD prefix in AVX form.
-//   VPDI   - SSE2 instructions with TB and OpSize prefixes in AVX form.
+//   VSDI   - SSE2 scalar instructions with XD prefix in AVX form.
+//   VPDI   - SSE2 vector instructions with TB and OpSize prefixes in AVX form,
+//                 packed double domain.
+//   VS2I   - SSE2 scalar instructions with TB and OpSize prefixes in AVX form.
+//   S2I    - SSE2 scalar instructions with TB and OpSize prefixes.
 //   MMXSDIi8  - SSE2 instructions with ImmT == Imm8 and XD prefix as well as
 //               MMX operands.
 //   MMXSSDIi8 - SSE2 instructions with ImmT == Imm8 and XS prefix as well as
@@ -420,6 +428,14 @@ class VPDI<bits<8> o, Format F, dag outs, dag ins, string asm,
            list<dag> pattern, InstrItinClass itin = NoItinerary>
       : I<o, F, outs, ins, !strconcat("v", asm), pattern, itin, SSEPackedDouble>, TB,
         OpSize, Requires<[HasAVX]>;
+class VS2I<bits<8> o, Format F, dag outs, dag ins, string asm,
+           list<dag> pattern, InstrItinClass itin = NoItinerary>
+      : I<o, F, outs, ins, !strconcat("v", asm), pattern, itin>, TB,
+        OpSize, Requires<[HasAVX]>;
+class S2I<bits<8> o, Format F, dag outs, dag ins, string asm,
+           list<dag> pattern, InstrItinClass itin = NoItinerary>
+      : I<o, F, outs, ins, asm, pattern, itin>, TB,
+        OpSize, Requires<[UseSSE2]>;
 class MMXSDIi8<bits<8> o, Format F, dag outs, dag ins, string asm,
                list<dag> pattern, InstrItinClass itin = NoItinerary>
       : Ii8<o, F, outs, ins, asm, pattern, itin>, XD, Requires<[HasSSE2]>;
@@ -566,13 +582,13 @@ class AVXPCLMULIi8<bits<8> o, Format F, dag outs, dag ins, string asm,
 class FMA3<bits<8> o, Format F, dag outs, dag ins, string asm,
            list<dag>pattern, InstrItinClass itin = NoItinerary>
       : I<o, F, outs, ins, asm, pattern, itin>, T8,
-        OpSize, VEX_4V, Requires<[HasFMA]>;
+        OpSize, VEX_4V, FMASC, Requires<[HasFMA]>;
 
 // FMA4 Instruction Templates
 class FMA4<bits<8> o, Format F, dag outs, dag ins, string asm,
            list<dag>pattern, InstrItinClass itin = NoItinerary>
       : Ii8<o, F, outs, ins, asm, pattern, itin>, TA,
-        OpSize, VEX_4V, VEX_I8IMM, Requires<[HasFMA4]>;
+        OpSize, VEX_4V, VEX_I8IMM, FMASC, Requires<[HasFMA4]>;
 
 // XOP 2, 3 and 4 Operand Instruction Template
 class IXOP<bits<8> o, Format F, dag outs, dag ins, string asm,
@@ -624,6 +640,12 @@ class RPDI<bits<8> o, Format F, dag outs, dag ins, string asm,
 class VRPDI<bits<8> o, Format F, dag outs, dag ins, string asm,
            list<dag> pattern, InstrItinClass itin = NoItinerary>
       : VPDI<o, F, outs, ins, asm, pattern, itin>, VEX_W;
+class RS2I<bits<8> o, Format F, dag outs, dag ins, string asm,
+           list<dag> pattern, InstrItinClass itin = NoItinerary>
+      : S2I<o, F, outs, ins, asm, pattern, itin>, REX_W;
+class VRS2I<bits<8> o, Format F, dag outs, dag ins, string asm,
+           list<dag> pattern, InstrItinClass itin = NoItinerary>
+      : VS2I<o, F, outs, ins, asm, pattern, itin>, VEX_W;
 
 // MMX Instruction templates
 //

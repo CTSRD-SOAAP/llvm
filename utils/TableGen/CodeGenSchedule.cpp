@@ -710,16 +710,35 @@ void CodeGenSchedModels::createInstRWClass(Record *InstRWDef) {
     ArrayRef<Record*> InstDefs = ClassInstrs[CIdx].second;
     // If the all instrs in the current class are accounted for, then leave
     // them mapped to their old class.
-    if (OldSCIdx && SchedClasses[OldSCIdx].InstRWs.size() == InstDefs.size()) {
-      assert(SchedClasses[OldSCIdx].ProcIndices[0] == 0 &&
-             "expected a generic SchedClass");
-      continue;
+    if (OldSCIdx) {
+      const RecVec &RWDefs = SchedClasses[OldSCIdx].InstRWs;
+      if (!RWDefs.empty()) {
+        const RecVec *OrigInstDefs = Sets.expand(RWDefs[0]);
+        unsigned OrigNumInstrs = 0;
+        for (RecIter I = OrigInstDefs->begin(), E = OrigInstDefs->end();
+             I != E; ++I) {
+          if (InstrClassMap[*I] == OldSCIdx)
+            ++OrigNumInstrs;
+        }
+        if (OrigNumInstrs == InstDefs.size()) {
+          assert(SchedClasses[OldSCIdx].ProcIndices[0] == 0 &&
+                 "expected a generic SchedClass");
+          DEBUG(dbgs() << "InstRW: Reuse SC " << OldSCIdx << ":"
+                << SchedClasses[OldSCIdx].Name << " on "
+                << InstRWDef->getValueAsDef("SchedModel")->getName() << "\n");
+          SchedClasses[OldSCIdx].InstRWs.push_back(InstRWDef);
+          continue;
+        }
+      }
     }
     unsigned SCIdx = SchedClasses.size();
     SchedClasses.resize(SCIdx+1);
     CodeGenSchedClass &SC = SchedClasses.back();
     SC.Index = SCIdx;
     SC.Name = createSchedClassName(InstDefs);
+    DEBUG(dbgs() << "InstRW: New SC " << SCIdx << ":" << SC.Name << " on "
+          << InstRWDef->getValueAsDef("SchedModel")->getName() << "\n");
+
     // Preserve ItinDef and Writes/Reads for processors without an InstRW entry.
     SC.ItinClassDef = SchedClasses[OldSCIdx].ItinClassDef;
     SC.Writes = SchedClasses[OldSCIdx].Writes;
@@ -871,9 +890,10 @@ void CodeGenSchedModels::inferFromItinClass(Record *ItinClassDef,
 
 /// Infer classes from per-processor InstReadWrite definitions.
 void CodeGenSchedModels::inferFromInstRWs(unsigned SCIdx) {
-  const RecVec &RWDefs = SchedClasses[SCIdx].InstRWs;
-  for (RecIter RWI = RWDefs.begin(), RWE = RWDefs.end(); RWI != RWE; ++RWI) {
-    const RecVec *InstDefs = Sets.expand(*RWI);
+  for (unsigned I = 0, E = SchedClasses[SCIdx].InstRWs.size(); I != E; ++I) {
+    assert(SchedClasses[SCIdx].InstRWs.size() == E && "InstrRWs was mutated!");
+    Record *Rec = SchedClasses[SCIdx].InstRWs[I];
+    const RecVec *InstDefs = Sets.expand(Rec);
     RecIter II = InstDefs->begin(), IE = InstDefs->end();
     for (; II != IE; ++II) {
       if (InstrClassMap[*II] == SCIdx)
@@ -884,10 +904,10 @@ void CodeGenSchedModels::inferFromInstRWs(unsigned SCIdx) {
     if (II == IE)
       continue;
     IdxVec Writes, Reads;
-    findRWs((*RWI)->getValueAsListOfDefs("OperandReadWrites"), Writes, Reads);
-    unsigned PIdx = getProcModel((*RWI)->getValueAsDef("SchedModel")).Index;
+    findRWs(Rec->getValueAsListOfDefs("OperandReadWrites"), Writes, Reads);
+    unsigned PIdx = getProcModel(Rec->getValueAsDef("SchedModel")).Index;
     IdxVec ProcIndices(1, PIdx);
-    inferFromRW(Writes, Reads, SCIdx, ProcIndices);
+    inferFromRW(Writes, Reads, SCIdx, ProcIndices); // May mutate SchedClasses.
   }
 }
 
@@ -1032,10 +1052,12 @@ static bool hasVariant(ArrayRef<PredTransition> Transitions,
 
 // Populate IntersectingVariants with any variants or aliased sequences of the
 // given SchedRW whose processor indices and predicates are not mutually
-// exclusive with the given transition,
+// exclusive with the given transition.
 void PredTransitions::getIntersectingVariants(
   const CodeGenSchedRW &SchedRW, unsigned TransIdx,
   std::vector<TransVariant> &IntersectingVariants) {
+
+  bool GenericRW = false;
 
   std::vector<TransVariant> Variants;
   if (SchedRW.HasVariants) {
@@ -1048,6 +1070,8 @@ void PredTransitions::getIntersectingVariants(
     const RecVec VarDefs = SchedRW.TheDef->getValueAsListOfDefs("Variants");
     for (RecIter RI = VarDefs.begin(), RE = VarDefs.end(); RI != RE; ++RI)
       Variants.push_back(TransVariant(*RI, SchedRW.Index, VarProcIdx, 0));
+    if (VarProcIdx == 0)
+      GenericRW = true;
   }
   for (RecIter AI = SchedRW.Aliases.begin(), AE = SchedRW.Aliases.end();
        AI != AE; ++AI) {
@@ -1071,6 +1095,8 @@ void PredTransitions::getIntersectingVariants(
       Variants.push_back(
         TransVariant(AliasRW.TheDef, SchedRW.Index, AliasProcIdx, 0));
     }
+    if (AliasProcIdx == 0)
+      GenericRW = true;
   }
   for (unsigned VIdx = 0, VEnd = Variants.size(); VIdx != VEnd; ++VIdx) {
     TransVariant &Variant = Variants[VIdx];
@@ -1105,10 +1131,12 @@ void PredTransitions::getIntersectingVariants(
       // Push another copy of the current transition for more variants.
       Variant.TransVecIdx = TransVec.size();
       IntersectingVariants.push_back(Variant);
-
-      PredTransition Trans = TransVec[TransIdx];
-      TransVec.push_back(Trans);
+      TransVec.push_back(TransVec[TransIdx]);
     }
+  }
+  if (GenericRW && IntersectingVariants.empty()) {
+    PrintFatalError(SchedRW.TheDef->getLoc(), "No variant of this type has "
+                    "a matching predicate on any processor");
   }
 }
 
@@ -1145,6 +1173,8 @@ pushVariant(const TransVariant &VInfo, bool IsRead) {
     unsigned OperIdx = RWSequences.size()-1;
     // Make N-1 copies of this transition's last sequence.
     for (unsigned i = 1, e = SelectedRWs.size(); i != e; ++i) {
+      // Create a temporary copy the vector could reallocate.
+      RWSequences.reserve(RWSequences.size() + 1);
       RWSequences.push_back(RWSequences[OperIdx]);
     }
     // Push each of the N elements of the SelectedRWs onto a copy of the last
@@ -1207,10 +1237,6 @@ void PredTransitions::substituteVariantOperand(
       // This will push a copies of TransVec[TransIdx] on the back of TransVec.
       std::vector<TransVariant> IntersectingVariants;
       getIntersectingVariants(SchedRW, TransIdx, IntersectingVariants);
-      if (IntersectingVariants.empty())
-        PrintFatalError(SchedRW.TheDef->getLoc(),
-                      "No variant of this type has "
-                      "a matching predicate on any processor");
       // Now expand each variant on top of its copy of the transition.
       for (std::vector<TransVariant>::const_iterator
              IVI = IntersectingVariants.begin(),
@@ -1363,6 +1389,56 @@ void CodeGenSchedModels::inferFromRW(const IdxVec &OperWrites,
   inferFromTransitions(LastTransitions, FromClassIdx, *this);
 }
 
+// Check if any processor resource group contains all resource records in
+// SubUnits.
+bool CodeGenSchedModels::hasSuperGroup(RecVec &SubUnits, CodeGenProcModel &PM) {
+  for (unsigned i = 0, e = PM.ProcResourceDefs.size(); i < e; ++i) {
+    if (!PM.ProcResourceDefs[i]->isSubClassOf("ProcResGroup"))
+      continue;
+    RecVec SuperUnits =
+      PM.ProcResourceDefs[i]->getValueAsListOfDefs("Resources");
+    RecIter RI = SubUnits.begin(), RE = SubUnits.end();
+    for ( ; RI != RE; ++RI) {
+      if (std::find(SuperUnits.begin(), SuperUnits.end(), *RI)
+          == SuperUnits.end()) {
+        break;
+      }
+    }
+    if (RI == RE)
+      return true;
+  }
+  return false;
+}
+
+// Verify that overlapping groups have a common supergroup.
+void CodeGenSchedModels::verifyProcResourceGroups(CodeGenProcModel &PM) {
+  for (unsigned i = 0, e = PM.ProcResourceDefs.size(); i < e; ++i) {
+    if (!PM.ProcResourceDefs[i]->isSubClassOf("ProcResGroup"))
+      continue;
+    RecVec CheckUnits =
+      PM.ProcResourceDefs[i]->getValueAsListOfDefs("Resources");
+    for (unsigned j = i+1; j < e; ++j) {
+      if (!PM.ProcResourceDefs[j]->isSubClassOf("ProcResGroup"))
+        continue;
+      RecVec OtherUnits =
+        PM.ProcResourceDefs[j]->getValueAsListOfDefs("Resources");
+      if (std::find_first_of(CheckUnits.begin(), CheckUnits.end(),
+                             OtherUnits.begin(), OtherUnits.end())
+          != CheckUnits.end()) {
+        // CheckUnits and OtherUnits overlap
+        OtherUnits.insert(OtherUnits.end(), CheckUnits.begin(),
+                          CheckUnits.end());
+        if (!hasSuperGroup(OtherUnits, PM)) {
+          PrintFatalError((PM.ProcResourceDefs[i])->getLoc(),
+                          "proc resource group overlaps with "
+                          + PM.ProcResourceDefs[j]->getName()
+                          + " but no supergroup contains both.");
+        }
+      }
+    }
+  }
+}
+
 // Collect and sort WriteRes, ReadAdvance, and ProcResources.
 void CodeGenSchedModels::collectProcResources() {
   // Add any subtarget-specific SchedReadWrites that are directly associated
@@ -1433,6 +1509,7 @@ void CodeGenSchedModels::collectProcResources() {
         dbgs() << (*RI)->getName() << " ";
       }
       dbgs() << '\n');
+    verifyProcResourceGroups(PM);
   }
 }
 

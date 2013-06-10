@@ -23,15 +23,24 @@ using namespace object;
 
 void ObjectFile::anchor() { }
 
-ObjectFile::ObjectFile(unsigned int Type, MemoryBuffer *source, error_code &ec)
+ObjectFile::ObjectFile(unsigned int Type, MemoryBuffer *source)
   : Binary(Type, source) {
+}
+
+error_code ObjectFile::getSymbolAlignment(DataRefImpl DRI,
+                                          uint32_t &Result) const {
+  Result = 0;
+  return object_error::success;
+}
+
+section_iterator ObjectFile::getRelocatedSection(DataRefImpl Sec) const {
+  return section_iterator(SectionRef(Sec, this));
 }
 
 ObjectFile *ObjectFile::createObjectFile(MemoryBuffer *Object) {
   if (!Object || Object->getBufferSize() < 64)
     return 0;
-  sys::LLVMFileType type = sys::IdentifyFileType(Object->getBufferStart(),
-                                static_cast<unsigned>(Object->getBufferSize()));
+  sys::LLVMFileType type = sys::identifyFileType(Object->getBuffer());
   switch (type) {
     case sys::Unknown_FileType:
       return 0;

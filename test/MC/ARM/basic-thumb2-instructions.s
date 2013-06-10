@@ -571,9 +571,13 @@ _func:
 @------------------------------------------------------------------------------
         isb sy
         isb
+        isb #15
+        isb #1
 
 @ CHECK: isb	sy                      @ encoding: [0xbf,0xf3,0x6f,0x8f]
 @ CHECK: isb	sy                      @ encoding: [0xbf,0xf3,0x6f,0x8f]
+@ CHECK: isb	sy                      @ encoding: [0xbf,0xf3,0x6f,0x8f]
+@ CHECK: isb	#0x1                    @ encoding: [0xbf,0xf3,0x61,0x8f]
 
 
 @------------------------------------------------------------------------------
@@ -3486,8 +3490,6 @@ _func:
         wfelt
         wfige
         yieldlt
-        hint #5
-        hint.w #5
         hint.w #4
         hint #3
         hint #2
@@ -3501,8 +3503,6 @@ _func:
 @ CHECK: wfelt                          @ encoding: [0x20,0xbf]
 @ CHECK: wfige                          @ encoding: [0x30,0xbf]
 @ CHECK: yieldlt                        @ encoding: [0x10,0xbf]
-@ CHECK: hint	#5                      @ encoding: [0xaf,0xf3,0x05,0x80]
-@ CHECK: hint	#5                      @ encoding: [0xaf,0xf3,0x05,0x80]
 @ CHECK: sev.w                          @ encoding: [0xaf,0xf3,0x04,0x80]
 @ CHECK: wfi.w                          @ encoding: [0xaf,0xf3,0x03,0x80]
 @ CHECK: wfe.w                          @ encoding: [0xaf,0xf3,0x02,0x80]

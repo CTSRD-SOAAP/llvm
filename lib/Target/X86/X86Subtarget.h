@@ -130,6 +130,9 @@ protected:
   /// HasPRFCHW - Processor has PRFCHW instructions.
   bool HasPRFCHW;
 
+  /// HasRDSEED - Processor has RDSEED instructions.
+  bool HasRDSEED;
+
   /// IsBTMemSlow - True if BT (bit test) of memory instructions are slow.
   bool IsBTMemSlow;
 
@@ -162,6 +165,9 @@ protected:
   /// CallRegIndirect - True if the Calls with memory reference should be converted
   /// to a register-based indirect call.
   bool CallRegIndirect;
+  /// LEAUsesAG - True if the LEA instruction inputs have to be ready at
+  ///             address generation (AG) time.
+  bool LEAUsesAG;
 
   /// stackAlignment - The minimum alignment known to hold of the stack frame on
   /// entry to the function and which must be maintained by every function.
@@ -266,6 +272,7 @@ public:
   bool hasHLE() const { return HasHLE; }
   bool hasADX() const { return HasADX; }
   bool hasPRFCHW() const { return HasPRFCHW; }
+  bool hasRDSEED() const { return HasRDSEED; }
   bool isBTMemSlow() const { return IsBTMemSlow; }
   bool isUnalignedMemAccessFast() const { return IsUAMemFast; }
   bool hasVectorUAMem() const { return HasVectorUAMem; }
@@ -274,6 +281,7 @@ public:
   bool hasSlowDivide() const { return HasSlowDivide; }
   bool padShortFunctions() const { return PadShortFunctions; }
   bool callRegIndirect() const { return CallRegIndirect; }
+  bool LEAusesAG() const { return LEAUsesAG; }
 
   bool isAtom() const { return X86ProcFamily == IntelAtom; }
 

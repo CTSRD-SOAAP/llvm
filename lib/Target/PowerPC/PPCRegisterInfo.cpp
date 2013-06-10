@@ -48,12 +48,11 @@
 
 using namespace llvm;
 
-PPCRegisterInfo::PPCRegisterInfo(const PPCSubtarget &ST,
-                                 const TargetInstrInfo &tii)
+PPCRegisterInfo::PPCRegisterInfo(const PPCSubtarget &ST)
   : PPCGenRegisterInfo(ST.isPPC64() ? PPC::LR8 : PPC::LR,
                        ST.isPPC64() ? 0 : 1,
                        ST.isPPC64() ? 0 : 1),
-    Subtarget(ST), TII(tii) {
+    Subtarget(ST) {
   ImmToIdxMap[PPC::LD]   = PPC::LDX;    ImmToIdxMap[PPC::STD]  = PPC::STDX;
   ImmToIdxMap[PPC::LBZ]  = PPC::LBZX;   ImmToIdxMap[PPC::STB]  = PPC::STBX;
   ImmToIdxMap[PPC::LHZ]  = PPC::LHZX;   ImmToIdxMap[PPC::LHA]  = PPC::LHAX;
@@ -68,7 +67,7 @@ PPCRegisterInfo::PPCRegisterInfo(const PPCSubtarget &ST,
   ImmToIdxMap[PPC::LHZ8] = PPC::LHZX8; ImmToIdxMap[PPC::LWZ8] = PPC::LWZX8;
   ImmToIdxMap[PPC::STB8] = PPC::STBX8; ImmToIdxMap[PPC::STH8] = PPC::STHX8;
   ImmToIdxMap[PPC::STW8] = PPC::STWX8; ImmToIdxMap[PPC::STDU] = PPC::STDUX;
-  ImmToIdxMap[PPC::ADDI8] = PPC::ADD8; ImmToIdxMap[PPC::STD_32] = PPC::STDX_32;
+  ImmToIdxMap[PPC::ADDI8] = PPC::ADD8;
 }
 
 /// getPointerRegClass - Return the register class to use to hold pointers.
@@ -76,6 +75,8 @@ PPCRegisterInfo::PPCRegisterInfo(const PPCSubtarget &ST,
 const TargetRegisterClass *
 PPCRegisterInfo::getPointerRegClass(const MachineFunction &MF, unsigned Kind)
                                                                        const {
+  // Note that PPCInstrInfo::FoldImmediate also directly uses this Kind value
+  // when it checks for ZERO folding.
   if (Kind == 1) {
     if (Subtarget.isPPC64())
       return &PPC::G8RC_NOX0RegClass;
@@ -133,6 +134,11 @@ BitVector PPCRegisterInfo::getReservedRegs(const MachineFunction &MF) const {
   // of the frame pointer register used by ISD::FRAMEADDR.
   Reserved.set(PPC::FP);
   Reserved.set(PPC::FP8);
+
+  // The counter registers must be reserved so that counter-based loops can
+  // be correctly formed (and the mtctr instructions are not DCE'd).
+  Reserved.set(PPC::CTR);
+  Reserved.set(PPC::CTR8);
 
   Reserved.set(PPC::R1);
   Reserved.set(PPC::LR);
@@ -212,6 +218,8 @@ void PPCRegisterInfo::lowerDynamicAlloc(MachineBasicBlock::iterator II) const {
   MachineFunction &MF = *MBB.getParent();
   // Get the frame info.
   MachineFrameInfo *MFI = MF.getFrameInfo();
+  // Get the instruction info.
+  const TargetInstrInfo &TII = *MF.getTarget().getInstrInfo();
   // Determine whether 64-bit pointers are used.
   bool LP64 = Subtarget.isPPC64();
   DebugLoc dl = MI.getDebugLoc();
@@ -305,6 +313,7 @@ void PPCRegisterInfo::lowerCRSpilling(MachineBasicBlock::iterator II,
   // Get the instruction's basic block.
   MachineBasicBlock &MBB = *MI.getParent();
   MachineFunction &MF = *MBB.getParent();
+  const TargetInstrInfo &TII = *MF.getTarget().getInstrInfo();
   DebugLoc dl = MI.getDebugLoc();
 
   bool LP64 = Subtarget.isPPC64();
@@ -348,6 +357,7 @@ void PPCRegisterInfo::lowerCRRestore(MachineBasicBlock::iterator II,
   // Get the instruction's basic block.
   MachineBasicBlock &MBB = *MI.getParent();
   MachineFunction &MF = *MBB.getParent();
+  const TargetInstrInfo &TII = *MF.getTarget().getInstrInfo();
   DebugLoc dl = MI.getDebugLoc();
 
   bool LP64 = Subtarget.isPPC64();
@@ -389,6 +399,7 @@ void PPCRegisterInfo::lowerVRSAVESpilling(MachineBasicBlock::iterator II,
   // Get the instruction's basic block.
   MachineBasicBlock &MBB = *MI.getParent();
   MachineFunction &MF = *MBB.getParent();
+  const TargetInstrInfo &TII = *MF.getTarget().getInstrInfo();
   DebugLoc dl = MI.getDebugLoc();
 
   const TargetRegisterClass *GPRC = &PPC::GPRCRegClass;
@@ -413,6 +424,7 @@ void PPCRegisterInfo::lowerVRSAVERestore(MachineBasicBlock::iterator II,
   // Get the instruction's basic block.
   MachineBasicBlock &MBB = *MI.getParent();
   MachineFunction &MF = *MBB.getParent();
+  const TargetInstrInfo &TII = *MF.getTarget().getInstrInfo();
   DebugLoc dl = MI.getDebugLoc();
 
   const TargetRegisterClass *GPRC = &PPC::GPRCRegClass;
@@ -452,6 +464,32 @@ PPCRegisterInfo::hasReservedSpillSlot(const MachineFunction &MF,
   return false;
 }
 
+// Figure out if the offset in the instruction must be a multiple of 4.
+// This is true for instructions like "STD".
+static bool usesIXAddr(const MachineInstr &MI) {
+  unsigned OpC = MI.getOpcode();
+
+  switch (OpC) {
+  default:
+    return false;
+  case PPC::LWA:
+  case PPC::LD:
+  case PPC::STD:
+    return true;
+  }
+}
+
+// Return the OffsetOperandNo given the FIOperandNum (and the instruction).
+static unsigned getOffsetONFromFION(const MachineInstr &MI,
+                                    unsigned FIOperandNum) {
+  // Take into account whether it's an add or mem instruction
+  unsigned OffsetOperandNo = (FIOperandNum == 2) ? 1 : 2;
+  if (MI.isInlineAsm())
+    OffsetOperandNo = FIOperandNum-1;
+
+  return OffsetOperandNo;
+}
+
 void
 PPCRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
                                      int SPAdj, unsigned FIOperandNum,
@@ -464,15 +502,14 @@ PPCRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
   MachineBasicBlock &MBB = *MI.getParent();
   // Get the basic block's function.
   MachineFunction &MF = *MBB.getParent();
+  // Get the instruction info.
+  const TargetInstrInfo &TII = *MF.getTarget().getInstrInfo();
   // Get the frame info.
   MachineFrameInfo *MFI = MF.getFrameInfo();
   const TargetFrameLowering *TFI = MF.getTarget().getFrameLowering();
   DebugLoc dl = MI.getDebugLoc();
 
-  // Take into account whether it's an add or mem instruction
-  unsigned OffsetOperandNo = (FIOperandNum == 2) ? 1 : 2;
-  if (MI.isInlineAsm())
-    OffsetOperandNo = FIOperandNum-1;
+  unsigned OffsetOperandNo = getOffsetONFromFION(MI, FIOperandNum);
 
   // Get the frame index.
   int FrameIndex = MI.getOperand(FIOperandNum).getIndex();
@@ -514,43 +551,16 @@ PPCRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
                                                 (is64Bit ? PPC::X1 : PPC::R1),
                                               false);
 
-  // Figure out if the offset in the instruction is shifted right two bits. This
-  // is true for instructions like "STD", which the machine implicitly adds two
-  // low zeros to.
-  bool isIXAddr = false;
-  switch (OpC) {
-  case PPC::LWA:
-  case PPC::LD:
-  case PPC::STD:
-  case PPC::STD_32:
-    isIXAddr = true;
-    break;
-  }
+  // Figure out if the offset in the instruction is shifted right two bits.
+  bool isIXAddr = usesIXAddr(MI);
 
-  bool noImmForm = false;
-  switch (OpC) {
-  case PPC::LVEBX:
-  case PPC::LVEHX:
-  case PPC::LVEWX:
-  case PPC::LVX:
-  case PPC::LVXL:
-  case PPC::LVSL:
-  case PPC::LVSR:
-  case PPC::STVEBX:
-  case PPC::STVEHX:
-  case PPC::STVEWX:
-  case PPC::STVX:
-  case PPC::STVXL:
-    noImmForm = true;
-    break;
-  }
+  // If the instruction is not present in ImmToIdxMap, then it has no immediate
+  // form (and must be r+r).
+  bool noImmForm = !MI.isInlineAsm() && !ImmToIdxMap.count(OpC);
 
   // Now add the frame object offset to the offset from r1.
   int Offset = MFI->getObjectOffset(FrameIndex);
-  if (!isIXAddr)
-    Offset += MI.getOperand(OffsetOperandNo).getImm();
-  else
-    Offset += MI.getOperand(OffsetOperandNo).getImm() << 2;
+  Offset += MI.getOperand(OffsetOperandNo).getImm();
 
   // If we're not using a Frame Pointer that has been set to the value of the
   // SP before having the stack size subtracted from it, then add the stack size
@@ -570,8 +580,6 @@ PPCRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
   if (OpC == PPC::DBG_VALUE || // DBG_VALUE is always Reg+Imm
       (!noImmForm &&
        isInt<16>(Offset) && (!isIXAddr || (Offset & 3) == 0))) {
-    if (isIXAddr)
-      Offset >>= 2;    // The actual encoded value has the low two bits zero.
     MI.getOperand(OffsetOperandNo).ChangeToImmediate(Offset);
     return;
   }
@@ -631,3 +639,111 @@ unsigned PPCRegisterInfo::getEHExceptionRegister() const {
 unsigned PPCRegisterInfo::getEHHandlerRegister() const {
   return !Subtarget.isPPC64() ? PPC::R4 : PPC::X4;
 }
+
+/// Returns true if the instruction's frame index
+/// reference would be better served by a base register other than FP
+/// or SP. Used by LocalStackFrameAllocation to determine which frame index
+/// references it should create new base registers for.
+bool PPCRegisterInfo::
+needsFrameBaseReg(MachineInstr *MI, int64_t Offset) const {
+  assert(Offset < 0 && "Local offset must be negative");
+
+  unsigned FIOperandNum = 0;
+  while (!MI->getOperand(FIOperandNum).isFI()) {
+    ++FIOperandNum;
+    assert(FIOperandNum < MI->getNumOperands() &&
+           "Instr doesn't have FrameIndex operand!");
+  }
+
+  unsigned OffsetOperandNo = getOffsetONFromFION(*MI, FIOperandNum);
+  Offset += MI->getOperand(OffsetOperandNo).getImm();
+
+  // It's the load/store FI references that cause issues, as it can be difficult
+  // to materialize the offset if it won't fit in the literal field. Estimate
+  // based on the size of the local frame and some conservative assumptions
+  // about the rest of the stack frame (note, this is pre-regalloc, so
+  // we don't know everything for certain yet) whether this offset is likely
+  // to be out of range of the immediate. Return true if so.
+
+  // We only generate virtual base registers for loads and stores that have
+  // an r+i form. Return false for everything else.
+  unsigned OpC = MI->getOpcode();
+  if (!ImmToIdxMap.count(OpC))
+    return false;
+
+  // Don't generate a new virtual base register just to add zero to it.
+  if ((OpC == PPC::ADDI || OpC == PPC::ADDI8) &&
+      MI->getOperand(2).getImm() == 0)
+    return false;
+
+  MachineBasicBlock &MBB = *MI->getParent();
+  MachineFunction &MF = *MBB.getParent();
+
+  const PPCFrameLowering *PPCFI =
+    static_cast<const PPCFrameLowering*>(MF.getTarget().getFrameLowering());
+  unsigned StackEst =
+    PPCFI->determineFrameLayout(MF, false, true);
+
+  // If we likely don't need a stack frame, then we probably don't need a
+  // virtual base register either.
+  if (!StackEst)
+    return false;
+
+  // Estimate an offset from the stack pointer.
+  // The incoming offset is relating to the SP at the start of the function,
+  // but when we access the local it'll be relative to the SP after local
+  // allocation, so adjust our SP-relative offset by that allocation size.
+  Offset += StackEst;
+
+  // The frame pointer will point to the end of the stack, so estimate the
+  // offset as the difference between the object offset and the FP location.
+  return !isFrameOffsetLegal(MI, Offset);
+}
+
+/// Insert defining instruction(s) for BaseReg to
+/// be a pointer to FrameIdx at the beginning of the basic block.
+void PPCRegisterInfo::
+materializeFrameBaseRegister(MachineBasicBlock *MBB,
+                             unsigned BaseReg, int FrameIdx,
+                             int64_t Offset) const {
+  unsigned ADDriOpc = Subtarget.isPPC64() ? PPC::ADDI8 : PPC::ADDI;
+
+  MachineBasicBlock::iterator Ins = MBB->begin();
+  DebugLoc DL;                  // Defaults to "unknown"
+  if (Ins != MBB->end())
+    DL = Ins->getDebugLoc();
+
+  const MachineFunction &MF = *MBB->getParent();
+  const TargetInstrInfo &TII = *MF.getTarget().getInstrInfo();
+  const MCInstrDesc &MCID = TII.get(ADDriOpc);
+  MachineRegisterInfo &MRI = MBB->getParent()->getRegInfo();
+  MRI.constrainRegClass(BaseReg, TII.getRegClass(MCID, 0, this, MF));
+
+  BuildMI(*MBB, Ins, DL, MCID, BaseReg)
+    .addFrameIndex(FrameIdx).addImm(Offset);
+}
+
+void
+PPCRegisterInfo::resolveFrameIndex(MachineBasicBlock::iterator I,
+                                   unsigned BaseReg, int64_t Offset) const {
+  MachineInstr &MI = *I;
+
+  unsigned FIOperandNum = 0;
+  while (!MI.getOperand(FIOperandNum).isFI()) {
+    ++FIOperandNum;
+    assert(FIOperandNum < MI.getNumOperands() &&
+           "Instr doesn't have FrameIndex operand!");
+  }
+
+  MI.getOperand(FIOperandNum).ChangeToRegister(BaseReg, false);
+  unsigned OffsetOperandNo = getOffsetONFromFION(MI, FIOperandNum);
+  Offset += MI.getOperand(OffsetOperandNo).getImm();
+  MI.getOperand(OffsetOperandNo).ChangeToImmediate(Offset);
+}
+
+bool PPCRegisterInfo::isFrameOffsetLegal(const MachineInstr *MI,
+                                         int64_t Offset) const {
+  return MI->getOpcode() == PPC::DBG_VALUE || // DBG_VALUE is always Reg+Imm
+         (isInt<16>(Offset) && (!usesIXAddr(*MI) || (Offset & 3) == 0));
+}
+

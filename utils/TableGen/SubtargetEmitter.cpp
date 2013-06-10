@@ -782,41 +782,46 @@ Record *SubtargetEmitter::FindReadAdvance(const CodeGenSchedRW &SchedRead,
 }
 
 // Expand an explicit list of processor resources into a full list of implied
-// resource groups that cover them.
-//
-// FIXME: Effectively consider a super-resource a group that include all of its
-// subresources to allow mixing and matching super-resources and groups.
-//
-// FIXME: Warn if two overlapping groups don't have a common supergroup.
+// resource groups and super resources that cover them.
 void SubtargetEmitter::ExpandProcResources(RecVec &PRVec,
                                            std::vector<int64_t> &Cycles,
-                                           const CodeGenProcModel &ProcModel) {
+                                           const CodeGenProcModel &PM) {
   // Default to 1 resource cycle.
   Cycles.resize(PRVec.size(), 1);
   for (unsigned i = 0, e = PRVec.size(); i != e; ++i) {
+    Record *PRDef = PRVec[i];
     RecVec SubResources;
-    if (PRVec[i]->isSubClassOf("ProcResGroup")) {
-      SubResources = PRVec[i]->getValueAsListOfDefs("Resources");
-      std::sort(SubResources.begin(), SubResources.end(), LessRecord());
-    }
+    if (PRDef->isSubClassOf("ProcResGroup"))
+      SubResources = PRDef->getValueAsListOfDefs("Resources");
     else {
-      SubResources.push_back(PRVec[i]);
+      SubResources.push_back(PRDef);
+      PRDef = SchedModels.findProcResUnits(PRVec[i], PM);
+      for (Record *SubDef = PRDef;
+           SubDef->getValueInit("Super")->isComplete();) {
+        if (SubDef->isSubClassOf("ProcResGroup")) {
+          // Disallow this for simplicitly.
+          PrintFatalError(SubDef->getLoc(), "Processor resource group "
+                          " cannot be a super resources.");
+        }
+        Record *SuperDef =
+          SchedModels.findProcResUnits(SubDef->getValueAsDef("Super"), PM);
+        PRVec.push_back(SuperDef);
+        Cycles.push_back(Cycles[i]);
+        SubDef = SuperDef;
+      }
     }
-    for (RecIter PRI = ProcModel.ProcResourceDefs.begin(),
-           PRE = ProcModel.ProcResourceDefs.end();
+    for (RecIter PRI = PM.ProcResourceDefs.begin(),
+           PRE = PM.ProcResourceDefs.end();
          PRI != PRE; ++PRI) {
-      if (*PRI == PRVec[i] || !(*PRI)->isSubClassOf("ProcResGroup"))
+      if (*PRI == PRDef || !(*PRI)->isSubClassOf("ProcResGroup"))
         continue;
       RecVec SuperResources = (*PRI)->getValueAsListOfDefs("Resources");
-      std::sort(SuperResources.begin(), SuperResources.end(), LessRecord());
       RecIter SubI = SubResources.begin(), SubE = SubResources.end();
-      RecIter SuperI = SuperResources.begin(), SuperE = SuperResources.end();
-      for ( ; SubI != SubE && SuperI != SuperE; ++SuperI) {
-        if (*SubI < *SuperI)
+      for( ; SubI != SubE; ++SubI) {
+        if (std::find(SuperResources.begin(), SuperResources.end(), *SubI)
+            == SuperResources.end()) {
           break;
-        else if (*SuperI < *SubI)
-          continue;
-        ++SubI;
+        }
       }
       if (SubI == SubE) {
         PRVec.push_back(*PRI);
@@ -1335,11 +1340,11 @@ void SubtargetEmitter::EmitSchedModelHelpers(std::string ClassName,
         for (std::vector<CodeGenSchedTransition>::const_iterator
                TI = SC.Transitions.begin(), TE = SC.Transitions.end();
              TI != TE; ++TI) {
-          OS << "      if (";
           if (*PI != 0 && !std::count(TI->ProcIndices.begin(),
                                       TI->ProcIndices.end(), *PI)) {
               continue;
           }
+          OS << "      if (";
           for (RecIter RI = TI->PredTerm.begin(), RE = TI->PredTerm.end();
                RI != RE; ++RI) {
             if (RI != TI->PredTerm.begin())
