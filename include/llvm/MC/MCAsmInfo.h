@@ -89,6 +89,10 @@ namespace llvm {
     /// which is needed to compute the size of an inline asm.
     unsigned MaxInstLength;                  // Defaults to 4.
 
+    /// MinInstAlignment - Every possible instruction length is a multiple of
+    /// this value.  Factored out in .debug_frame and .debug_line.
+    unsigned MinInstAlignment;                  // Defaults to 1.
+
     /// PCSymbol - The symbol used to represent the current PC.  Used in PC
     /// relative expressions.
     const char *PCSymbol;                    // Defaults to "$".
@@ -340,8 +344,8 @@ namespace llvm {
     virtual ~MCAsmInfo();
 
     // FIXME: move these methods to DwarfPrinter when the JIT stops using them.
-    static unsigned getSLEB128Size(int Value);
-    static unsigned getULEB128Size(unsigned Value);
+    static unsigned getSLEB128Size(int64_t Value);
+    static unsigned getULEB128Size(uint64_t Value);
 
     /// getPointerSize - Get the pointer size in bytes.
     unsigned getPointerSize() const {
@@ -428,6 +432,9 @@ namespace llvm {
     }
     unsigned getMaxInstLength() const {
       return MaxInstLength;
+    }
+    unsigned getMinInstAlignment() const {
+      return MinInstAlignment;
     }
     const char *getPCSymbol() const {
       return PCSymbol;

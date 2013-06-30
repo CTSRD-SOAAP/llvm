@@ -247,22 +247,17 @@ unsigned DwarfUnits::getStringPoolIndex(StringRef Str) {
   return Entry.second;
 }
 
-unsigned DwarfUnits::getAddrPoolIndex(MCSymbol *Sym) {
-  std::pair<MCSymbol*, unsigned> &Entry = AddressPool[Sym];
-  if (Entry.first) return Entry.second;
-
-  Entry.second = NextAddrPoolNumber++;
-  Entry.first = Sym;
-  return Entry.second;
+unsigned DwarfUnits::getAddrPoolIndex(const MCSymbol *Sym) {
+  std::pair<DenseMap<const MCSymbol *, unsigned>::iterator, bool> P =
+      AddressPool.insert(std::make_pair(Sym, NextAddrPoolNumber));
+  if (P.second)
+    ++NextAddrPoolNumber;
+  return P.first->second;
 }
 
 // Define a unique number for the abbreviation.
 //
 void DwarfUnits::assignAbbrevNumber(DIEAbbrev &Abbrev) {
-  // Profile the node so that we can make it unique.
-  FoldingSetNodeID ID;
-  Abbrev.Profile(ID);
-
   // Check the set for priors.
   DIEAbbrev *InSet = AbbreviationsSet->GetOrInsertNode(&Abbrev);
 
@@ -601,7 +596,8 @@ DIE *DwarfDebug::constructScopeDIE(CompileUnit *TheCU, LexicalScope *Scope) {
     if (Children.empty() && Range.first == Range.second)
       return NULL;
     ScopeDIE = constructLexicalScopeDIE(TheCU, Scope);
-    for (ImportedEntityMap::const_iterator i = Range.first; i != Range.second; ++i)
+    for (ImportedEntityMap::const_iterator i = Range.first; i != Range.second;
+         ++i)
       constructImportedEntityDIE(TheCU, i->second, ScopeDIE);
   }
 
@@ -812,7 +808,8 @@ void DwarfDebug::constructImportedEntityDIE(CompileUnit *TheCU,
                                         TheCU->getUniqueID());
   TheCU->addUInt(IMDie, dwarf::DW_AT_decl_file, 0, FileID);
   TheCU->addUInt(IMDie, dwarf::DW_AT_decl_line, 0, Module.getLineNumber());
-  TheCU->addDIEEntry(IMDie, dwarf::DW_AT_import, dwarf::DW_FORM_ref4, EntityDie);
+  TheCU->addDIEEntry(IMDie, dwarf::DW_AT_import, dwarf::DW_FORM_ref4,
+                     EntityDie);
   StringRef Name = Module.getName();
   if (!Name.empty())
     TheCU->addString(IMDie, dwarf::DW_AT_name, Name);
@@ -1170,10 +1167,7 @@ static DotDebugLocEntry getDebugLocEntry(AsmPrinter *Asm,
                                          const MachineInstr *MI) {
   const MDNode *Var =  MI->getOperand(MI->getNumOperands() - 1).getMetadata();
 
-  if (MI->getNumOperands() != 3) {
-    MachineLocation MLoc = Asm->getDebugValueLocation(MI);
-    return DotDebugLocEntry(FLabel, SLabel, MLoc, Var);
-  }
+  assert(MI->getNumOperands() == 3);
   if (MI->getOperand(0).isReg() && MI->getOperand(1).isImm()) {
     MachineLocation MLoc;
     // TODO: Currently an offset of 0 in a DBG_VALUE means
@@ -1522,11 +1516,9 @@ void DwarfDebug::beginFunction(const MachineFunction *MF) {
                 DEBUG(dbgs() << "Dropping DBG_VALUE for empty range:\n"
                       << "\t" << *Prev << "\n");
                 History.pop_back();
-              }
-              else {
+              } else if (llvm::next(PrevMBB) != PrevMBB->getParent()->end())
                 // Terminate after LastMI.
                 History.push_back(LastMI);
-              }
             }
           }
         }
@@ -1595,7 +1587,7 @@ void DwarfDebug::beginFunction(const MachineFunction *MF) {
       if (LastMI == PrevMBB->end())
         // Drop DBG_VALUE for empty range.
         History.pop_back();
-      else {
+      else if (PrevMBB != &PrevMBB->getParent()->back()) {
         // Terminate after LastMI.
         History.push_back(LastMI);
       }
@@ -1926,9 +1918,9 @@ void DwarfDebug::emitDIE(DIE *Die, std::vector<DIEAbbrev *> *Abbrevs) {
     case dwarf::DW_AT_location: {
       if (DIELabel *L = dyn_cast<DIELabel>(Values[i])) {
         if (Asm->MAI->doesDwarfUseRelocationsAcrossSections())
-          Asm->EmitLabelReference(L->getValue(), 4);
+          Asm->EmitLabelReference(&L->getValue()->getSymbol(), 4);
         else
-          Asm->EmitLabelDifference(L->getValue(), DwarfDebugLocSectionSym, 4);
+          Asm->EmitLabelDifference(&L->getValue()->getSymbol(), DwarfDebugLocSectionSym, 4);
       } else {
         Values[i]->EmitValue(Asm, Form);
       }
@@ -2363,24 +2355,21 @@ void DwarfUnits::emitAddresses(const MCSection *AddrSection) {
   // Start the dwarf addr section.
   Asm->OutStreamer.SwitchSection(AddrSection);
 
-  // Get all of the string pool entries and put them in an array by their ID so
+  // Get all of the address pool entries and put them in an array by their ID so
   // we can sort them.
-  SmallVector<std::pair<unsigned,
-                        std::pair<MCSymbol*, unsigned>* >, 64> Entries;
+  SmallVector<std::pair<unsigned, const MCSymbol *>, 64> Entries;
 
-  for (DenseMap<MCSymbol*, std::pair<MCSymbol*, unsigned> >::iterator
-         I = AddressPool.begin(), E = AddressPool.end();
+  for (DenseMap<const MCSymbol *, unsigned>::iterator I = AddressPool.begin(),
+                                                      E = AddressPool.end();
        I != E; ++I)
-    Entries.push_back(std::make_pair(I->second.second, &(I->second)));
+    Entries.push_back(std::make_pair(I->second, I->first));
 
   array_pod_sort(Entries.begin(), Entries.end());
 
   for (unsigned i = 0, e = Entries.size(); i != e; ++i) {
     // Emit a label for reference from debug information entries.
-    MCSymbol *Sym = Entries[i].second->first;
-    if (Sym)
-      Asm->EmitLabelReference(Entries[i].second->first,
-                              Asm->getDataLayout().getPointerSize());
+    if (const MCSymbol *Sym = Entries[i].second)
+      Asm->EmitLabelReference(Sym, Asm->getDataLayout().getPointerSize());
     else
       Asm->OutStreamer.EmitIntValue(0, Asm->getDataLayout().getPointerSize());
   }
@@ -2446,7 +2435,7 @@ void DwarfDebug::emitDebugLoc() {
       } else if (Entry.isLocation()) {
         if (!DV.hasComplexAddress())
           // Regular entry.
-          Asm->EmitDwarfRegOp(Entry.Loc);
+          Asm->EmitDwarfRegOp(Entry.Loc, DV.isIndirect());
         else {
           // Complex address entry.
           unsigned N = DV.getNumAddrElements();
@@ -2454,7 +2443,7 @@ void DwarfDebug::emitDebugLoc() {
           if (N >= 2 && DV.getAddrElement(0) == DIBuilder::OpPlus) {
             if (Entry.Loc.getOffset()) {
               i = 2;
-              Asm->EmitDwarfRegOp(Entry.Loc);
+              Asm->EmitDwarfRegOp(Entry.Loc, DV.isIndirect());
               Asm->OutStreamer.AddComment("DW_OP_deref");
               Asm->EmitInt8(dwarf::DW_OP_deref);
               Asm->OutStreamer.AddComment("DW_OP_plus_uconst");
@@ -2464,11 +2453,11 @@ void DwarfDebug::emitDebugLoc() {
               // If first address element is OpPlus then emit
               // DW_OP_breg + Offset instead of DW_OP_reg + Offset.
               MachineLocation Loc(Entry.Loc.getReg(), DV.getAddrElement(1));
-              Asm->EmitDwarfRegOp(Loc);
+              Asm->EmitDwarfRegOp(Loc, DV.isIndirect());
               i = 2;
             }
           } else {
-            Asm->EmitDwarfRegOp(Entry.Loc);
+            Asm->EmitDwarfRegOp(Entry.Loc, DV.isIndirect());
           }
 
           // Emit remaining complex address elements.

@@ -58,7 +58,7 @@ const MCExpr *MCStreamer::BuildSymbolDiff(MCContext &Context,
 }
 
 const MCExpr *MCStreamer::ForceExpAbs(const MCExpr* Expr) {
-  if (Context.getAsmInfo().hasAggressiveSymbolFolding() ||
+  if (Context.getAsmInfo()->hasAggressiveSymbolFolding() ||
       isa<MCSymbolRefExpr>(Expr))
     return Expr;
 
@@ -92,7 +92,7 @@ void MCStreamer::EmitIntValue(uint64_t Value, unsigned Size,
   assert((isUIntN(8 * Size, Value) || isIntN(8 * Size, Value)) &&
          "Invalid size");
   char buf[8];
-  const bool isLittleEndian = Context.getAsmInfo().isLittleEndian();
+  const bool isLittleEndian = Context.getAsmInfo()->isLittleEndian();
   for (unsigned i = 0; i != Size; ++i) {
     unsigned index = isLittleEndian ? i : (Size - i - 1);
     buf[i] = uint8_t(Value >> (index * 8));
@@ -152,6 +152,12 @@ void MCStreamer::EmitFill(uint64_t NumBytes, uint8_t FillValue,
   const MCExpr *E = MCConstantExpr::Create(FillValue, getContext());
   for (uint64_t i = 0, e = NumBytes; i != e; ++i)
     EmitValue(E, 1, AddrSpace);
+}
+
+/// EmitZeros - Emit NumBytes worth of zeros.  Implementation in this class
+/// just redirects to EmitFill.
+void MCStreamer::EmitZeros(uint64_t NumBytes, unsigned AddrSpace) {
+  EmitFill(NumBytes, 0, AddrSpace);
 }
 
 bool MCStreamer::EmitDwarfFileDirective(unsigned FileNo,
@@ -229,7 +235,7 @@ void MCStreamer::RecordProcStart(MCDwarfFrameInfo &Frame) {
   Frame.Function = LastSymbol;
   // If the function is externally visible, we need to create a local
   // symbol to avoid relocations.
-  StringRef Prefix = getContext().getAsmInfo().getPrivateGlobalPrefix();
+  StringRef Prefix = getContext().getAsmInfo()->getPrivateGlobalPrefix();
   if (LastSymbol && LastSymbol->getName().startswith(Prefix)) {
     Frame.Begin = LastSymbol;
   } else {

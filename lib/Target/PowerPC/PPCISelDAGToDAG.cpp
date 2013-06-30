@@ -447,10 +447,10 @@ SDNode *PPCDAGToDAGISel::SelectBitfieldInsert(SDNode *N) {
         unsigned SHOpc = Op1.getOperand(0).getOpcode();
         if ((SHOpc == ISD::SHL || SHOpc == ISD::SRL) &&
             isInt32Immediate(Op1.getOperand(0).getOperand(1), Value)) {
+	  // Note that Value must be in range here (less than 32) because
+	  // otherwise there would not be any bits set in InsertMask.
           Op1 = Op1.getOperand(0).getOperand(0);
           SH  = (SHOpc == ISD::SHL) ? Value : 32 - Value;
-        } else {
-          Op1 = Op1.getOperand(0);
         }
       }
 
@@ -1502,13 +1502,13 @@ void PPCDAGToDAGISel::PostprocessISelDAG() {
         continue;
       break;
     case PPC::ADDIdtprelL:
-      Flags = PPCII::MO_DTPREL16_LO;
+      Flags = PPCII::MO_DTPREL_LO;
       break;
     case PPC::ADDItlsldL:
-      Flags = PPCII::MO_TLSLD16_LO;
+      Flags = PPCII::MO_TLSLD_LO;
       break;
     case PPC::ADDItocL:
-      Flags = PPCII::MO_TOC16_LO;
+      Flags = PPCII::MO_TOC_LO;
       break;
     }
 

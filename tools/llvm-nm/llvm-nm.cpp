@@ -17,10 +17,10 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/IR/LLVMContext.h"
-#include "llvm/Bitcode/Archive.h"
 #include "llvm/Bitcode/ReaderWriter.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Object/Archive.h"
+#include "llvm/Object/MachOUniversal.h"
 #include "llvm/Object/ObjectFile.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
@@ -403,6 +403,23 @@ static void DumpSymbolNamesFromFile(std::string &Filename) {
         }
       }
     }
+  } else if (magic == sys::fs::file_magic::macho_universal_binary) {
+    OwningPtr<Binary> Bin;
+    if (error(object::createBinary(Buffer.take(), Bin), Filename))
+      return;
+
+    object::MachOUniversalBinary *UB =
+        cast<object::MachOUniversalBinary>(Bin.get());
+    for (object::MachOUniversalBinary::object_iterator
+             I = UB->begin_objects(),
+             E = UB->end_objects();
+         I != E; ++I) {
+      OwningPtr<ObjectFile> Obj;
+      if (!I->getAsObjectFile(Obj)) {
+        outs() << Obj->getFileName() << ":\n";
+        DumpSymbolNamesFromObject(Obj.get());
+      }
+    }
   } else if (magic.is_object()) {
     OwningPtr<Binary> obj;
     if (error(object::createBinary(Buffer.take(), obj), Filename))
@@ -425,7 +442,7 @@ int main(int argc, char **argv) {
   cl::ParseCommandLineOptions(argc, argv, "llvm symbol table dumper\n");
 
   // llvm-nm only reads binary files.
-  if (error(sys::Program::ChangeStdinToBinary()))
+  if (error(sys::ChangeStdinToBinary()))
     return 1;
 
   ToolName = argv[0];

@@ -17,6 +17,7 @@
 #include "R600InstrInfo.h"
 #include "SIISelLowering.h"
 #include "llvm/ADT/ValueMap.h"
+#include "llvm/Analysis/ValueTracking.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/PseudoSourceValue.h"
 #include "llvm/CodeGen/SelectionDAG.h"
@@ -59,20 +60,19 @@ private:
   bool SelectADDR64(SDValue N, SDValue &R1, SDValue &R2);
 
   static bool checkType(const Value *ptr, unsigned int addrspace);
-  static const Value *getBasePointerValue(const Value *V);
 
   static bool isGlobalStore(const StoreSDNode *N);
   static bool isPrivateStore(const StoreSDNode *N);
   static bool isLocalStore(const StoreSDNode *N);
   static bool isRegionStore(const StoreSDNode *N);
 
-  static bool isCPLoad(const LoadSDNode *N);
-  static bool isConstantLoad(const LoadSDNode *N, int cbID);
-  static bool isGlobalLoad(const LoadSDNode *N);
-  static bool isParamLoad(const LoadSDNode *N);
-  static bool isPrivateLoad(const LoadSDNode *N);
-  static bool isLocalLoad(const LoadSDNode *N);
-  static bool isRegionLoad(const LoadSDNode *N);
+  bool isCPLoad(const LoadSDNode *N) const;
+  bool isConstantLoad(const LoadSDNode *N, int cbID) const;
+  bool isGlobalLoad(const LoadSDNode *N) const;
+  bool isParamLoad(const LoadSDNode *N) const;
+  bool isPrivateLoad(const LoadSDNode *N) const;
+  bool isLocalLoad(const LoadSDNode *N) const;
+  bool isRegionLoad(const LoadSDNode *N) const;
 
   bool SelectGlobalValueConstantOffset(SDValue Addr, SDValue& IntPtr);
   bool SelectGlobalValueVariableOffset(SDValue Addr,
@@ -92,8 +92,7 @@ FunctionPass *llvm::createAMDGPUISelDag(TargetMachine &TM
   return new AMDGPUDAGToDAGISel(TM);
 }
 
-AMDGPUDAGToDAGISel::AMDGPUDAGToDAGISel(TargetMachine &TM
-                                     )
+AMDGPUDAGToDAGISel::AMDGPUDAGToDAGISel(TargetMachine &TM)
   : SelectionDAGISel(TM), Subtarget(TM.getSubtarget<AMDGPUSubtarget>()) {
 }
 
@@ -281,12 +280,18 @@ SDNode *AMDGPUDAGToDAGISel::Select(SDNode *N) {
           continue;
         }
 
-        int ImmIdx = TII->getOperandIdx(Use->getMachineOpcode(), R600Operands::IMM);
-        assert(ImmIdx != -1);
+        int ImmIdx = TII->getOperandIdx(Use->getMachineOpcode(),
+                                        AMDGPU::OpName::literal);
+        if (ImmIdx == -1) {
+          continue;
+        }
 
-        // subtract one from ImmIdx, because the DST operand is usually index
-        // 0 for MachineInstrs, but we have no DST in the Ops vector.
-        ImmIdx--;
+        if (TII->getOperandIdx(Use->getMachineOpcode(),
+                               AMDGPU::OpName::dst) != -1) {
+          // subtract one from ImmIdx, because the DST operand is usually index
+          // 0 for MachineInstrs, but we have no DST in the Ops vector.
+          ImmIdx--;
+        }
 
         // Check that we aren't already using an immediate.
         // XXX: It's possible for an instruction to have more than one
@@ -332,11 +337,11 @@ SDNode *AMDGPUDAGToDAGISel::Select(SDNode *N) {
           Result = CurDAG->UpdateNodeOperands(Result, Ops.data(), Ops.size());
         }
       } while (IsModified);
-      
+
     }
     if (Result && Result->isMachineOpcode() &&
         !(TII->get(Result->getMachineOpcode()).TSFlags & R600_InstFlag::VECTOR)
-        && TII->isALUInstr(Result->getMachineOpcode())) {
+        && TII->hasInstrModifiers(Result->getMachineOpcode())) {
       // Fold FNEG/FABS/CONST_ADDRESS
       // TODO: Isel can generate multiple MachineInst, we need to recursively
       // parse Result
@@ -358,7 +363,7 @@ SDNode *AMDGPUDAGToDAGISel::Select(SDNode *N) {
         if (PotentialClamp->isMachineOpcode() &&
             PotentialClamp->getMachineOpcode() == AMDGPU::CLAMP_R600) {
           unsigned ClampIdx =
-            TII->getOperandIdx(Result->getMachineOpcode(), R600Operands::CLAMP);
+            TII->getOperandIdx(Result->getMachineOpcode(), AMDGPU::OpName::clamp);
           std::vector<SDValue> Ops;
           unsigned NumOp = Result->getNumOperands();
           for (unsigned i = 0; i < NumOp; ++i) {
@@ -416,23 +421,23 @@ bool AMDGPUDAGToDAGISel::FoldOperand(SDValue &Src, SDValue &Sel, SDValue &Neg,
 bool AMDGPUDAGToDAGISel::FoldOperands(unsigned Opcode,
     const R600InstrInfo *TII, std::vector<SDValue> &Ops) {
   int OperandIdx[] = {
-    TII->getOperandIdx(Opcode, R600Operands::SRC0),
-    TII->getOperandIdx(Opcode, R600Operands::SRC1),
-    TII->getOperandIdx(Opcode, R600Operands::SRC2)
+    TII->getOperandIdx(Opcode, AMDGPU::OpName::src0),
+    TII->getOperandIdx(Opcode, AMDGPU::OpName::src1),
+    TII->getOperandIdx(Opcode, AMDGPU::OpName::src2)
   };
   int SelIdx[] = {
-    TII->getOperandIdx(Opcode, R600Operands::SRC0_SEL),
-    TII->getOperandIdx(Opcode, R600Operands::SRC1_SEL),
-    TII->getOperandIdx(Opcode, R600Operands::SRC2_SEL)
+    TII->getOperandIdx(Opcode, AMDGPU::OpName::src0_sel),
+    TII->getOperandIdx(Opcode, AMDGPU::OpName::src1_sel),
+    TII->getOperandIdx(Opcode, AMDGPU::OpName::src2_sel)
   };
   int NegIdx[] = {
-    TII->getOperandIdx(Opcode, R600Operands::SRC0_NEG),
-    TII->getOperandIdx(Opcode, R600Operands::SRC1_NEG),
-    TII->getOperandIdx(Opcode, R600Operands::SRC2_NEG)
+    TII->getOperandIdx(Opcode, AMDGPU::OpName::src0_neg),
+    TII->getOperandIdx(Opcode, AMDGPU::OpName::src1_neg),
+    TII->getOperandIdx(Opcode, AMDGPU::OpName::src2_neg)
   };
   int AbsIdx[] = {
-    TII->getOperandIdx(Opcode, R600Operands::SRC0_ABS),
-    TII->getOperandIdx(Opcode, R600Operands::SRC1_ABS),
+    TII->getOperandIdx(Opcode, AMDGPU::OpName::src0_abs),
+    TII->getOperandIdx(Opcode, AMDGPU::OpName::src1_abs),
     -1
   };
 
@@ -467,44 +472,44 @@ bool AMDGPUDAGToDAGISel::FoldOperands(unsigned Opcode,
 bool AMDGPUDAGToDAGISel::FoldDotOperands(unsigned Opcode,
     const R600InstrInfo *TII, std::vector<SDValue> &Ops) {
   int OperandIdx[] = {
-    TII->getOperandIdx(Opcode, R600Operands::SRC0_X),
-    TII->getOperandIdx(Opcode, R600Operands::SRC0_Y),
-    TII->getOperandIdx(Opcode, R600Operands::SRC0_Z),
-    TII->getOperandIdx(Opcode, R600Operands::SRC0_W),
-    TII->getOperandIdx(Opcode, R600Operands::SRC1_X),
-    TII->getOperandIdx(Opcode, R600Operands::SRC1_Y),
-    TII->getOperandIdx(Opcode, R600Operands::SRC1_Z),
-    TII->getOperandIdx(Opcode, R600Operands::SRC1_W)
+    TII->getOperandIdx(Opcode, AMDGPU::OpName::src0_X),
+    TII->getOperandIdx(Opcode, AMDGPU::OpName::src0_Y),
+    TII->getOperandIdx(Opcode, AMDGPU::OpName::src0_Z),
+    TII->getOperandIdx(Opcode, AMDGPU::OpName::src0_W),
+    TII->getOperandIdx(Opcode, AMDGPU::OpName::src1_X),
+    TII->getOperandIdx(Opcode, AMDGPU::OpName::src1_Y),
+    TII->getOperandIdx(Opcode, AMDGPU::OpName::src1_Z),
+    TII->getOperandIdx(Opcode, AMDGPU::OpName::src1_W)
   };
   int SelIdx[] = {
-    TII->getOperandIdx(Opcode, R600Operands::SRC0_SEL_X),
-    TII->getOperandIdx(Opcode, R600Operands::SRC0_SEL_Y),
-    TII->getOperandIdx(Opcode, R600Operands::SRC0_SEL_Z),
-    TII->getOperandIdx(Opcode, R600Operands::SRC0_SEL_W),
-    TII->getOperandIdx(Opcode, R600Operands::SRC1_SEL_X),
-    TII->getOperandIdx(Opcode, R600Operands::SRC1_SEL_Y),
-    TII->getOperandIdx(Opcode, R600Operands::SRC1_SEL_Z),
-    TII->getOperandIdx(Opcode, R600Operands::SRC1_SEL_W)
+    TII->getOperandIdx(Opcode, AMDGPU::OpName::src0_sel_X),
+    TII->getOperandIdx(Opcode, AMDGPU::OpName::src0_sel_Y),
+    TII->getOperandIdx(Opcode, AMDGPU::OpName::src0_sel_Z),
+    TII->getOperandIdx(Opcode, AMDGPU::OpName::src0_sel_W),
+    TII->getOperandIdx(Opcode, AMDGPU::OpName::src1_sel_X),
+    TII->getOperandIdx(Opcode, AMDGPU::OpName::src1_sel_Y),
+    TII->getOperandIdx(Opcode, AMDGPU::OpName::src1_sel_Z),
+    TII->getOperandIdx(Opcode, AMDGPU::OpName::src1_sel_W)
   };
   int NegIdx[] = {
-    TII->getOperandIdx(Opcode, R600Operands::SRC0_NEG_X),
-    TII->getOperandIdx(Opcode, R600Operands::SRC0_NEG_Y),
-    TII->getOperandIdx(Opcode, R600Operands::SRC0_NEG_Z),
-    TII->getOperandIdx(Opcode, R600Operands::SRC0_NEG_W),
-    TII->getOperandIdx(Opcode, R600Operands::SRC1_NEG_X),
-    TII->getOperandIdx(Opcode, R600Operands::SRC1_NEG_Y),
-    TII->getOperandIdx(Opcode, R600Operands::SRC1_NEG_Z),
-    TII->getOperandIdx(Opcode, R600Operands::SRC1_NEG_W)
+    TII->getOperandIdx(Opcode, AMDGPU::OpName::src0_neg_X),
+    TII->getOperandIdx(Opcode, AMDGPU::OpName::src0_neg_Y),
+    TII->getOperandIdx(Opcode, AMDGPU::OpName::src0_neg_Z),
+    TII->getOperandIdx(Opcode, AMDGPU::OpName::src0_neg_W),
+    TII->getOperandIdx(Opcode, AMDGPU::OpName::src1_neg_X),
+    TII->getOperandIdx(Opcode, AMDGPU::OpName::src1_neg_Y),
+    TII->getOperandIdx(Opcode, AMDGPU::OpName::src1_neg_Z),
+    TII->getOperandIdx(Opcode, AMDGPU::OpName::src1_neg_W)
   };
   int AbsIdx[] = {
-    TII->getOperandIdx(Opcode, R600Operands::SRC0_ABS_X),
-    TII->getOperandIdx(Opcode, R600Operands::SRC0_ABS_Y),
-    TII->getOperandIdx(Opcode, R600Operands::SRC0_ABS_Z),
-    TII->getOperandIdx(Opcode, R600Operands::SRC0_ABS_W),
-    TII->getOperandIdx(Opcode, R600Operands::SRC1_ABS_X),
-    TII->getOperandIdx(Opcode, R600Operands::SRC1_ABS_Y),
-    TII->getOperandIdx(Opcode, R600Operands::SRC1_ABS_Z),
-    TII->getOperandIdx(Opcode, R600Operands::SRC1_ABS_W)
+    TII->getOperandIdx(Opcode, AMDGPU::OpName::src0_abs_X),
+    TII->getOperandIdx(Opcode, AMDGPU::OpName::src0_abs_Y),
+    TII->getOperandIdx(Opcode, AMDGPU::OpName::src0_abs_Z),
+    TII->getOperandIdx(Opcode, AMDGPU::OpName::src0_abs_W),
+    TII->getOperandIdx(Opcode, AMDGPU::OpName::src1_abs_X),
+    TII->getOperandIdx(Opcode, AMDGPU::OpName::src1_abs_Y),
+    TII->getOperandIdx(Opcode, AMDGPU::OpName::src1_abs_Z),
+    TII->getOperandIdx(Opcode, AMDGPU::OpName::src1_abs_W)
   };
 
   // Gather constants values
@@ -542,46 +547,6 @@ bool AMDGPUDAGToDAGISel::checkType(const Value *ptr, unsigned int addrspace) {
   return dyn_cast<PointerType>(ptrType)->getAddressSpace() == addrspace;
 }
 
-const Value * AMDGPUDAGToDAGISel::getBasePointerValue(const Value *V) {
-  if (!V) {
-    return NULL;
-  }
-  const Value *ret = NULL;
-  ValueMap<const Value *, bool> ValueBitMap;
-  std::queue<const Value *, std::list<const Value *> > ValueQueue;
-  ValueQueue.push(V);
-  while (!ValueQueue.empty()) {
-    V = ValueQueue.front();
-    if (ValueBitMap.find(V) == ValueBitMap.end()) {
-      ValueBitMap[V] = true;
-      if (dyn_cast<Argument>(V) && dyn_cast<PointerType>(V->getType())) {
-        ret = V;
-        break;
-      } else if (dyn_cast<GlobalVariable>(V)) {
-        ret = V;
-        break;
-      } else if (dyn_cast<Constant>(V)) {
-        const ConstantExpr *CE = dyn_cast<ConstantExpr>(V);
-        if (CE) {
-          ValueQueue.push(CE->getOperand(0));
-        }
-      } else if (const AllocaInst *AI = dyn_cast<AllocaInst>(V)) {
-        ret = AI;
-        break;
-      } else if (const Instruction *I = dyn_cast<Instruction>(V)) {
-        uint32_t numOps = I->getNumOperands();
-        for (uint32_t x = 0; x < numOps; ++x) {
-          ValueQueue.push(I->getOperand(x));
-        }
-      } else {
-        assert(!"Found a Value that we didn't know how to handle!");
-      }
-    }
-    ValueQueue.pop();
-  }
-  return ret;
-}
-
 bool AMDGPUDAGToDAGISel::isGlobalStore(const StoreSDNode *N) {
   return checkType(N->getSrcValue(), AMDGPUAS::GLOBAL_ADDRESS);
 }
@@ -600,41 +565,43 @@ bool AMDGPUDAGToDAGISel::isRegionStore(const StoreSDNode *N) {
   return checkType(N->getSrcValue(), AMDGPUAS::REGION_ADDRESS);
 }
 
-bool AMDGPUDAGToDAGISel::isConstantLoad(const LoadSDNode *N, int cbID) {
+bool AMDGPUDAGToDAGISel::isConstantLoad(const LoadSDNode *N, int cbID) const {
   if (checkType(N->getSrcValue(), AMDGPUAS::CONSTANT_ADDRESS)) {
     return true;
   }
+
+  const DataLayout *DL = TM.getDataLayout();
   MachineMemOperand *MMO = N->getMemOperand();
   const Value *V = MMO->getValue();
-  const Value *BV = getBasePointerValue(V);
+  const Value *BV = GetUnderlyingObject(V, DL, 0);
   if (MMO
       && MMO->getValue()
       && ((V && dyn_cast<GlobalValue>(V))
           || (BV && dyn_cast<GlobalValue>(
-                        getBasePointerValue(MMO->getValue()))))) {
+                GetUnderlyingObject(MMO->getValue(), DL, 0))))) {
     return checkType(N->getSrcValue(), AMDGPUAS::PRIVATE_ADDRESS);
   } else {
     return false;
   }
 }
 
-bool AMDGPUDAGToDAGISel::isGlobalLoad(const LoadSDNode *N) {
+bool AMDGPUDAGToDAGISel::isGlobalLoad(const LoadSDNode *N) const {
   return checkType(N->getSrcValue(), AMDGPUAS::GLOBAL_ADDRESS);
 }
 
-bool AMDGPUDAGToDAGISel::isParamLoad(const LoadSDNode *N) {
+bool AMDGPUDAGToDAGISel::isParamLoad(const LoadSDNode *N) const {
   return checkType(N->getSrcValue(), AMDGPUAS::PARAM_I_ADDRESS);
 }
 
-bool AMDGPUDAGToDAGISel::isLocalLoad(const  LoadSDNode *N) {
+bool AMDGPUDAGToDAGISel::isLocalLoad(const  LoadSDNode *N) const {
   return checkType(N->getSrcValue(), AMDGPUAS::LOCAL_ADDRESS);
 }
 
-bool AMDGPUDAGToDAGISel::isRegionLoad(const  LoadSDNode *N) {
+bool AMDGPUDAGToDAGISel::isRegionLoad(const  LoadSDNode *N) const {
   return checkType(N->getSrcValue(), AMDGPUAS::REGION_ADDRESS);
 }
 
-bool AMDGPUDAGToDAGISel::isCPLoad(const LoadSDNode *N) {
+bool AMDGPUDAGToDAGISel::isCPLoad(const LoadSDNode *N) const {
   MachineMemOperand *MMO = N->getMemOperand();
   if (checkType(N->getSrcValue(), AMDGPUAS::PRIVATE_ADDRESS)) {
     if (MMO) {
@@ -648,7 +615,7 @@ bool AMDGPUDAGToDAGISel::isCPLoad(const LoadSDNode *N) {
   return false;
 }
 
-bool AMDGPUDAGToDAGISel::isPrivateLoad(const LoadSDNode *N) {
+bool AMDGPUDAGToDAGISel::isPrivateLoad(const LoadSDNode *N) const {
   if (checkType(N->getSrcValue(), AMDGPUAS::PRIVATE_ADDRESS)) {
     // Check to make sure we are not a constant pool load or a constant load
     // that is marked as a private load
@@ -750,7 +717,8 @@ void AMDGPUDAGToDAGISel::PostprocessISelDAG() {
   }
 
   // Go over all selected nodes and try to fold them a bit more
-  const AMDGPUTargetLowering& Lowering = (*(const AMDGPUTargetLowering*)TLI);
+  const AMDGPUTargetLowering& Lowering =
+    (*(const AMDGPUTargetLowering*)getTargetLowering());
   for (SelectionDAG::allnodes_iterator I = CurDAG->allnodes_begin(),
        E = CurDAG->allnodes_end(); I != E; ++I) {
 
@@ -766,7 +734,8 @@ void AMDGPUDAGToDAGISel::PostprocessISelDAG() {
         continue;
       }
 
-      if (!Val.getNode()->isMachineOpcode()) {
+      if (!Val.getNode()->isMachineOpcode() ||
+          Val.getNode()->getMachineOpcode() == AMDGPU::IMPLICIT_DEF) {
         continue;
       }
 

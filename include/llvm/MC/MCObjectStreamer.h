@@ -102,6 +102,10 @@ public:
   virtual void EmitCodeAlignment(unsigned ByteAlignment,
                                  unsigned MaxBytesToEmit = 0);
   virtual bool EmitValueToOffset(const MCExpr *Offset, unsigned char Value);
+  virtual void EmitDwarfLocDirective(unsigned FileNo, unsigned Line,
+                                     unsigned Column, unsigned Flags,
+                                     unsigned Isa, unsigned Discriminator,
+                                     StringRef FileName);
   virtual void EmitDwarfAdvanceLineAddr(int64_t LineDelta,
                                         const MCSymbol *LastLabel,
                                         const MCSymbol *Label,
@@ -112,6 +116,7 @@ public:
   virtual void EmitGPRel64Value(const MCExpr *Value);
   virtual void EmitFill(uint64_t NumBytes, uint8_t FillValue,
                         unsigned AddrSpace = 0);
+  virtual void EmitZeros(uint64_t NumBytes, unsigned AddrSpace = 0);
   virtual void FinishImpl();
 
   /// @}

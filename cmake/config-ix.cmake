@@ -384,6 +384,14 @@ else ()
   message(FATAL_ERROR "Unknown architecture ${LLVM_NATIVE_ARCH}")
 endif ()
 
+# If build targets includes "host", then replace with native architecture.
+list(FIND LLVM_TARGETS_TO_BUILD "host" idx)
+if( NOT idx LESS 0 )
+  list(REMOVE_AT LLVM_TARGETS_TO_BUILD ${idx})
+  list(APPEND LLVM_TARGETS_TO_BUILD ${LLVM_NATIVE_ARCH})
+  list(REMOVE_DUPLICATES LLVM_TARGETS_TO_BUILD)
+endif()
+
 list(FIND LLVM_TARGETS_TO_BUILD ${LLVM_NATIVE_ARCH} NATIVE_ARCH_IDX)
 if (NATIVE_ARCH_IDX EQUAL -1)
   message(STATUS
@@ -416,7 +424,6 @@ endif( MINGW )
 
 if( MSVC )
   set(error_t int)
-  set(LTDL_SHLIBPATH_VAR "PATH")
   set(LTDL_SYSSEARCHPATH "")
   set(LTDL_DLOPEN_DEPLIBS 1)
   set(SHLIBEXT ".lib")
@@ -427,7 +434,6 @@ if( MSVC )
   set(stricmp "_stricmp")
   set(strdup "_strdup")
 else( MSVC )
-  set(LTDL_SHLIBPATH_VAR "LD_LIBRARY_PATH")
   set(LTDL_SYSSEARCHPATH "") # TODO
   set(LTDL_DLOPEN_DEPLIBS 0)  # TODO
 endif( MSVC )

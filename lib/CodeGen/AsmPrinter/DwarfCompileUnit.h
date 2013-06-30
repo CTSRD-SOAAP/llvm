@@ -19,6 +19,7 @@
 #include "llvm/ADT/OwningPtr.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/DebugInfo.h"
+#include "llvm/MC/MCExpr.h"
 
 namespace llvm {
 
@@ -96,7 +97,7 @@ class CompileUnit {
 
 public:
   CompileUnit(unsigned UID, unsigned L, DIE *D, const MDNode *N, AsmPrinter *A,
-	      DwarfDebug *DW, DwarfUnits *DWU);
+              DwarfDebug *DW, DwarfUnits *DWU);
   ~CompileUnit();
 
   // Accessors.
@@ -220,6 +221,8 @@ public:
   /// addLabel - Add a Dwarf label attribute data and value.
   ///
   void addLabel(DIE *Die, unsigned Attribute, unsigned Form,
+                const MCSymbolRefExpr *Label);
+  void addLabel(DIE *Die, unsigned Attribute, unsigned Form,
                 const MCSymbol *Label);
 
   /// addLabelAddress - Add a dwarf label attribute data and value using
@@ -230,7 +233,8 @@ public:
   /// addOpAddress - Add a dwarf op address data and value using the
   /// form given and an op of either DW_FORM_addr or DW_FORM_GNU_addr_index.
   ///
-  void addOpAddress(DIE *Die, MCSymbol *Label);
+  void addOpAddress(DIE *Die, const MCSymbol *Label);
+  void addOpAddress(DIE *Die, const MCSymbolRefExpr *Label);
 
   /// addDelta - Add a label delta attribute data and value.
   ///
@@ -257,7 +261,7 @@ public:
   /// addAddress - Add an address attribute to a die based on the location
   /// provided.
   void addAddress(DIE *Die, unsigned Attribute,
-                  const MachineLocation &Location);
+                  const MachineLocation &Location, bool Indirect = false);
 
   /// addConstantValue - Add constant value entry in variable DIE.
   bool addConstantValue(DIE *Die, const MachineOperand &MO, DIType Ty);
@@ -282,7 +286,7 @@ public:
   /// (navigating the extra location information encoded in the type) based on
   /// the starting location.  Add the DWARF information to the die.
   ///
-  void addComplexAddress(DbgVariable *&DV, DIE *Die, unsigned Attribute,
+  void addComplexAddress(const DbgVariable &DV, DIE *Die, unsigned Attribute,
                          const MachineLocation &Location);
 
   // FIXME: Should be reformulated in terms of addComplexAddress.
@@ -292,12 +296,13 @@ public:
   /// starting location.  Add the DWARF information to the die.  Obsolete,
   /// please use addComplexAddress instead.
   ///
-  void addBlockByrefAddress(DbgVariable *&DV, DIE *Die, unsigned Attribute,
+  void addBlockByrefAddress(const DbgVariable &DV, DIE *Die, unsigned Attribute,
                             const MachineLocation &Location);
 
   /// addVariableAddress - Add DW_AT_location attribute for a
   /// DbgVariable based on provided MachineLocation.
-  void addVariableAddress(DbgVariable *&DV, DIE *Die, MachineLocation Location);
+  void addVariableAddress(const DbgVariable &DV, DIE *Die,
+                          MachineLocation Location);
 
   /// addToContextOwner - Add Die into the list of its context owner's children.
   void addToContextOwner(DIE *Die, DIDescriptor Context);

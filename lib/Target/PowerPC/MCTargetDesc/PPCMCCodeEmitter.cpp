@@ -48,7 +48,11 @@ public:
                                SmallVectorImpl<MCFixup> &Fixups) const;
   unsigned getCondBrEncoding(const MCInst &MI, unsigned OpNo,
                              SmallVectorImpl<MCFixup> &Fixups) const;
-  unsigned getS16ImmEncoding(const MCInst &MI, unsigned OpNo,
+  unsigned getAbsDirectBrEncoding(const MCInst &MI, unsigned OpNo,
+                                  SmallVectorImpl<MCFixup> &Fixups) const;
+  unsigned getAbsCondBrEncoding(const MCInst &MI, unsigned OpNo,
+                                SmallVectorImpl<MCFixup> &Fixups) const;
+  unsigned getImm16Encoding(const MCInst &MI, unsigned OpNo,
                              SmallVectorImpl<MCFixup> &Fixups) const;
   unsigned getMemRIEncoding(const MCInst &MI, unsigned OpNo,
                             SmallVectorImpl<MCFixup> &Fixups) const;
@@ -134,12 +138,36 @@ unsigned PPCMCCodeEmitter::getCondBrEncoding(const MCInst &MI, unsigned OpNo,
   return 0;
 }
 
-unsigned PPCMCCodeEmitter::getS16ImmEncoding(const MCInst &MI, unsigned OpNo,
+unsigned PPCMCCodeEmitter::
+getAbsDirectBrEncoding(const MCInst &MI, unsigned OpNo,
+                       SmallVectorImpl<MCFixup> &Fixups) const {
+  const MCOperand &MO = MI.getOperand(OpNo);
+  if (MO.isReg() || MO.isImm()) return getMachineOpValue(MI, MO, Fixups);
+
+  // Add a fixup for the branch target.
+  Fixups.push_back(MCFixup::Create(0, MO.getExpr(),
+                                   (MCFixupKind)PPC::fixup_ppc_br24abs));
+  return 0;
+}
+
+unsigned PPCMCCodeEmitter::
+getAbsCondBrEncoding(const MCInst &MI, unsigned OpNo,
+                     SmallVectorImpl<MCFixup> &Fixups) const {
+  const MCOperand &MO = MI.getOperand(OpNo);
+  if (MO.isReg() || MO.isImm()) return getMachineOpValue(MI, MO, Fixups);
+
+  // Add a fixup for the branch target.
+  Fixups.push_back(MCFixup::Create(0, MO.getExpr(),
+                                   (MCFixupKind)PPC::fixup_ppc_brcond14abs));
+  return 0;
+}
+
+unsigned PPCMCCodeEmitter::getImm16Encoding(const MCInst &MI, unsigned OpNo,
                                        SmallVectorImpl<MCFixup> &Fixups) const {
   const MCOperand &MO = MI.getOperand(OpNo);
   if (MO.isReg() || MO.isImm()) return getMachineOpValue(MI, MO, Fixups);
   
-  // Add a fixup for the branch target.
+  // Add a fixup for the immediate field.
   Fixups.push_back(MCFixup::Create(2, MO.getExpr(),
                                    (MCFixupKind)PPC::fixup_ppc_half16));
   return 0;
@@ -191,7 +219,7 @@ unsigned PPCMCCodeEmitter::getTLSRegEncoding(const MCInst &MI, unsigned OpNo,
   // Return the thread-pointer register's encoding.
   Fixups.push_back(MCFixup::Create(0, MO.getExpr(),
                                    (MCFixupKind)PPC::fixup_ppc_tlsreg));
-  return CTX.getRegisterInfo().getEncodingValue(PPC::X13);
+  return CTX.getRegisterInfo()->getEncodingValue(PPC::X13);
 }
 
 unsigned PPCMCCodeEmitter::
@@ -202,7 +230,7 @@ get_crbitm_encoding(const MCInst &MI, unsigned OpNo,
           MI.getOpcode() == PPC::MFOCRF ||
           MI.getOpcode() == PPC::MTCRF8) &&
          (MO.getReg() >= PPC::CR0 && MO.getReg() <= PPC::CR7));
-  return 0x80 >> CTX.getRegisterInfo().getEncodingValue(MO.getReg());
+  return 0x80 >> CTX.getRegisterInfo()->getEncodingValue(MO.getReg());
 }
 
 
@@ -214,7 +242,7 @@ getMachineOpValue(const MCInst &MI, const MCOperand &MO,
     // The GPR operand should come through here though.
     assert((MI.getOpcode() != PPC::MTCRF && MI.getOpcode() != PPC::MFOCRF) ||
            MO.getReg() < PPC::CR0 || MO.getReg() > PPC::CR7);
-    return CTX.getRegisterInfo().getEncodingValue(MO.getReg());
+    return CTX.getRegisterInfo()->getEncodingValue(MO.getReg());
   }
   
   assert(MO.isImm() &&

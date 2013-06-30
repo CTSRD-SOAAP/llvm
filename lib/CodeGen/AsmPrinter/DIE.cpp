@@ -55,11 +55,9 @@ void DIEAbbrev::Profile(FoldingSetNodeID &ID) const {
 ///
 void DIEAbbrev::Emit(AsmPrinter *AP) const {
   // Emit its Dwarf tag type.
-  // FIXME: Doing work even in non-asm-verbose runs.
   AP->EmitULEB128(Tag, dwarf::TagString(Tag));
 
   // Emit whether it has children DIEs.
-  // FIXME: Doing work even in non-asm-verbose runs.
   AP->EmitULEB128(ChildrenFlag, dwarf::ChildrenString(ChildrenFlag));
 
   // For each attribute description.
@@ -67,12 +65,10 @@ void DIEAbbrev::Emit(AsmPrinter *AP) const {
     const DIEAbbrevData &AttrData = Data[i];
 
     // Emit attribute type.
-    // FIXME: Doing work even in non-asm-verbose runs.
     AP->EmitULEB128(AttrData.getAttribute(),
                     dwarf::AttributeString(AttrData.getAttribute()));
 
     // Emit form type.
-    // FIXME: Doing work even in non-asm-verbose runs.
     AP->EmitULEB128(AttrData.getForm(),
                     dwarf::FormEncodingString(AttrData.getForm()));
   }
@@ -257,7 +253,7 @@ void DIEInteger::print(raw_ostream &O) const {
 /// EmitValue - Emit label value.
 ///
 void DIELabel::EmitValue(AsmPrinter *AP, unsigned Form) const {
-  AP->OutStreamer.EmitSymbolValue(Label, SizeOf(AP, Form));
+  AP->OutStreamer.EmitValue(Label, SizeOf(AP, Form));
 }
 
 /// SizeOf - Determine size of label value in bytes.
@@ -271,7 +267,7 @@ unsigned DIELabel::SizeOf(AsmPrinter *AP, unsigned Form) const {
 
 #ifndef NDEBUG
 void DIELabel::print(raw_ostream &O) const {
-  O << "Lbl: " << Label->getName();
+  O << "Lbl: " << Label->getSymbol().getName();
 }
 #endif
 

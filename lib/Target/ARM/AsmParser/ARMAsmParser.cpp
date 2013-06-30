@@ -152,12 +152,22 @@ class ARMAsmParser : public MCTargetAsmParser {
   bool isThumbTwo() const {
     return isThumb() && (STI.getFeatureBits() & ARM::FeatureThumb2);
   }
+  bool hasThumb() const {
+    return STI.getFeatureBits() & ARM::HasV4TOps;
+  }
   bool hasV6Ops() const {
     return STI.getFeatureBits() & ARM::HasV6Ops;
   }
   bool hasV7Ops() const {
     return STI.getFeatureBits() & ARM::HasV7Ops;
   }
+  bool hasV8Ops() const {
+    return STI.getFeatureBits() & ARM::HasV8Ops;
+  }
+  bool hasARM() const {
+    return !(STI.getFeatureBits() & ARM::FeatureNoARM);
+  }
+
   void SwitchMode() {
     unsigned FB = ComputeAvailableFeatures(STI.ToggleFeature(ARM::ModeThumb));
     setAvailableFeatures(FB);
@@ -270,7 +280,7 @@ public:
     MCAsmParserExtension::Initialize(_Parser);
 
     // Cache the MCRegisterInfo.
-    MRI = &getContext().getRegisterInfo();
+    MRI = getContext().getRegisterInfo();
 
     // Initialize the set of available features.
     setAvailableFeatures(ComputeAvailableFeatures(STI.getFeatureBits()));
@@ -987,7 +997,7 @@ public:
     const MCConstantExpr *CE = dyn_cast<MCConstantExpr>(getImm());
     if (!CE) return false;
     int64_t Val = CE->getValue();
-    return Val > -4096 && Val < 4096;
+    return (Val == INT32_MIN) || (Val > -4096 && Val < 4096);
   }
   bool isAddrMode3() const {
     // If we have an immediate that's not a constant, treat it as a label
@@ -4959,28 +4969,26 @@ getMnemonicAcceptInfo(StringRef Mnemonic, bool &CanAcceptCarrySet,
   } else
     CanAcceptCarrySet = false;
 
-  if (Mnemonic == "cbnz" || Mnemonic == "setend" || Mnemonic == "dmb" ||
-      Mnemonic == "cps" || Mnemonic == "mcr2" || Mnemonic == "it" ||
-      Mnemonic == "mcrr2" || Mnemonic == "cbz" || Mnemonic == "cdp2" ||
-      Mnemonic == "trap" || Mnemonic == "mrc2" || Mnemonic == "mrrc2" ||
-      Mnemonic == "dsb" || Mnemonic == "isb" || Mnemonic == "setend" ||
-      (Mnemonic == "clrex" && !isThumb()) ||
-      (Mnemonic == "nop" && isThumbOne()) ||
-      ((Mnemonic == "pld" || Mnemonic == "pli" || Mnemonic == "pldw" ||
-        Mnemonic == "ldc2" || Mnemonic == "ldc2l" ||
-        Mnemonic == "stc2" || Mnemonic == "stc2l") && !isThumb()) ||
-      ((Mnemonic.startswith("rfe") || Mnemonic.startswith("srs")) &&
-       !isThumb()) ||
-      Mnemonic.startswith("cps") || (Mnemonic == "movs" && isThumbOne())) {
+  if (Mnemonic == "bkpt" || Mnemonic == "cbnz" || Mnemonic == "setend" ||
+      Mnemonic == "cps" ||  Mnemonic == "it" ||  Mnemonic == "cbz" ||
+      Mnemonic == "trap" || Mnemonic == "setend" ||
+      Mnemonic.startswith("cps")) {
+    // These mnemonics are never predicable
     CanAcceptPredicationCode = false;
+  } else if (!isThumb()) {
+    // Some instructions are only predicable in Thumb mode
+    CanAcceptPredicationCode
+      = Mnemonic != "cdp2" && Mnemonic != "clrex" && Mnemonic != "mcr2" &&
+        Mnemonic != "mcrr2" && Mnemonic != "mrc2" && Mnemonic != "mrrc2" &&
+        Mnemonic != "dmb" && Mnemonic != "dsb" && Mnemonic != "isb" &&
+        Mnemonic != "pld" && Mnemonic != "pli" && Mnemonic != "pldw" &&
+        Mnemonic != "ldc2" && Mnemonic != "ldc2l" &&
+        Mnemonic != "stc2" && Mnemonic != "stc2l" &&
+        !Mnemonic.startswith("rfe") && !Mnemonic.startswith("srs");
+  } else if (isThumbOne()) {
+    CanAcceptPredicationCode = Mnemonic != "nop" && Mnemonic != "movs";
   } else
     CanAcceptPredicationCode = true;
-
-  if (isThumb()) {
-    if (Mnemonic == "bkpt" || Mnemonic == "mcr" || Mnemonic == "mcrr" ||
-        Mnemonic == "mrc" || Mnemonic == "mrrc" || Mnemonic == "cdp")
-      CanAcceptPredicationCode = false;
-  }
 }
 
 bool ARMAsmParser::shouldOmitCCOutOperand(StringRef Mnemonic,
@@ -5259,7 +5267,17 @@ bool ARMAsmParser::ParseInstruction(ParseInstructionInfo &Info, StringRef Name,
         doesIgnoreDataTypeSuffix(Mnemonic, ExtraToken))
       continue;
 
-    if (ExtraToken != ".n") {
+    // For for ARM mode generate an error if the .n qualifier is used.
+    if (ExtraToken == ".n" && !isThumb()) {
+      SMLoc Loc = SMLoc::getFromPointer(NameLoc.getPointer() + Start);
+      return Error(Loc, "instruction with .n (narrow) qualifier not allowed in "
+                   "arm mode");
+    }
+
+    // The .n qualifier is always discarded as that is what the tables
+    // and matcher expect.  In ARM mode the .w qualifier has no effect,
+    // so discard it to avoid errors that can be caused by the matcher.
+    if (ExtraToken != ".n" && (isThumb() || ExtraToken != ".w")) {
       SMLoc Loc = SMLoc::getFromPointer(NameLoc.getPointer() + Start);
       Operands.push_back(ARMOperand::CreateToken(ExtraToken, Loc));
     }
@@ -5855,7 +5873,9 @@ processInstruction(MCInst &Inst,
   case ARM::t2LDRpcrel:
     // Select the narrow version if the immediate will fit.
     if (Inst.getOperand(1).getImm() > 0 &&
-        Inst.getOperand(1).getImm() <= 0xff)
+        Inst.getOperand(1).getImm() <= 0xff &&
+        !(static_cast<ARMOperand*>(Operands[2])->isToken() &&
+         static_cast<ARMOperand*>(Operands[2])->getToken() == ".w"))
       Inst.setOpcode(ARM::tLDRpci);
     else
       Inst.setOpcode(ARM::t2LDRpci);
@@ -7816,6 +7836,9 @@ bool ARMAsmParser::parseDirectiveThumb(SMLoc L) {
     return Error(L, "unexpected token in directive");
   Parser.Lex();
 
+  if (!hasThumb())
+    return Error(L, "target does not support Thumb mode");
+
   if (!isThumb())
     SwitchMode();
   getParser().getStreamer().EmitAssemblerFlag(MCAF_Code16);
@@ -7829,6 +7852,9 @@ bool ARMAsmParser::parseDirectiveARM(SMLoc L) {
     return Error(L, "unexpected token in directive");
   Parser.Lex();
 
+  if (!hasARM())
+    return Error(L, "target does not support ARM mode");
+
   if (isThumb())
     SwitchMode();
   getParser().getStreamer().EmitAssemblerFlag(MCAF_Code32);
@@ -7838,8 +7864,8 @@ bool ARMAsmParser::parseDirectiveARM(SMLoc L) {
 /// parseDirectiveThumbFunc
 ///  ::= .thumbfunc symbol_name
 bool ARMAsmParser::parseDirectiveThumbFunc(SMLoc L) {
-  const MCAsmInfo &MAI = getParser().getStreamer().getContext().getAsmInfo();
-  bool isMachO = MAI.hasSubsectionsViaSymbols();
+  const MCAsmInfo *MAI = getParser().getStreamer().getContext().getAsmInfo();
+  bool isMachO = MAI->hasSubsectionsViaSymbols();
   StringRef Name;
   bool needFuncName = true;
 
@@ -7918,10 +7944,16 @@ bool ARMAsmParser::parseDirectiveCode(SMLoc L) {
   Parser.Lex();
 
   if (Val == 16) {
+    if (!hasThumb())
+      return Error(L, "target does not support Thumb mode");
+
     if (!isThumb())
       SwitchMode();
     getParser().getStreamer().EmitAssemblerFlag(MCAF_Code16);
   } else {
+    if (!hasARM())
+      return Error(L, "target does not support ARM mode");
+
     if (isThumb())
       SwitchMode();
     getParser().getStreamer().EmitAssemblerFlag(MCAF_Code32);

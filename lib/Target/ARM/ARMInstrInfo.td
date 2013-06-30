@@ -194,6 +194,8 @@ def HasV6T2          : Predicate<"Subtarget->hasV6T2Ops()">,
 def NoV6T2           : Predicate<"!Subtarget->hasV6T2Ops()">;
 def HasV7            : Predicate<"Subtarget->hasV7Ops()">,
                                  AssemblerPredicate<"HasV7Ops", "armv7">;
+def HasV8            : Predicate<"Subtarget->hasV8Ops()">,
+                                 AssemblerPredicate<"HasV8Ops", "armv8">;
 def NoVFP            : Predicate<"!Subtarget->hasVFP2()">;
 def HasVFP2          : Predicate<"Subtarget->hasVFP2()">,
                                  AssemblerPredicate<"FeatureVFP2", "VFP2">;
@@ -275,8 +277,8 @@ def HasSlowVDUP32 : Predicate<"Subtarget->isSwift()">;
 def UseVMOVSR : Predicate<"Subtarget->isCortexA9() || !Subtarget->useNEONForSinglePrecisionFP()">;
 def DontUseVMOVSR : Predicate<"!Subtarget->isCortexA9() && Subtarget->useNEONForSinglePrecisionFP()">;
 
-def IsLE             : Predicate<"TLI->isLittleEndian()">;
-def IsBE             : Predicate<"TLI->isBigEndian()">;
+def IsLE             : Predicate<"getTargetLowering()->isLittleEndian()">;
+def IsBE             : Predicate<"getTargetLowering()->isBigEndian()">;
 
 //===----------------------------------------------------------------------===//
 // ARM Flag Definitions.
@@ -1007,11 +1009,6 @@ def p_imm : Operand<i32> {
   let DecoderMethod = "DecodeCoprocessor";
 }
 
-def pf_imm : Operand<i32> {
-  let PrintMethod = "printPImmediate";
-  let ParserMatchClass = CoprocNumAsmOperand;
-}
-
 def CoprocRegAsmOperand : AsmOperandClass {
   let Name = "CoprocReg";
   let ParserMethod = "parseCoprocRegOperand";
@@ -1735,12 +1732,13 @@ def SEL : AI<(outs GPR:$Rd), (ins GPR:$Rn, GPR:$Rm), DPFrm, NoItinerary, "sel",
 
 // The 16-bit operand $val can be used by a debugger to store more information
 // about the breakpoint.
-def BKPT : AI<(outs), (ins imm0_65535:$val), MiscFrm, NoItinerary,
-              "bkpt", "\t$val", []>, Requires<[IsARM]> {
+def BKPT : AInoP<(outs), (ins imm0_65535:$val), MiscFrm, NoItinerary,
+                 "bkpt", "\t$val", []>, Requires<[IsARM]> {
   bits<16> val;
   let Inst{3-0} = val{3-0};
   let Inst{19-8} = val{15-4};
   let Inst{27-20} = 0b00010010;
+  let Inst{31-28} = 0xe; // AL
   let Inst{7-4} = 0b0111;
 }
 
@@ -4447,7 +4445,7 @@ def CDP : ABI<0b1110, (outs), (ins p_imm:$cop, imm0_15:$opc1,
   let Inst{23-20} = opc1;
 }
 
-def CDP2 : ABXI<0b1110, (outs), (ins pf_imm:$cop, imm0_15:$opc1,
+def CDP2 : ABXI<0b1110, (outs), (ins p_imm:$cop, imm0_15:$opc1,
                c_imm:$CRd, c_imm:$CRn, c_imm:$CRm, imm0_7:$opc2),
                NoItinerary, "cdp2\t$cop, $opc1, $CRd, $CRn, $CRm, $opc2",
                [(int_arm_cdp2 imm:$cop, imm:$opc1, imm:$CRd, imm:$CRn,
@@ -5187,10 +5185,10 @@ def : MnemonicAlias<"rfeed", "rfeib">;
 def : MnemonicAlias<"rfe", "rfeia">;
 
 // SRS aliases
-def : MnemonicAlias<"srsfa", "srsda">;
-def : MnemonicAlias<"srsea", "srsdb">;
-def : MnemonicAlias<"srsfd", "srsia">;
-def : MnemonicAlias<"srsed", "srsib">;
+def : MnemonicAlias<"srsfa", "srsib">;
+def : MnemonicAlias<"srsea", "srsia">;
+def : MnemonicAlias<"srsfd", "srsdb">;
+def : MnemonicAlias<"srsed", "srsda">;
 def : MnemonicAlias<"srs", "srsia">;
 
 // QSAX == QSUBADDX

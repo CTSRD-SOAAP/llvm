@@ -18,15 +18,17 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/Dwarf.h"
+#include "llvm/MC/MCExpr.h"
 #include <vector>
 
 namespace llvm {
   class AsmPrinter;
   class MCSymbol;
+  class MCSymbolRefExpr;
   class raw_ostream;
 
   //===--------------------------------------------------------------------===//
-  /// DIEAbbrevData - Dwarf abbreviation data, describes the one attribute of a
+  /// DIEAbbrevData - Dwarf abbreviation data, describes one attribute of a
   /// Dwarf abbreviation.
   class DIEAbbrevData {
     /// Attribute - Dwarf attribute code.
@@ -86,12 +88,6 @@ namespace llvm {
       Data.push_back(DIEAbbrevData(Attribute, Form));
     }
 
-    /// AddFirstAttribute - Adds a set of attribute information to the front
-    /// of the abbreviation.
-    void AddFirstAttribute(uint16_t Attribute, uint16_t Form) {
-      Data.insert(Data.begin(), DIEAbbrevData(Attribute, Form));
-    }
-
     /// Profile - Used to gather unique data for the abbreviation folding set.
     ///
     void Profile(FoldingSetNodeID &ID) const;
@@ -135,8 +131,10 @@ namespace llvm {
     ///
     SmallVector<DIEValue*, 12> Values;
 
+#ifndef NDEBUG
     // Private data for print()
     mutable unsigned IndentCount;
+#endif
   public:
     explicit DIE(unsigned Tag)
       : Offset(0), Size(0), Abbrev(Tag, dwarf::DW_CHILDREN_no), Parent(0) {}
@@ -268,9 +266,11 @@ namespace llvm {
   /// DIELabel - A label expression DIE.
   //
   class DIELabel : public DIEValue {
-    const MCSymbol *Label;
+    const MCSymbolRefExpr *Label;
   public:
-    explicit DIELabel(const MCSymbol *L) : DIEValue(isLabel), Label(L) {}
+    explicit DIELabel(const MCSymbolRefExpr *L) : DIEValue(isLabel), Label(L) {}
+    explicit DIELabel(const MCSymbol *Sym, MCContext &Ctxt)
+        : DIEValue(isLabel), Label(MCSymbolRefExpr::Create(Sym, Ctxt)) {}
 
     /// EmitValue - Emit label value.
     ///
@@ -278,7 +278,7 @@ namespace llvm {
 
     /// getValue - Get MCSymbol.
     ///
-    const MCSymbol *getValue()       const { return Label; }
+    const MCSymbolRefExpr *getValue() const { return Label; }
 
     /// SizeOf - Determine size of label value in bytes.
     ///

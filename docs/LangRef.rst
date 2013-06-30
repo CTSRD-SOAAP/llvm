@@ -733,14 +733,13 @@ Currently, only the following parameter attributes are defined:
     attribute for return values and can only be applied to one parameter.
 
 ``returned``
-    This indicates that the value of the function always returns the value
-    of the parameter as its return value. This is an optimization hint to
-    the code generator when generating the caller, allowing tail call
-    optimization and omission of register saves and restores in some cases;
-    it is not checked or enforced when generating the callee. The parameter
-    and the function return type must be valid operands for the
-    :ref:`bitcast instruction <i_bitcast>`. This is not a valid attribute for
-    return values and can only be applied to one parameter.
+    This indicates that the function always returns the argument as its return
+    value. This is an optimization hint to the code generator when generating
+    the caller, allowing tail call optimization and omission of register saves
+    and restores in some cases; it is not checked or enforced when generating
+    the callee. The parameter and the function return type must be valid
+    operands for the :ref:`bitcast instruction <i_bitcast>`. This is not a
+    valid attribute for return values and can only be applied to one parameter.
 
 .. _gc:
 
@@ -818,6 +817,12 @@ example:
     This attribute indicates that the inliner should attempt to inline
     this function into callers whenever possible, ignoring any active
     inlining size threshold for this caller.
+``builtin``
+    This indicates that the callee function at a call site should be
+    recognized as a built-in function, even though the function's declaration
+    uses the ``nobuiltin'' attribute. This is only valid at call sites for
+    direct calls to functions which are declared with the ``nobuiltin``
+    attribute.
 ``cold``
     This attribute indicates that this function is rarely called. When
     computing edge weights, basic blocks post-dominated by a cold
@@ -836,11 +841,11 @@ example:
     This attribute disables prologue / epilogue emission for the
     function. This can have very system-specific consequences.
 ``nobuiltin``
-    This indicates that the callee function at a call site is not
-    recognized as a built-in function. LLVM will retain the original call
-    and not replace it with equivalent code based on the semantics of the
-    built-in function. This is only valid at call sites, not on function
-    declarations or definitions.
+    This indicates that the callee function at a call site is not recognized as
+    a built-in function. LLVM will retain the original call and not replace it
+    with equivalent code based on the semantics of the built-in function, unless
+    the call site uses the ``builtin`` attribute. This is valid at call sites
+    and on function declarations and definitions.
 ``noduplicate``
     This attribute indicates that calls to the function cannot be
     duplicated. A call to a ``noduplicate`` function may be moved
@@ -2932,8 +2937,8 @@ The '``llvm.used``' Global Variable
 
 The ``@llvm.used`` global is an array which has
 :ref:`appending linkage <linkage_appending>`. This array contains a list of
-pointers to global variables, functions and aliases which may optionally have a
-pointer cast formed of bitcast or getelementptr. For example, a legal
+pointers to named global variables, functions and aliases which may optionally
+have a pointer cast formed of bitcast or getelementptr. For example, a legal
 use of it is:
 
 .. code-block:: llvm
@@ -2948,11 +2953,11 @@ use of it is:
 
 If a symbol appears in the ``@llvm.used`` list, then the compiler, assembler,
 and linker are required to treat the symbol as if there is a reference to the
-symbol that it cannot see. For example, if a variable has internal linkage and
-no references other than that from the ``@llvm.used`` list, it cannot be
-deleted. This is commonly used to represent references from inline asms and
-other things the compiler cannot "see", and corresponds to
-"``attribute((used))``" in GNU C.
+symbol that it cannot see (which is why they have to be named). For example, if
+a variable has internal linkage and no references other than that from the
+``@llvm.used`` list, it cannot be deleted. This is commonly used to represent
+references from inline asms and other things the compiler cannot "see", and
+corresponds to "``attribute((used))``" in GNU C.
 
 On some targets, the code generator must emit a directive to the
 assembler or object file to prevent the assembler and linker from
@@ -4641,16 +4646,16 @@ alignment results in undefined behavior. Underestimating the alignment
 may produce less efficient code. An alignment of 1 is always safe.
 
 The optional ``!nontemporal`` metadata must reference a single
-metatadata name ``<index>`` corresponding to a metadata node with one
+metadata name ``<index>`` corresponding to a metadata node with one
 ``i32`` entry of value 1. The existence of the ``!nontemporal``
-metatadata on the instruction tells the optimizer and code generator
+metadata on the instruction tells the optimizer and code generator
 that this load is not expected to be reused in the cache. The code
 generator may select special instructions to save cache bandwidth, such
 as the ``MOVNT`` instruction on x86.
 
 The optional ``!invariant.load`` metadata must reference a single
-metatadata name ``<index>`` corresponding to a metadata node with no
-entries. The existence of the ``!invariant.load`` metatadata on the
+metadata name ``<index>`` corresponding to a metadata node with no
+entries. The existence of the ``!invariant.load`` metadata on the
 instruction tells the optimizer and code generator that this load
 address points to memory which does not change value during program
 execution. The optimizer may then move this load around, for example, by
@@ -4726,9 +4731,9 @@ alignment results in undefined behavior. Underestimating the
 alignment may produce less efficient code. An alignment of 1 is always
 safe.
 
-The optional ``!nontemporal`` metadata must reference a single metatadata
+The optional ``!nontemporal`` metadata must reference a single metadata
 name ``<index>`` corresponding to a metadata node with one ``i32`` entry of
-value 1. The existence of the ``!nontemporal`` metatadata on the instruction
+value 1. The existence of the ``!nontemporal`` metadata on the instruction
 tells the optimizer and code generator that this load is not expected to
 be reused in the cache. The code generator may select special
 instructions to save cache bandwidth, such as the MOVNT instruction on

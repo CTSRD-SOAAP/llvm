@@ -18,6 +18,7 @@
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCObjectWriter.h"
 #include "llvm/MC/MCSymbol.h"
+#include "llvm/MC/MCSection.h"
 #include "llvm/Support/ErrorHandling.h"
 using namespace llvm;
 
@@ -259,6 +260,19 @@ void MCObjectStreamer::EmitBundleUnlock() {
   llvm_unreachable(BundlingNotImplementedMsg);
 }
 
+void MCObjectStreamer::EmitDwarfLocDirective(unsigned FileNo, unsigned Line,
+                                             unsigned Column, unsigned Flags,
+                                             unsigned Isa,
+                                             unsigned Discriminator,
+                                             StringRef FileName) {
+  // In case we see two .loc directives in a row, make sure the
+  // first one gets a line entry.
+  MCLineEntry::Make(this, getCurrentSection().first);
+
+  this->MCStreamer::EmitDwarfLocDirective(FileNo, Line, Column, Flags,
+                                          Isa, Discriminator, FileName);
+}
+
 void MCObjectStreamer::EmitDwarfAdvanceLineAddr(int64_t LineDelta,
                                                 const MCSymbol *LastLabel,
                                                 const MCSymbol *Label,
@@ -359,6 +373,12 @@ void MCObjectStreamer::EmitFill(uint64_t NumBytes, uint8_t FillValue,
   // FIXME: A MCFillFragment would be more memory efficient but MCExpr has
   //        problems evaluating expressions across multiple fragments.
   getOrCreateDataFragment()->getContents().append(NumBytes, FillValue);
+}
+
+void MCObjectStreamer::EmitZeros(uint64_t NumBytes, unsigned AddrSpace) {
+  assert(AddrSpace == 0 && "Address space must be 0!");
+  unsigned ItemSize = getCurrentSection().first->isVirtualSection() ? 0 : 1;
+  insert(new MCFillFragment(0, ItemSize, NumBytes));
 }
 
 void MCObjectStreamer::FinishImpl() {

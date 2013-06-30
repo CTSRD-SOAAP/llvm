@@ -647,8 +647,7 @@ Instruction *InstCombiner::FoldGEPICmp(GEPOperator *GEPLHS, Value *RHS,
 
       // If all indices are the same, just compare the base pointers.
       if (IndicesTheSame)
-        return new ICmpInst(ICmpInst::getSignedPredicate(Cond),
-                            GEPLHS->getOperand(0), GEPRHS->getOperand(0));
+        return new ICmpInst(Cond, GEPLHS->getOperand(0), GEPRHS->getOperand(0));
 
       // If we're comparing GEPs with two base pointers that only differ in type
       // and both GEPs have only constant indices or just one use, then fold
@@ -679,7 +678,7 @@ Instruction *InstCombiner::FoldGEPICmp(GEPOperator *GEPLHS, Value *RHS,
       }
     if (AllZeros)
       return FoldGEPICmp(GEPRHS, GEPLHS->getOperand(0),
-                          ICmpInst::getSwappedPredicate(Cond), I);
+                         ICmpInst::getSwappedPredicate(Cond), I);
 
     // If the other GEP has all zero indices, recurse.
     AllZeros = true;
@@ -1319,10 +1318,80 @@ Instruction *InstCombiner::visitICmpInstWithInstAndIntCst(ICmpInst &ICI,
   }
 
   case Instruction::Shl: {       // (icmp pred (shl X, ShAmt), CI)
-    ConstantInt *ShAmt = dyn_cast<ConstantInt>(LHSI->getOperand(1));
-    if (!ShAmt) break;
-
     uint32_t TypeBits = RHSV.getBitWidth();
+    ConstantInt *ShAmt = dyn_cast<ConstantInt>(LHSI->getOperand(1));
+    if (!ShAmt) {
+      Value *X;
+      // (1 << X) pred P2 -> X pred Log2(P2)
+      if (match(LHSI, m_Shl(m_One(), m_Value(X)))) {
+        bool RHSVIsPowerOf2 = RHSV.isPowerOf2();
+        ICmpInst::Predicate Pred = ICI.getPredicate();
+        if (ICI.isUnsigned()) {
+          if (!RHSVIsPowerOf2) {
+            // (1 << X) <  30 -> X <= 4
+            // (1 << X) <= 30 -> X <= 4
+            // (1 << X) >= 30 -> X >  4
+            // (1 << X) >  30 -> X >  4
+            if (Pred == ICmpInst::ICMP_ULT)
+              Pred = ICmpInst::ICMP_ULE;
+            else if (Pred == ICmpInst::ICMP_UGE)
+              Pred = ICmpInst::ICMP_UGT;
+          }
+          unsigned RHSLog2 = RHSV.logBase2();
+
+          // (1 << X) >= 2147483648 -> X >= 31 -> X == 31
+          // (1 << X) >  2147483648 -> X >  31 -> false
+          // (1 << X) <= 2147483648 -> X <= 31 -> true
+          // (1 << X) <  2147483648 -> X <  31 -> X != 31
+          if (RHSLog2 == TypeBits-1) {
+            if (Pred == ICmpInst::ICMP_UGE)
+              Pred = ICmpInst::ICMP_EQ;
+            else if (Pred == ICmpInst::ICMP_UGT)
+              return ReplaceInstUsesWith(ICI, Builder->getFalse());
+            else if (Pred == ICmpInst::ICMP_ULE)
+              return ReplaceInstUsesWith(ICI, Builder->getTrue());
+            else if (Pred == ICmpInst::ICMP_ULT)
+              Pred = ICmpInst::ICMP_NE;
+          }
+
+          return new ICmpInst(Pred, X,
+                              ConstantInt::get(RHS->getType(), RHSLog2));
+        } else if (ICI.isSigned()) {
+          if (RHSV.isAllOnesValue()) {
+            // (1 << X) <= -1 -> X == 31
+            if (Pred == ICmpInst::ICMP_SLE)
+              return new ICmpInst(ICmpInst::ICMP_EQ, X,
+                                  ConstantInt::get(RHS->getType(), TypeBits-1));
+
+            // (1 << X) >  -1 -> X != 31
+            if (Pred == ICmpInst::ICMP_SGT)
+              return new ICmpInst(ICmpInst::ICMP_NE, X,
+                                  ConstantInt::get(RHS->getType(), TypeBits-1));
+          } else if (!RHSV) {
+            // (1 << X) <  0 -> X == 31
+            // (1 << X) <= 0 -> X == 31
+            if (Pred == ICmpInst::ICMP_SLT || Pred == ICmpInst::ICMP_SLE)
+              return new ICmpInst(ICmpInst::ICMP_EQ, X,
+                                  ConstantInt::get(RHS->getType(), TypeBits-1));
+
+            // (1 << X) >= 0 -> X != 31
+            // (1 << X) >  0 -> X != 31
+            if (Pred == ICmpInst::ICMP_SGT || Pred == ICmpInst::ICMP_SGE)
+              return new ICmpInst(ICmpInst::ICMP_NE, X,
+                                  ConstantInt::get(RHS->getType(), TypeBits-1));
+          }
+        } else if (ICI.isEquality()) {
+          if (RHSVIsPowerOf2)
+            return new ICmpInst(
+                Pred, X, ConstantInt::get(RHS->getType(), RHSV.logBase2()));
+
+          return ReplaceInstUsesWith(
+              ICI, Pred == ICmpInst::ICMP_EQ ? Builder->getFalse()
+                                             : Builder->getTrue());
+        }
+      }
+      break;
+    }
 
     // Check that the shift amount is in range.  If not, don't perform
     // undefined shifts.  When the shift is visited it will be
@@ -2888,7 +2957,7 @@ Instruction *InstCombiner::FoldFCmp_IntToFP_Cst(FCmpInst &I,
   if (!LHSUnsigned) {
     // If the RHS value is > SignedMax, fold the comparison.  This handles +INF
     // and large values.
-    APFloat SMax(RHS.getSemantics(), APFloat::fcZero, false);
+    APFloat SMax(RHS.getSemantics());
     SMax.convertFromAPInt(APInt::getSignedMaxValue(IntWidth), true,
                           APFloat::rmNearestTiesToEven);
     if (SMax.compare(RHS) == APFloat::cmpLessThan) {  // smax < 13123.0
@@ -2900,7 +2969,7 @@ Instruction *InstCombiner::FoldFCmp_IntToFP_Cst(FCmpInst &I,
   } else {
     // If the RHS value is > UnsignedMax, fold the comparison. This handles
     // +INF and large values.
-    APFloat UMax(RHS.getSemantics(), APFloat::fcZero, false);
+    APFloat UMax(RHS.getSemantics());
     UMax.convertFromAPInt(APInt::getMaxValue(IntWidth), false,
                           APFloat::rmNearestTiesToEven);
     if (UMax.compare(RHS) == APFloat::cmpLessThan) {  // umax < 13123.0
@@ -2913,7 +2982,7 @@ Instruction *InstCombiner::FoldFCmp_IntToFP_Cst(FCmpInst &I,
 
   if (!LHSUnsigned) {
     // See if the RHS value is < SignedMin.
-    APFloat SMin(RHS.getSemantics(), APFloat::fcZero, false);
+    APFloat SMin(RHS.getSemantics());
     SMin.convertFromAPInt(APInt::getSignedMinValue(IntWidth), true,
                           APFloat::rmNearestTiesToEven);
     if (SMin.compare(RHS) == APFloat::cmpGreaterThan) { // smin > 12312.0
@@ -2924,7 +2993,7 @@ Instruction *InstCombiner::FoldFCmp_IntToFP_Cst(FCmpInst &I,
     }
   } else {
     // See if the RHS value is < UnsignedMin.
-    APFloat SMin(RHS.getSemantics(), APFloat::fcZero, false);
+    APFloat SMin(RHS.getSemantics());
     SMin.convertFromAPInt(APInt::getMinValue(IntWidth), true,
                           APFloat::rmNearestTiesToEven);
     if (SMin.compare(RHS) == APFloat::cmpGreaterThan) { // umin > 12312.0

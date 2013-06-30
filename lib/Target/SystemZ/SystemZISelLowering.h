@@ -129,7 +129,7 @@ public:
   virtual const char *getTargetNodeName(unsigned Opcode) const LLVM_OVERRIDE;
   virtual std::pair<unsigned, const TargetRegisterClass *>
     getRegForInlineAsmConstraint(const std::string &Constraint,
-                                 EVT VT) const LLVM_OVERRIDE;
+                                 MVT VT) const LLVM_OVERRIDE;
   virtual TargetLowering::ConstraintType
     getConstraintType(const std::string &Constraint) const LLVM_OVERRIDE;
   virtual TargetLowering::ConstraintWeight
@@ -203,6 +203,9 @@ private:
   // Implement EmitInstrWithCustomInserter for individual operation types.
   MachineBasicBlock *emitSelect(MachineInstr *MI,
                                 MachineBasicBlock *BB) const;
+  MachineBasicBlock *emitCondStore(MachineInstr *MI,
+                                   MachineBasicBlock *BB,
+                                   unsigned StoreOpcode, bool Invert) const;
   MachineBasicBlock *emitExt128(MachineInstr *MI,
                                 MachineBasicBlock *MBB,
                                 bool ClearEven, unsigned SubReg) const;

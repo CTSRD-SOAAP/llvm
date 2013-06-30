@@ -27,6 +27,7 @@
 #include "llvm/Target/Mangler.h"
 #include "llvm/Target/TargetFrameLowering.h"
 #include "llvm/Target/TargetMachine.h"
+#include "llvm/Target/TargetLoweringObjectFile.h"
 #include "llvm/Target/TargetRegisterInfo.h"
 
 using namespace llvm;
@@ -135,7 +136,7 @@ void CompileUnit::addString(DIE *Die, unsigned Attribute, StringRef String) {
     MCSymbol *Symb = DU->getStringPoolEntry(String);
     DIEValue *Value;
     if (Asm->needsRelocationsForDwarfStringPool())
-      Value = new (DIEValueAllocator) DIELabel(Symb);
+      Value = new (DIEValueAllocator) DIELabel(Symb, Asm->OutContext);
     else {
       MCSymbol *StringPool = DU->getStringPoolSym();
       Value = new (DIEValueAllocator) DIEDelta(Symb, StringPool);
@@ -155,7 +156,7 @@ void CompileUnit::addLocalString(DIE *Die, unsigned Attribute,
   MCSymbol *Symb = DU->getStringPoolEntry(String);
   DIEValue *Value;
   if (Asm->needsRelocationsForDwarfStringPool())
-    Value = new (DIEValueAllocator) DIELabel(Symb);
+    Value = new (DIEValueAllocator) DIELabel(Symb, Asm->OutContext);
   else {
     MCSymbol *StringPool = DU->getStringPoolSym();
     Value = new (DIEValueAllocator) DIEDelta(Symb, StringPool);
@@ -166,9 +167,14 @@ void CompileUnit::addLocalString(DIE *Die, unsigned Attribute,
 /// addLabel - Add a Dwarf label attribute data and value.
 ///
 void CompileUnit::addLabel(DIE *Die, unsigned Attribute, unsigned Form,
-                           const MCSymbol *Label) {
+                           const MCSymbolRefExpr *Label) {
   DIEValue *Value = new (DIEValueAllocator) DIELabel(Label);
   Die->addValue(Attribute, Form, Value);
+}
+
+void CompileUnit::addLabel(DIE *Die, unsigned Attribute, unsigned Form,
+                           const MCSymbol *Label) {
+  addLabel(Die, Attribute, Form, MCSymbolRefExpr::Create(Label, Asm->OutContext));
 }
 
 /// addLabelAddress - Add a dwarf label attribute data and value using
@@ -178,7 +184,7 @@ void CompileUnit::addLabelAddress(DIE *Die, unsigned Attribute,
                                   MCSymbol *Label) {
   if (!DD->useSplitDwarf()) {
     if (Label != NULL) {
-      DIEValue *Value = new (DIEValueAllocator) DIELabel(Label);
+      DIEValue *Value = new (DIEValueAllocator) DIELabel(Label, Asm->OutContext);
       Die->addValue(Attribute, dwarf::DW_FORM_addr, Value);
     } else {
       DIEValue *Value = new (DIEValueAllocator) DIEInteger(0);
@@ -194,7 +200,7 @@ void CompileUnit::addLabelAddress(DIE *Die, unsigned Attribute,
 /// addOpAddress - Add a dwarf op address data and value using the
 /// form given and an op of either DW_FORM_addr or DW_FORM_GNU_addr_index.
 ///
-void CompileUnit::addOpAddress(DIE *Die, MCSymbol *Sym) {
+void CompileUnit::addOpAddress(DIE *Die, const MCSymbol *Sym) {
 
   if (!DD->useSplitDwarf()) {
     addUInt(Die, 0, dwarf::DW_FORM_data1, dwarf::DW_OP_addr);
@@ -341,14 +347,15 @@ void CompileUnit::addSourceLine(DIE *Die, DINameSpace NS) {
 
 /// addVariableAddress - Add DW_AT_location attribute for a
 /// DbgVariable based on provided MachineLocation.
-void CompileUnit::addVariableAddress(DbgVariable *&DV, DIE *Die,
+void CompileUnit::addVariableAddress(const DbgVariable &DV, DIE *Die,
                                      MachineLocation Location) {
-  if (DV->variableHasComplexAddress())
+  if (DV.variableHasComplexAddress())
     addComplexAddress(DV, Die, dwarf::DW_AT_location, Location);
-  else if (DV->isBlockByrefVariable())
+  else if (DV.isBlockByrefVariable())
     addBlockByrefAddress(DV, Die, dwarf::DW_AT_location, Location);
   else
-    addAddress(Die, dwarf::DW_AT_location, Location);
+    addAddress(Die, dwarf::DW_AT_location, Location,
+               DV.getVariable().isIndirect());
 }
 
 /// addRegisterOp - Add register operand.
@@ -384,13 +391,17 @@ void CompileUnit::addRegisterOffset(DIE *TheDie, unsigned Reg,
 /// addAddress - Add an address attribute to a die based on the location
 /// provided.
 void CompileUnit::addAddress(DIE *Die, unsigned Attribute,
-                             const MachineLocation &Location) {
+                             const MachineLocation &Location, bool Indirect) {
   DIEBlock *Block = new (DIEValueAllocator) DIEBlock();
 
-  if (Location.isReg())
+  if (Location.isReg() && !Indirect)
     addRegisterOp(Block, Location.getReg());
-  else
+  else {
     addRegisterOffset(Block, Location.getReg(), Location.getOffset());
+    if (Indirect && !Location.isReg()) {
+      addUInt(Block, 0, dwarf::DW_FORM_data1, dwarf::DW_OP_deref);
+    }
+  }
 
   // Now attach the location information to the DIE.
   addBlock(Die, Attribute, 0, Block);
@@ -401,17 +412,17 @@ void CompileUnit::addAddress(DIE *Die, unsigned Attribute,
 /// given the extra address information encoded in the DIVariable, starting from
 /// the starting location.  Add the DWARF information to the die.
 ///
-void CompileUnit::addComplexAddress(DbgVariable *&DV, DIE *Die,
+void CompileUnit::addComplexAddress(const DbgVariable &DV, DIE *Die,
                                     unsigned Attribute,
                                     const MachineLocation &Location) {
   DIEBlock *Block = new (DIEValueAllocator) DIEBlock();
-  unsigned N = DV->getNumAddrElements();
+  unsigned N = DV.getNumAddrElements();
   unsigned i = 0;
   if (Location.isReg()) {
-    if (N >= 2 && DV->getAddrElement(0) == DIBuilder::OpPlus) {
+    if (N >= 2 && DV.getAddrElement(0) == DIBuilder::OpPlus) {
       // If first address element is OpPlus then emit
       // DW_OP_breg + Offset instead of DW_OP_reg + Offset.
-      addRegisterOffset(Block, Location.getReg(), DV->getAddrElement(1));
+      addRegisterOffset(Block, Location.getReg(), DV.getAddrElement(1));
       i = 2;
     } else
       addRegisterOp(Block, Location.getReg());
@@ -420,10 +431,10 @@ void CompileUnit::addComplexAddress(DbgVariable *&DV, DIE *Die,
     addRegisterOffset(Block, Location.getReg(), Location.getOffset());
 
   for (;i < N; ++i) {
-    uint64_t Element = DV->getAddrElement(i);
+    uint64_t Element = DV.getAddrElement(i);
     if (Element == DIBuilder::OpPlus) {
       addUInt(Block, 0, dwarf::DW_FORM_data1, dwarf::DW_OP_plus_uconst);
-      addUInt(Block, 0, dwarf::DW_FORM_udata, DV->getAddrElement(++i));
+      addUInt(Block, 0, dwarf::DW_FORM_udata, DV.getAddrElement(++i));
     } else if (Element == DIBuilder::OpDeref) {
       if (!Location.isReg())
         addUInt(Block, 0, dwarf::DW_FORM_data1, dwarf::DW_OP_deref);
@@ -494,15 +505,15 @@ void CompileUnit::addComplexAddress(DbgVariable *&DV, DIE *Die,
 /// starting location.  Add the DWARF information to the die.  For
 /// more information, read large comment just above here.
 ///
-void CompileUnit::addBlockByrefAddress(DbgVariable *&DV, DIE *Die,
+void CompileUnit::addBlockByrefAddress(const DbgVariable &DV, DIE *Die,
                                        unsigned Attribute,
                                        const MachineLocation &Location) {
-  DIType Ty = DV->getType();
+  DIType Ty = DV.getType();
   DIType TmpTy = Ty;
   unsigned Tag = Ty.getTag();
   bool isPointer = false;
 
-  StringRef varName = DV->getName();
+  StringRef varName = DV.getName();
 
   if (Tag == dwarf::DW_TAG_pointer_type) {
     DIDerivedType DTy = DIDerivedType(Ty);
@@ -1082,7 +1093,8 @@ CompileUnit::getOrCreateTemplateTypeParameterDIE(DITemplateTypeParameter TP) {
 
   ParamDIE = new DIE(dwarf::DW_TAG_template_type_parameter);
   addType(ParamDIE, TP.getType());
-  addString(ParamDIE, dwarf::DW_AT_name, TP.getName());
+  if (!TP.getName().empty())
+    addString(ParamDIE, dwarf::DW_AT_name, TP.getName());
   return ParamDIE;
 }
 
@@ -1094,7 +1106,7 @@ CompileUnit::getOrCreateTemplateValueParameterDIE(DITemplateValueParameter TPV){
   if (ParamDIE)
     return ParamDIE;
 
-  ParamDIE = new DIE(dwarf::DW_TAG_template_value_parameter);
+  ParamDIE = new DIE(TPV.getTag());
   addType(ParamDIE, TPV.getType());
   if (!TPV.getName().empty())
     addString(ParamDIE, dwarf::DW_AT_name, TPV.getName());
@@ -1110,6 +1122,14 @@ CompileUnit::getOrCreateTemplateValueParameterDIE(DITemplateValueParameter TPV){
       // parameter, rather than a pointer to it.
       addUInt(Block, 0, dwarf::DW_FORM_data1, dwarf::DW_OP_stack_value);
       addBlock(ParamDIE, dwarf::DW_AT_location, 0, Block);
+    } else if (TPV.getTag() == dwarf::DW_TAG_GNU_template_template_param) {
+      assert(isa<MDString>(Val));
+      addString(ParamDIE, dwarf::DW_AT_GNU_template_name,
+                cast<MDString>(Val)->getString());
+    } else if (TPV.getTag() == dwarf::DW_TAG_GNU_template_parameter_pack) {
+      assert(isa<MDNode>(Val));
+      DIArray A(cast<MDNode>(Val));
+      addTemplateParams(*ParamDIE, A);
     }
   }
 
@@ -1332,7 +1352,23 @@ void CompileUnit::createGlobalVariableDIE(const MDNode *N) {
   if (isGlobalVariable) {
     addToAccelTable = true;
     DIEBlock *Block = new (DIEValueAllocator) DIEBlock();
-    addOpAddress(Block, Asm->Mang->getSymbol(GV.getGlobal()));
+    const MCSymbol *Sym = Asm->Mang->getSymbol(GV.getGlobal());
+    if (GV.getGlobal()->isThreadLocal()) {
+      // FIXME: Make this work with -gsplit-dwarf.
+      unsigned PointerSize = Asm->getDataLayout().getPointerSize();
+      assert((PointerSize == 4 || PointerSize == 8) &&
+             "Add support for other sizes if necessary");
+      // Based on GCC's support for TLS:
+      // 1) Start with a constNu of the appropriate pointer size
+      addUInt(Block, 0, dwarf::DW_FORM_data1,
+              PointerSize == 4 ? dwarf::DW_OP_const4u : dwarf::DW_OP_const8u);
+      // 2) containing the (relocated) address of the TLS variable
+      addLabel(Block, 0, dwarf::DW_FORM_udata,
+               Asm->getObjFileLowering().getDebugThreadLocalSymbol(Sym));
+      // 3) followed by a custom OP to tell the debugger about TLS (presumably)
+      addUInt(Block, 0, dwarf::DW_FORM_data1, dwarf::DW_OP_lo_user);
+    } else
+      addOpAddress(Block, Sym);
     // Do not create specification DIE if context is either compile unit
     // or a subprogram.
     if (GVContext && GV.isDefinition() && !GVContext.isCompileUnit() &&
@@ -1394,8 +1430,6 @@ void CompileUnit::createGlobalVariableDIE(const MDNode *N) {
     if (GV.getLinkageName() != "" && GV.getName() != GV.getLinkageName())
       addAccelName(GV.getLinkageName(), AddrDIE);
   }
-
-  return;
 }
 
 /// constructSubrangeDIE - Construct subrange DIE from DISubrange.
@@ -1484,7 +1518,8 @@ void CompileUnit::constructContainingTypeDIEs() {
 }
 
 /// constructVariableDIE - Construct a DIE for the given DbgVariable.
-DIE *CompileUnit::constructVariableDIE(DbgVariable *DV, bool isScopeAbstract) {
+DIE *CompileUnit::constructVariableDIE(DbgVariable *DV,
+                                       bool isScopeAbstract) {
   StringRef Name = DV->getName();
 
   // Translate tag to proper Dwarf tag.
@@ -1515,9 +1550,8 @@ DIE *CompileUnit::constructVariableDIE(DbgVariable *DV, bool isScopeAbstract) {
 
   unsigned Offset = DV->getDotDebugLocOffset();
   if (Offset != ~0U) {
-    addLabel(VariableDie, dwarf::DW_AT_location,
-                         dwarf::DW_FORM_data4,
-                         Asm->GetTempSymbol("debug_loc", Offset));
+    addLabel(VariableDie, dwarf::DW_AT_location, dwarf::DW_FORM_data4,
+             Asm->GetTempSymbol("debug_loc", Offset));
     DV->setDIE(VariableDie);
     return VariableDie;
   }
@@ -1525,43 +1559,23 @@ DIE *CompileUnit::constructVariableDIE(DbgVariable *DV, bool isScopeAbstract) {
   // Check if variable is described by a DBG_VALUE instruction.
   if (const MachineInstr *DVInsn = DV->getMInsn()) {
     bool updated = false;
-    if (DVInsn->getNumOperands() == 3) {
-      if (DVInsn->getOperand(0).isReg()) {
-        const MachineOperand RegOp = DVInsn->getOperand(0);
-        const TargetRegisterInfo *TRI = Asm->TM.getRegisterInfo();
-        if (DVInsn->getOperand(1).isImm() &&
-            TRI->getFrameRegister(*Asm->MF) == RegOp.getReg()) {
-          unsigned FrameReg = 0;
-          const TargetFrameLowering *TFI = Asm->TM.getFrameLowering();
-          int Offset =
-            TFI->getFrameIndexReference(*Asm->MF,
-                                        DVInsn->getOperand(1).getImm(),
-                                        FrameReg);
-          MachineLocation Location(FrameReg, Offset);
-          addVariableAddress(DV, VariableDie, Location);
-
-        } else if (RegOp.getReg())
-          addVariableAddress(DV, VariableDie,
-                                         MachineLocation(RegOp.getReg()));
-        updated = true;
-      }
-      else if (DVInsn->getOperand(0).isImm())
-        updated =
-          addConstantValue(VariableDie, DVInsn->getOperand(0),
-                                       DV->getType());
-      else if (DVInsn->getOperand(0).isFPImm())
-        updated =
-          addConstantFPValue(VariableDie, DVInsn->getOperand(0));
-      else if (DVInsn->getOperand(0).isCImm())
-        updated =
-          addConstantValue(VariableDie,
-                                       DVInsn->getOperand(0).getCImm(),
-                                       DV->getType().isUnsignedDIType());
-    } else {
-      addVariableAddress(DV, VariableDie,
-                                     Asm->getDebugValueLocation(DVInsn));
+    assert(DVInsn->getNumOperands() == 3);
+    if (DVInsn->getOperand(0).isReg()) {
+      const MachineOperand RegOp = DVInsn->getOperand(0);
+      if (int64_t Offset = DVInsn->getOperand(1).getImm()) {
+        MachineLocation Location(RegOp.getReg(), Offset);
+        addVariableAddress(*DV, VariableDie, Location);
+      } else if (RegOp.getReg())
+        addVariableAddress(*DV, VariableDie, MachineLocation(RegOp.getReg()));
       updated = true;
-    }
+    } else if (DVInsn->getOperand(0).isImm())
+      updated =
+          addConstantValue(VariableDie, DVInsn->getOperand(0), DV->getType());
+    else if (DVInsn->getOperand(0).isFPImm())
+      updated = addConstantFPValue(VariableDie, DVInsn->getOperand(0));
+    else if (DVInsn->getOperand(0).isCImm())
+      updated = addConstantValue(VariableDie, DVInsn->getOperand(0).getCImm(),
+                                 DV->getType().isUnsignedDIType());
     if (!updated) {
       // If variableDie is not updated then DBG_VALUE instruction does not
       // have valid variable info.
@@ -1579,7 +1593,7 @@ DIE *CompileUnit::constructVariableDIE(DbgVariable *DV, bool isScopeAbstract) {
       int Offset =
         TFI->getFrameIndexReference(*Asm->MF, FI, FrameReg);
       MachineLocation Location(FrameReg, Offset);
-      addVariableAddress(DV, VariableDie, Location);
+      addVariableAddress(*DV, VariableDie, Location);
     }
   }
 
