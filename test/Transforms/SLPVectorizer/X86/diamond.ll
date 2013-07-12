@@ -50,8 +50,9 @@ entry:
 ; }
 
 ; CHECK: @extr_user
-; CHECK: load i32*
+; CHECK: load <4 x i32>
 ; CHECK: store <4 x i32>
+; CHECK: extractelement <4 x i32>
 ; CHECK-NEXT: ret
 define i32 @extr_user(i32* noalias nocapture %B, i32* noalias nocapture %A, i32 %n, i32 %m) {
 entry:
@@ -79,8 +80,9 @@ entry:
 
 ; In this example we have an external user that is not the first element in the vector.
 ; CHECK: @extr_user1
-; CHECK: load i32*
+; CHECK: load <4 x i32>
 ; CHECK: store <4 x i32>
+; CHECK: extractelement <4 x i32>
 ; CHECK-NEXT: ret
 define i32 @extr_user1(i32* noalias nocapture %B, i32* noalias nocapture %A, i32 %n, i32 %m) {
 entry:

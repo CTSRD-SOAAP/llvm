@@ -1484,7 +1484,7 @@ namespace {
                           unsigned &PredReg, ARMCC::CondCodes &Pred,
                           bool &isT2);
     bool RescheduleOps(MachineBasicBlock *MBB,
-                       SmallVector<MachineInstr*, 4> &Ops,
+                       SmallVectorImpl<MachineInstr *> &Ops,
                        unsigned Base, bool isLd,
                        DenseMap<MachineInstr*, unsigned> &MI2LocMap);
     bool RescheduleLoadStoreInstrs(MachineBasicBlock *MBB);
@@ -1656,7 +1656,7 @@ namespace {
 }
 
 bool ARMPreAllocLoadStoreOpt::RescheduleOps(MachineBasicBlock *MBB,
-                                 SmallVector<MachineInstr*, 4> &Ops,
+                                 SmallVectorImpl<MachineInstr *> &Ops,
                                  unsigned Base, bool isLd,
                                  DenseMap<MachineInstr*, unsigned> &MI2LocMap) {
   bool RetVal = false;
@@ -1858,9 +1858,7 @@ ARMPreAllocLoadStoreOpt::RescheduleLoadStoreInstrs(MachineBasicBlock *MBB) {
           if (!StopHere)
             BI->second.push_back(MI);
         } else {
-          SmallVector<MachineInstr*, 4> MIs;
-          MIs.push_back(MI);
-          Base2LdsMap[Base] = MIs;
+          Base2LdsMap[Base].push_back(MI);
           LdBases.push_back(Base);
         }
       } else {
@@ -1876,9 +1874,7 @@ ARMPreAllocLoadStoreOpt::RescheduleLoadStoreInstrs(MachineBasicBlock *MBB) {
           if (!StopHere)
             BI->second.push_back(MI);
         } else {
-          SmallVector<MachineInstr*, 4> MIs;
-          MIs.push_back(MI);
-          Base2StsMap[Base] = MIs;
+          Base2StsMap[Base].push_back(MI);
           StBases.push_back(Base);
         }
       }
@@ -1894,7 +1890,7 @@ ARMPreAllocLoadStoreOpt::RescheduleLoadStoreInstrs(MachineBasicBlock *MBB) {
     // Re-schedule loads.
     for (unsigned i = 0, e = LdBases.size(); i != e; ++i) {
       unsigned Base = LdBases[i];
-      SmallVector<MachineInstr*, 4> &Lds = Base2LdsMap[Base];
+      SmallVectorImpl<MachineInstr *> &Lds = Base2LdsMap[Base];
       if (Lds.size() > 1)
         RetVal |= RescheduleOps(MBB, Lds, Base, true, MI2LocMap);
     }
@@ -1902,7 +1898,7 @@ ARMPreAllocLoadStoreOpt::RescheduleLoadStoreInstrs(MachineBasicBlock *MBB) {
     // Re-schedule stores.
     for (unsigned i = 0, e = StBases.size(); i != e; ++i) {
       unsigned Base = StBases[i];
-      SmallVector<MachineInstr*, 4> &Sts = Base2StsMap[Base];
+      SmallVectorImpl<MachineInstr *> &Sts = Base2StsMap[Base];
       if (Sts.size() > 1)
         RetVal |= RescheduleOps(MBB, Sts, Base, false, MI2LocMap);
     }

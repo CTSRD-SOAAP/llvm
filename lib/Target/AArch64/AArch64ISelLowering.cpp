@@ -249,9 +249,6 @@ AArch64TargetLowering::AArch64TargetLowering(AArch64TargetMachine &TM)
   setTruncStoreAction(MVT::f64, MVT::f16, Expand);
   setTruncStoreAction(MVT::f32, MVT::f16, Expand);
 
-  setOperationAction(ISD::EXCEPTIONADDR, MVT::i64, Expand);
-  setOperationAction(ISD::EHSELECTION, MVT::i64, Expand);
-
   setExceptionPointerRegister(AArch64::X0);
   setExceptionSelectorRegister(AArch64::X1);
 }
@@ -2799,6 +2796,27 @@ AArch64TargetLowering::PerformDAGCombine(SDNode *N,
   case ISD::SRA: return PerformSRACombine(N, DCI);
   }
   return SDValue();
+}
+
+bool
+AArch64TargetLowering::isFMAFasterThanFMulAndFAdd(EVT VT) const {
+  VT = VT.getScalarType();
+
+  if (!VT.isSimple())
+    return false;
+
+  switch (VT.getSimpleVT().SimpleTy) {
+  case MVT::f16:
+  case MVT::f32:
+  case MVT::f64:
+    return true;
+  case MVT::f128:
+    return false;
+  default:
+    break;
+  }
+
+  return false;
 }
 
 AArch64TargetLowering::ConstraintType

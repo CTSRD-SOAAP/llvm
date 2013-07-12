@@ -555,27 +555,6 @@ error_code equivalent(const Twine &A, const Twine &B, bool &result) {
   return error_code::success();
 }
 
-error_code file_size(const Twine &path, uint64_t &result) {
-  SmallString<128> path_storage;
-  SmallVector<wchar_t, 128> path_utf16;
-
-  if (error_code ec = UTF8ToUTF16(path.toStringRef(path_storage),
-                                  path_utf16))
-    return ec;
-
-  WIN32_FILE_ATTRIBUTE_DATA FileData;
-  if (!::GetFileAttributesExW(path_utf16.begin(),
-                              ::GetFileExInfoStandard,
-                              &FileData))
-    return windows_error(::GetLastError());
-
-  result =
-    (uint64_t(FileData.nFileSizeHigh) << (sizeof(FileData.nFileSizeLow) * 8))
-    + FileData.nFileSizeLow;
-
-  return error_code::success();
-}
-
 error_code getUniqueID(const Twine Path, uint64_t &Result) {
   file_status Status;
   if (error_code E = status(Path, Status))
@@ -689,40 +668,6 @@ handle_status_error:
     return ec;
   }
 
-  return error_code::success();
-}
-
-
-// Modifies permissions on a file.
-error_code permissions(const Twine &path, perms prms) {
-#if 0 // verify code below before enabling:
-  // If the permissions bits are not trying to modify
-  // "write" permissions, there is nothing to do.
-  if (!(prms & (owner_write|group_write|others_write)))
-    return error_code::success();
-  
-  SmallString<128> path_storage;
-  SmallVector<wchar_t, 128> path_utf16;
-
-  if (error_code ec = UTF8ToUTF16(path.toStringRef(path_storage),
-                                  path_utf16))
-    return ec;
-
-  DWORD attributes = ::GetFileAttributesW(path_utf16.begin());
-
-  if (prms & add_perms) {
-    attributes &= ~FILE_ATTRIBUTE_READONLY;
-  }
-  else if (prms & remove_perms) {
-    attributes |= FILE_ATTRIBUTE_READONLY;
-  }
-  else {
-    assert(0 && "neither add_perms or remove_perms is set");
-  }
-
-  if ( ! ::SetFileAttributesW(path_utf16.begin(), attributes))
-    return windows_error(::GetLastError());
-#endif    
   return error_code::success();
 }
 

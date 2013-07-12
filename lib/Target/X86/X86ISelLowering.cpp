@@ -563,10 +563,6 @@ void X86TargetLowering::resetOperationActions() {
     setOperationAction(ISD::EH_LABEL, MVT::Other, Expand);
   }
 
-  setOperationAction(ISD::EXCEPTIONADDR, MVT::i64, Expand);
-  setOperationAction(ISD::EHSELECTION,   MVT::i64, Expand);
-  setOperationAction(ISD::EXCEPTIONADDR, MVT::i32, Expand);
-  setOperationAction(ISD::EHSELECTION,   MVT::i32, Expand);
   if (Subtarget->is64Bit()) {
     setExceptionPointerRegister(X86::RAX);
     setExceptionSelectorRegister(X86::RDX);
@@ -1884,13 +1880,19 @@ static bool IsTailCallConvention(CallingConv::ID CC) {
           CC == CallingConv::HiPE);
 }
 
+/// \brief Return true if the calling convention is a C calling convention.
+static bool IsCCallConvention(CallingConv::ID CC) {
+  return (CC == CallingConv::C || CC == CallingConv::X86_64_Win64 ||
+          CC == CallingConv::X86_64_SysV);
+}
+
 bool X86TargetLowering::mayBeEmittedAsTailCall(CallInst *CI) const {
   if (!CI->isTailCall() || getTargetMachine().Options.DisableTailCalls)
     return false;
 
   CallSite CS(CI);
   CallingConv::ID CalleeCC = CS.getCallingConv();
-  if (!IsTailCallConvention(CalleeCC) && CalleeCC != CallingConv::C)
+  if (!IsTailCallConvention(CalleeCC) && !IsCCallConvention(CalleeCC))
     return false;
 
   return true;
@@ -1965,7 +1967,7 @@ X86TargetLowering::LowerFormalArguments(SDValue Chain,
   MachineFrameInfo *MFI = MF.getFrameInfo();
   bool Is64Bit = Subtarget->is64Bit();
   bool IsWindows = Subtarget->isTargetWindows();
-  bool IsWin64 = Subtarget->isTargetWin64();
+  bool IsWin64 = Subtarget->isCallingConvWin64(CallConv);
 
   assert(!(isVarArg && IsTailCallConvention(CallConv)) &&
          "Var args not supported with calling convention fastcc, ghc or hipe");
@@ -1976,9 +1978,8 @@ X86TargetLowering::LowerFormalArguments(SDValue Chain,
                  ArgLocs, *DAG.getContext());
 
   // Allocate shadow area for Win64
-  if (IsWin64) {
+  if (IsWin64)
     CCInfo.AllocateStack(32, 8);
-  }
 
   CCInfo.AnalyzeFormalArguments(Ins, CC_X86);
 
@@ -2291,7 +2292,7 @@ X86TargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
 
   MachineFunction &MF = DAG.getMachineFunction();
   bool Is64Bit        = Subtarget->is64Bit();
-  bool IsWin64        = Subtarget->isTargetWin64();
+  bool IsWin64        = Subtarget->isCallingConvWin64(CallConv);
   bool IsWindows      = Subtarget->isTargetWindows();
   StructReturnType SR = callIsStructReturn(Outs);
   bool IsSibcall      = false;
@@ -2324,9 +2325,8 @@ X86TargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
                  ArgLocs, *DAG.getContext());
 
   // Allocate shadow area for Win64
-  if (IsWin64) {
+  if (IsWin64)
     CCInfo.AllocateStack(32, 8);
-  }
 
   CCInfo.AnalyzeCallOperands(Outs, CC_X86);
 
@@ -2837,13 +2837,12 @@ X86TargetLowering::IsEligibleForTailCallOptimization(SDValue Callee,
                                     const SmallVectorImpl<SDValue> &OutVals,
                                     const SmallVectorImpl<ISD::InputArg> &Ins,
                                                      SelectionDAG &DAG) const {
-  if (!IsTailCallConvention(CalleeCC) &&
-      CalleeCC != CallingConv::C)
+  if (!IsTailCallConvention(CalleeCC) && !IsCCallConvention(CalleeCC))
     return false;
 
   // If -tailcallopt is specified, make fastcc functions tail-callable.
   const MachineFunction &MF = DAG.getMachineFunction();
-  const Function *CallerF = DAG.getMachineFunction().getFunction();
+  const Function *CallerF = MF.getFunction();
 
   // If the function return type is x86_fp80 and the callee return type is not,
   // then the FP_EXTEND of the call result is not a nop. It's not safe to
@@ -2853,6 +2852,8 @@ X86TargetLowering::IsEligibleForTailCallOptimization(SDValue Callee,
 
   CallingConv::ID CallerCC = CallerF->getCallingConv();
   bool CCMatch = CallerCC == CalleeCC;
+  bool IsCalleeWin64 = Subtarget->isCallingConvWin64(CalleeCC);
+  bool IsCallerWin64 = Subtarget->isCallingConvWin64(CallerCC);
 
   if (getTargetMachine().Options.GuaranteedTailCallOpt) {
     if (IsTailCallConvention(CalleeCC) && CCMatch)
@@ -2886,7 +2887,7 @@ X86TargetLowering::IsEligibleForTailCallOptimization(SDValue Callee,
 
     // Optimizing for varargs on Win64 is unlikely to be safe without
     // additional testing.
-    if (Subtarget->isTargetWin64())
+    if (IsCalleeWin64 || IsCallerWin64)
       return false;
 
     SmallVector<CCValAssign, 16> ArgLocs;
@@ -2961,9 +2962,8 @@ X86TargetLowering::IsEligibleForTailCallOptimization(SDValue Callee,
                    getTargetMachine(), ArgLocs, *DAG.getContext());
 
     // Allocate shadow area for Win64
-    if (Subtarget->isTargetWin64()) {
+    if (IsCalleeWin64)
       CCInfo.AllocateStack(32, 8);
-    }
 
     CCInfo.AnalyzeCallOperands(Outs, CC_X86);
     if (CCInfo.getNextStackOffset()) {
@@ -8837,7 +8837,7 @@ SDValue X86TargetLowering::LowerVectorAllZeroTest(SDValue Op,
   Opnds.push_back(N->getOperand(1));
 
   for (unsigned Slot = 0, e = Opnds.size(); Slot < e; ++Slot) {
-    SmallVector<SDValue, 8>::const_iterator I = Opnds.begin() + Slot;
+    SmallVectorImpl<SDValue>::const_iterator I = Opnds.begin() + Slot;
     // BFS traverse all OR'd operands.
     if (I->getOpcode() == ISD::OR) {
       Opnds.push_back(I->getOperand(0));
@@ -12970,6 +12970,27 @@ bool X86TargetLowering::isZExtFree(SDValue Val, EVT VT2) const {
   return false;
 }
 
+bool
+X86TargetLowering::isFMAFasterThanFMulAndFAdd(EVT VT) const {
+  if (!(Subtarget->hasFMA() || Subtarget->hasFMA4()))
+    return false;
+
+  VT = VT.getScalarType();
+
+  if (!VT.isSimple())
+    return false;
+
+  switch (VT.getSimpleVT().SimpleTy) {
+  case MVT::f32:
+  case MVT::f64:
+    return true;
+  default:
+    break;
+  }
+
+  return false;
+}
+
 bool X86TargetLowering::isNarrowingProfitable(EVT VT1, EVT VT2) const {
   // i16 instructions are longer (0x66 prefix) and potentially slower.
   return !(VT1 == MVT::i32 && VT2 == MVT::i16);
@@ -14436,12 +14457,11 @@ X86TargetLowering::EmitLoweredWinAlloca(MachineInstr *MI,
     } else {
       // __chkstk(MSVCRT): does not update stack pointer.
       // Clobbers R10, R11 and EFLAGS.
-      // FIXME: RAX(allocated size) might be reused and not killed.
       BuildMI(*BB, MI, DL, TII->get(X86::W64ALLOCA))
         .addExternalSymbol("__chkstk")
         .addReg(X86::RAX, RegState::Implicit)
         .addReg(X86::EFLAGS, RegState::Define | RegState::Implicit);
-      // RAX has the offset to subtracted from RSP.
+      // RAX has the offset to be subtracted from RSP.
       BuildMI(*BB, MI, DL, TII->get(X86::SUB64rr), X86::RSP)
         .addReg(X86::RSP)
         .addReg(X86::RAX);

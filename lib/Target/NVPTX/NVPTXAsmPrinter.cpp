@@ -16,7 +16,6 @@
 #include "MCTargetDesc/NVPTXMCAsmInfo.h"
 #include "NVPTX.h"
 #include "NVPTXInstrInfo.h"
-#include "NVPTXNumRegisters.h"
 #include "NVPTXRegisterInfo.h"
 #include "NVPTXTargetMachine.h"
 #include "NVPTXUtilities.h"
@@ -1043,6 +1042,16 @@ bool NVPTXAsmPrinter::doInitialization(Module &M) {
 
   // Already commented out
   //bool Result = AsmPrinter::doInitialization(M);
+
+  // Emit module-level inline asm if it exists.
+  if (!M.getModuleInlineAsm().empty()) {
+    OutStreamer.AddComment("Start of file scope inline assembly");
+    OutStreamer.AddBlankLine();
+    OutStreamer.EmitRawText(StringRef(M.getModuleInlineAsm()));
+    OutStreamer.AddBlankLine();
+    OutStreamer.AddComment("End of file scope inline assembly");
+    OutStreamer.AddBlankLine();
+  }
 
   if (nvptxSubtarget.getDrvInterface() == NVPTX::CUDA)
     recordAndEmitFilenames(M);
