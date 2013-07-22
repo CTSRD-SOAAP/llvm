@@ -2280,10 +2280,10 @@ SDValue
 X86TargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
                              SmallVectorImpl<SDValue> &InVals) const {
   SelectionDAG &DAG                     = CLI.DAG;
-  SDLoc &dl                          = CLI.DL;
-  SmallVector<ISD::OutputArg, 32> &Outs = CLI.Outs;
-  SmallVector<SDValue, 32> &OutVals     = CLI.OutVals;
-  SmallVector<ISD::InputArg, 32> &Ins   = CLI.Ins;
+  SDLoc &dl                             = CLI.DL;
+  SmallVectorImpl<ISD::OutputArg> &Outs = CLI.Outs;
+  SmallVectorImpl<SDValue> &OutVals     = CLI.OutVals;
+  SmallVectorImpl<ISD::InputArg> &Ins   = CLI.Ins;
   SDValue Chain                         = CLI.Chain;
   SDValue Callee                        = CLI.Callee;
   CallingConv::ID CallConv              = CLI.CallConv;
@@ -8100,7 +8100,7 @@ SDValue X86TargetLowering::LowerUINT_TO_FP_i64(SDValue Op,
   LLVMContext *Context = DAG.getContext();
 
   // Build some magic constants.
-  const uint32_t CV0[] = { 0x43300000, 0x45300000, 0, 0 };
+  static const uint32_t CV0[] = { 0x43300000, 0x45300000, 0, 0 };
   Constant *C0 = ConstantDataVector::get(*Context, CV0);
   SDValue CPIdx0 = DAG.getConstantPool(C0, getPointerTy(), 16);
 
@@ -9351,8 +9351,8 @@ static SDValue LowerVSETCC(SDValue Op, const X86Subtarget *Subtarget,
   // GT and EQ comparisons for integer, swapping operands and multiple
   // operations may be required for some comparisons.
   unsigned Opc;
-  bool Swap = false, Invert = false, FlipSigns = false;
-
+  bool Swap = false, Invert = false, FlipSigns = false, MinMax = false;
+  
   switch (SetCCOpcode) {
   default: llvm_unreachable("Unexpected SETCC condition");
   case ISD::SETNE:  Invert = true;
@@ -9366,6 +9366,23 @@ static SDValue LowerVSETCC(SDValue Op, const X86Subtarget *Subtarget,
   case ISD::SETUGE: Swap = true;
   case ISD::SETULE: Opc = X86ISD::PCMPGT; FlipSigns = true; Invert = true; break;
   }
+  
+  // Special case: Use min/max operations for SETULE/SETUGE
+  MVT VET = VT.getVectorElementType();
+  bool hasMinMax =
+       (Subtarget->hasSSE41() && (VET >= MVT::i8 && VET <= MVT::i32))
+    || (Subtarget->hasSSE2()  && (VET == MVT::i8));
+  
+  if (hasMinMax) {
+    switch (SetCCOpcode) {
+    default: break;
+    case ISD::SETULE: Opc = X86ISD::UMIN; MinMax = true; break;
+    case ISD::SETUGE: Opc = X86ISD::UMAX; MinMax = true; break;
+    }
+    
+    if (MinMax) { Swap = false; Invert = false; FlipSigns = false; }
+  }
+  
   if (Swap)
     std::swap(Op0, Op1);
 
@@ -9399,8 +9416,8 @@ static SDValue LowerVSETCC(SDValue Op, const X86Subtarget *Subtarget,
       SDValue EQ = DAG.getNode(X86ISD::PCMPEQ, dl, MVT::v4i32, Op0, Op1);
 
       // Create masks for only the low parts/high parts of the 64 bit integers.
-      const int MaskHi[] = { 1, 1, 3, 3 };
-      const int MaskLo[] = { 0, 0, 2, 2 };
+      static const int MaskHi[] = { 1, 1, 3, 3 };
+      static const int MaskLo[] = { 0, 0, 2, 2 };
       SDValue EQHi = DAG.getVectorShuffle(MVT::v4i32, dl, EQ, EQ, MaskHi);
       SDValue GTLo = DAG.getVectorShuffle(MVT::v4i32, dl, GT, GT, MaskLo);
       SDValue GTHi = DAG.getVectorShuffle(MVT::v4i32, dl, GT, GT, MaskHi);
@@ -9427,7 +9444,7 @@ static SDValue LowerVSETCC(SDValue Op, const X86Subtarget *Subtarget,
       SDValue Result = DAG.getNode(Opc, dl, MVT::v4i32, Op0, Op1);
 
       // Make sure the lower and upper halves are both all-ones.
-      const int Mask[] = { 1, 0, 3, 2 };
+      static const int Mask[] = { 1, 0, 3, 2 };
       SDValue Shuf = DAG.getVectorShuffle(MVT::v4i32, dl, Result, Result, Mask);
       Result = DAG.getNode(ISD::AND, dl, MVT::v4i32, Result, Shuf);
 
@@ -9452,6 +9469,9 @@ static SDValue LowerVSETCC(SDValue Op, const X86Subtarget *Subtarget,
   // If the logical-not of the result is required, perform that now.
   if (Invert)
     Result = DAG.getNOT(dl, Result, VT);
+  
+  if (MinMax)
+    Result = DAG.getNode(X86ISD::PCMPEQ, dl, VT, Op0, Result);
 
   return Result;
 }
@@ -11492,7 +11512,7 @@ static SDValue LowerMUL(SDValue Op, const X86Subtarget *Subtarget,
            "Should not custom lower when pmuldq is available!");
 
     // Extract the odd parts.
-    const int UnpackMask[] = { 1, -1, 3, -1 };
+    static const int UnpackMask[] = { 1, -1, 3, -1 };
     SDValue Aodds = DAG.getVectorShuffle(VT, dl, A, A, UnpackMask);
     SDValue Bodds = DAG.getVectorShuffle(VT, dl, B, B, UnpackMask);
 
@@ -11506,7 +11526,7 @@ static SDValue LowerMUL(SDValue Op, const X86Subtarget *Subtarget,
 
     // Merge the two vectors back together with a shuffle. This expands into 2
     // shuffles.
-    const int ShufMask[] = { 0, 4, 2, 6 };
+    static const int ShufMask[] = { 0, 4, 2, 6 };
     return DAG.getVectorShuffle(VT, dl, Evens, Odds, ShufMask);
   }
 
@@ -16321,12 +16341,50 @@ static SDValue PerformSHLCombine(SDNode *N, SelectionDAG &DAG) {
   return SDValue();
 }
 
+/// \brief Returns a vector of 0s if the node in input is a vector logical
+/// shift by a constant amount which is known to be bigger than or equal 
+/// to the vector element size in bits.
+static SDValue performShiftToAllZeros(SDNode *N, SelectionDAG &DAG,
+                                      const X86Subtarget *Subtarget) {
+  EVT VT = N->getValueType(0);
+
+  if (VT != MVT::v2i64 && VT != MVT::v4i32 && VT != MVT::v8i16 &&
+      (!Subtarget->hasInt256() ||
+       (VT != MVT::v4i64 && VT != MVT::v8i32 && VT != MVT::v16i16)))
+    return SDValue();
+
+  SDValue Amt = N->getOperand(1);
+  SDLoc DL(N);
+  if (isSplatVector(Amt.getNode())) {
+    SDValue SclrAmt = Amt->getOperand(0);
+    if (ConstantSDNode *C = dyn_cast<ConstantSDNode>(SclrAmt)) {
+      APInt ShiftAmt = C->getAPIntValue();
+      unsigned MaxAmount = VT.getVectorElementType().getSizeInBits();
+
+      // SSE2/AVX2 logical shifts always return a vector of 0s
+      // if the shift amount is bigger than or equal to 
+      // the element size. The constant shift amount will be
+      // encoded as a 8-bit immediate.
+      if (ShiftAmt.trunc(8).uge(MaxAmount))
+        return getZeroVector(VT, Subtarget, DAG, DL);
+    }
+  }
+
+  return SDValue();
+}
+
 /// PerformShiftCombine - Combine shifts.
 static SDValue PerformShiftCombine(SDNode* N, SelectionDAG &DAG,
                                    TargetLowering::DAGCombinerInfo &DCI,
                                    const X86Subtarget *Subtarget) {
   if (N->getOpcode() == ISD::SHL) {
     SDValue V = PerformSHLCombine(N, DAG);
+    if (V.getNode()) return V;
+  }
+
+  if (N->getOpcode() != ISD::SRA) {
+    // Try to fold this logical shift into a zero vector.
+    SDValue V = performShiftToAllZeros(N, DAG, Subtarget);
     if (V.getNode()) return V;
   }
 

@@ -319,8 +319,8 @@ trailingHexadecimalFraction(StringRef::iterator p, StringRef::iterator end,
   else if (digitValue < 8 && digitValue > 0)
     return lfLessThanHalf;
 
-  /* Otherwise we need to find the first non-zero digit.  */
-  while (*p == '0')
+  // Otherwise we need to find the first non-zero digit.
+  while (p != end && (*p == '0' || *p == '.'))
     p++;
 
   assert(p != end && "Invalid trailing hexadecimal fraction!");
@@ -1956,6 +1956,23 @@ APFloat::convert(const fltSemantics &toSemantics,
     X86SpecialNan = true;
   }
 
+  // If this is a truncation of a denormal number, and the target semantics
+  // has larger exponent range than the source semantics (this can happen
+  // when truncating from PowerPC double-double to double format), the
+  // right shift could lose result mantissa bits.  Adjust exponent instead
+  // of performing excessive shift.
+  if (shift < 0 && isFiniteNonZero()) {
+    int exponentChange = significandMSB() + 1 - fromSemantics.precision;
+    if (exponent + exponentChange < toSemantics.minExponent)
+      exponentChange = toSemantics.minExponent - exponent;
+    if (exponentChange < shift)
+      exponentChange = shift;
+    if (exponentChange < 0) {
+      shift -= exponentChange;
+      exponent += exponentChange;
+    }
+  }
+
   // If this is a truncation, perform the shift before we narrow the storage.
   if (shift < 0 && (isFiniteNonZero() || category==fcNaN))
     lostFraction = shiftRight(significandParts(), oldPartCount, -shift);
@@ -2283,56 +2300,46 @@ APFloat::opStatus
 APFloat::convertFromHexadecimalString(StringRef s, roundingMode rounding_mode)
 {
   lostFraction lost_fraction = lfExactlyZero;
-  integerPart *significand;
-  unsigned int bitPos, partsCount;
-  StringRef::iterator dot, firstSignificantDigit;
 
   zeroSignificand();
   exponent = 0;
   category = fcNormal;
 
-  significand = significandParts();
-  partsCount = partCount();
-  bitPos = partsCount * integerPartWidth;
+  integerPart *significand = significandParts();
+  unsigned partsCount = partCount();
+  unsigned bitPos = partsCount * integerPartWidth;
+  bool computedTrailingFraction = false;
 
-  /* Skip leading zeroes and any (hexa)decimal point.  */
+  // Skip leading zeroes and any (hexa)decimal point.
   StringRef::iterator begin = s.begin();
   StringRef::iterator end = s.end();
+  StringRef::iterator dot;
   StringRef::iterator p = skipLeadingZeroesAndAnyDot(begin, end, &dot);
-  firstSignificantDigit = p;
+  StringRef::iterator firstSignificantDigit = p;
 
-  for (; p != end;) {
+  while (p != end) {
     integerPart hex_value;
 
     if (*p == '.') {
       assert(dot == end && "String contains multiple dots");
       dot = p++;
-      if (p == end) {
-        break;
-      }
+      continue;
     }
 
     hex_value = hexDigitValue(*p);
-    if (hex_value == -1U) {
+    if (hex_value == -1U)
       break;
-    }
 
     p++;
 
-    if (p == end) {
-      break;
-    } else {
-      /* Store the number whilst 4-bit nibbles remain.  */
-      if (bitPos) {
-        bitPos -= 4;
-        hex_value <<= bitPos % integerPartWidth;
-        significand[bitPos / integerPartWidth] |= hex_value;
-      } else {
-        lost_fraction = trailingHexadecimalFraction(p, end, hex_value);
-        while (p != end && hexDigitValue(*p) != -1U)
-          p++;
-        break;
-      }
+    // Store the number while we have space.
+    if (bitPos) {
+      bitPos -= 4;
+      hex_value <<= bitPos % integerPartWidth;
+      significand[bitPos / integerPartWidth] |= hex_value;
+    } else if (!computedTrailingFraction) {
+      lost_fraction = trailingHexadecimalFraction(p, end, hex_value);
+      computedTrailingFraction = true;
     }
   }
 

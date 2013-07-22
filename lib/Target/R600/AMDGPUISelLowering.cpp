@@ -57,26 +57,40 @@ AMDGPUTargetLowering::AMDGPUTargetLowering(TargetMachine &TM) :
   setOperationAction(ISD::STORE, MVT::f32, Promote);
   AddPromotedToType(ISD::STORE, MVT::f32, MVT::i32);
 
+  setOperationAction(ISD::STORE, MVT::v2f32, Promote);
+  AddPromotedToType(ISD::STORE, MVT::v2f32, MVT::v2i32);
+
   setOperationAction(ISD::STORE, MVT::v4f32, Promote);
   AddPromotedToType(ISD::STORE, MVT::v4f32, MVT::v4i32);
+
+  setOperationAction(ISD::STORE, MVT::f64, Promote);
+  AddPromotedToType(ISD::STORE, MVT::f64, MVT::i64);
 
   setOperationAction(ISD::LOAD, MVT::f32, Promote);
   AddPromotedToType(ISD::LOAD, MVT::f32, MVT::i32);
 
+  setOperationAction(ISD::LOAD, MVT::v2f32, Promote);
+  AddPromotedToType(ISD::LOAD, MVT::v2f32, MVT::v2i32);
+
   setOperationAction(ISD::LOAD, MVT::v4f32, Promote);
   AddPromotedToType(ISD::LOAD, MVT::v4f32, MVT::v4i32);
+
+  setOperationAction(ISD::LOAD, MVT::f64, Promote);
+  AddPromotedToType(ISD::LOAD, MVT::f64, MVT::i64);
 
   setOperationAction(ISD::MUL, MVT::i64, Expand);
 
   setOperationAction(ISD::UDIV, MVT::i32, Expand);
   setOperationAction(ISD::UDIVREM, MVT::i32, Custom);
   setOperationAction(ISD::UREM, MVT::i32, Expand);
+  setOperationAction(ISD::VSELECT, MVT::v2f32, Expand);
+  setOperationAction(ISD::VSELECT, MVT::v4f32, Expand);
 
-  int types[] = {
+  static const int types[] = {
     (int)MVT::v2i32,
     (int)MVT::v4i32
   };
-  size_t NumTypes = sizeof(types) / sizeof(*types);
+  const size_t NumTypes = array_lengthof(types);
 
   for (unsigned int x  = 0; x < NumTypes; ++x) {
     MVT::SimpleValueType VT = (MVT::SimpleValueType)types[x];
@@ -91,6 +105,7 @@ AMDGPUTargetLowering::AMDGPUTargetLowering(TargetMachine &TM) :
     setOperationAction(ISD::SUB,  VT, Expand);
     setOperationAction(ISD::UDIV, VT, Expand);
     setOperationAction(ISD::UREM, VT, Expand);
+    setOperationAction(ISD::VSELECT, VT, Expand);
     setOperationAction(ISD::XOR,  VT, Expand);
   }
 }

@@ -403,7 +403,7 @@ class ArithLogicI<string opstr, Operand Od, RegisterOperand RO,
 // Arithmetic Multiply ADD/SUB
 class MArithR<string opstr, bit isComm = 0> :
   InstSE<(outs), (ins CPURegsOpnd:$rs, CPURegsOpnd:$rt),
-         !strconcat(opstr, "\t$rs, $rt"), [], IIImul, FrmR> {
+         !strconcat(opstr, "\t$rs, $rt"), [], IIImult, FrmR> {
   let Defs = [HI, LO];
   let Uses = [HI, LO];
   let isCommutable = isComm;
@@ -560,14 +560,14 @@ class SetCC_R<string opstr, PatFrag cond_op, RegisterClass RC> :
   InstSE<(outs CPURegsOpnd:$rd), (ins RC:$rs, RC:$rt),
          !strconcat(opstr, "\t$rd, $rs, $rt"),
          [(set CPURegsOpnd:$rd, (cond_op RC:$rs, RC:$rt))],
-         IIAlu, FrmR, opstr>;
+         IIslt, FrmR, opstr>;
 
 class SetCC_I<string opstr, PatFrag cond_op, Operand Od, PatLeaf imm_type,
               RegisterClass RC>:
   InstSE<(outs CPURegsOpnd:$rt), (ins RC:$rs, Od:$imm16),
          !strconcat(opstr, "\t$rt, $rs, $imm16"),
          [(set CPURegsOpnd:$rt, (cond_op RC:$rs, imm_type:$imm16))],
-         IIAlu, FrmI, opstr>;
+         IIslt, FrmI, opstr>;
 
 // Jump
 class JumpFJ<DAGOperand opnd, string opstr, SDPatternOperator operator,
@@ -652,6 +652,11 @@ class BRK_FT<string opstr> :
   InstSE<(outs), (ins uimm10:$code_1, uimm10:$code_2),
          !strconcat(opstr, "\t$code_1, $code_2"), [], NoItinerary, FrmOther>;
 
+// (D)Eret
+class ER_FT<string opstr> :
+  InstSE<(outs), (ins),
+         opstr, [], NoItinerary, FrmOther>;
+
 // Sync
 let hasSideEffects = 1 in
 class SYNC_FT :
@@ -694,7 +699,7 @@ class MAddSubPseudo<Instruction RealInst, SDPatternOperator OpNode>
              (ins CPURegsOpnd:$rs, CPURegsOpnd:$rt, ACRegs:$acin),
              [(set ACRegs:$ac,
               (OpNode CPURegsOpnd:$rs, CPURegsOpnd:$rt, ACRegs:$acin))],
-             IIImul>,
+             IIImult>,
     PseudoInstExpansion<(RealInst CPURegsOpnd:$rs, CPURegsOpnd:$rt)> {
   string Constraints = "$acin = $ac";
 }
@@ -741,7 +746,7 @@ class CountLeading1<string opstr, RegisterOperand RO>:
 // Sign Extend in Register.
 class SignExtInReg<string opstr, ValueType vt, RegisterClass RC> :
   InstSE<(outs RC:$rd), (ins RC:$rt), !strconcat(opstr, "\t$rd, $rt"),
-         [(set RC:$rd, (sext_inreg RC:$rt, vt))], NoItinerary, FrmR> {
+         [(set RC:$rd, (sext_inreg RC:$rt, vt))], IIseb, FrmR> {
   let Predicates = [HasSEInReg, HasStdEnc];
 }
 
@@ -958,6 +963,9 @@ def TEQ : TEQ_FT<"teq", CPURegsOpnd>, TEQ_FM<0x34>;
 def BREAK : BRK_FT<"break">, BRK_FM<0xd>;
 def SYSCALL : SYS_FT<"syscall">, SYS_FM<0xc>;
 
+def ERET : ER_FT<"eret">, ER_FM<0x18>;
+def DERET : ER_FT<"deret">, ER_FM<0x1f>;
+
 /// Load-linked, Store-conditional
 let Predicates = [NotN64, HasStdEnc] in {
   def LL : LLBase<"ll", CPURegsOpnd, mem>, LW_FM<0x30>;
@@ -1015,12 +1023,12 @@ let Uses = [V0, V1], isTerminator = 1, isReturn = 1, isBarrier = 1 in {
 }
 
 /// Multiply and Divide Instructions.
-def MULT  : MMRel, Mult<"mult", IIImul, CPURegsOpnd, [HI, LO]>,
+def MULT  : MMRel, Mult<"mult", IIImult, CPURegsOpnd, [HI, LO]>,
             MULT_FM<0, 0x18>;
-def MULTu : MMRel, Mult<"multu", IIImul, CPURegsOpnd, [HI, LO]>,
+def MULTu : MMRel, Mult<"multu", IIImult, CPURegsOpnd, [HI, LO]>,
             MULT_FM<0, 0x19>;
-def PseudoMULT  : MultDivPseudo<MULT, ACRegs, CPURegsOpnd, MipsMult, IIImul>;
-def PseudoMULTu : MultDivPseudo<MULTu, ACRegs, CPURegsOpnd, MipsMultu, IIImul>;
+def PseudoMULT  : MultDivPseudo<MULT, ACRegs, CPURegsOpnd, MipsMult, IIImult>;
+def PseudoMULTu : MultDivPseudo<MULTu, ACRegs, CPURegsOpnd, MipsMultu, IIImult>;
 def SDIV  : Div<"div", IIIdiv, CPURegsOpnd, [HI, LO]>, MULT_FM<0, 0x1a>;
 def UDIV  : Div<"divu", IIIdiv, CPURegsOpnd, [HI, LO]>, MULT_FM<0, 0x1b>;
 def PseudoSDIV : MultDivPseudo<SDIV, ACRegs, CPURegsOpnd, MipsDivRem, IIIdiv,

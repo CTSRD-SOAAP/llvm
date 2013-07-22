@@ -34,6 +34,9 @@ SITargetLowering::SITargetLowering(TargetMachine &TM) :
   addRegisterClass(MVT::i1, &AMDGPU::SReg_64RegClass);
   addRegisterClass(MVT::i64, &AMDGPU::SReg_64RegClass);
 
+  addRegisterClass(MVT::v2i1, &AMDGPU::VReg_64RegClass);
+  addRegisterClass(MVT::v4i1, &AMDGPU::VReg_128RegClass);
+
   addRegisterClass(MVT::v16i8, &AMDGPU::SReg_128RegClass);
   addRegisterClass(MVT::v32i8, &AMDGPU::SReg_256RegClass);
   addRegisterClass(MVT::v64i8, &AMDGPU::SReg_512RegClass);
@@ -45,6 +48,7 @@ SITargetLowering::SITargetLowering(TargetMachine &TM) :
 
   addRegisterClass(MVT::v2i32, &AMDGPU::VReg_64RegClass);
   addRegisterClass(MVT::v2f32, &AMDGPU::VReg_64RegClass);
+  addRegisterClass(MVT::f64, &AMDGPU::VReg_64RegClass);
 
   addRegisterClass(MVT::v4i32, &AMDGPU::VReg_128RegClass);
   addRegisterClass(MVT::v4f32, &AMDGPU::VReg_128RegClass);
@@ -71,9 +75,14 @@ SITargetLowering::SITargetLowering(TargetMachine &TM) :
 
   setOperationAction(ISD::SELECT_CC, MVT::Other, Expand);
 
+  setOperationAction(ISD::SETCC, MVT::v2i1, Expand);
+  setOperationAction(ISD::SETCC, MVT::v4i1, Expand);
+
   setOperationAction(ISD::SIGN_EXTEND, MVT::i64, Custom);
 
   setOperationAction(ISD::INTRINSIC_WO_CHAIN, MVT::Other, Custom);
+
+  setLoadExtAction(ISD::SEXTLOAD, MVT::i32, Expand);
 
   setOperationAction(ISD::GlobalAddress, MVT::i64, Custom);
 
@@ -295,12 +304,30 @@ MachineBasicBlock * SITargetLowering::EmitInstrWithCustomInserter(
     MI->eraseFromParent();
     break;
   }
+  case AMDGPU::V_SUB_F64: {
+    const SIInstrInfo *TII =
+      static_cast<const SIInstrInfo*>(getTargetMachine().getInstrInfo());
+    BuildMI(*BB, I, MI->getDebugLoc(), TII->get(AMDGPU::V_ADD_F64),
+            MI->getOperand(0).getReg())
+            .addReg(MI->getOperand(1).getReg())
+            .addReg(MI->getOperand(2).getReg())
+            .addImm(0)  /* src2 */
+            .addImm(0)  /* ABS */
+            .addImm(0)  /* CLAMP */
+            .addImm(0)  /* OMOD */
+            .addImm(2); /* NEG */
+    MI->eraseFromParent();
+    break;
+  }
   }
   return BB;
 }
 
 EVT SITargetLowering::getSetCCResultType(LLVMContext &, EVT VT) const {
-  return MVT::i1;
+  if (!VT.isVector()) {
+    return MVT::i1;
+  }
+  return MVT::getVectorVT(MVT::i1, VT.getVectorNumElements());
 }
 
 MVT SITargetLowering::getScalarShiftAmountTy(EVT VT) const {
