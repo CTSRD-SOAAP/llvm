@@ -5448,7 +5448,7 @@ SDValue DAGCombiner::visitTRUNCATE(SDNode *N) {
     SDValue EltNo = N0->getOperand(1);
     if (isa<ConstantSDNode>(EltNo) && isTypeLegal(NVT)) {
       int Elt = cast<ConstantSDNode>(EltNo)->getZExtValue();
-      EVT IndexTy = N0->getOperand(1).getValueType();
+      EVT IndexTy = TLI.getVectorIdxTy();
       int Index = isLE ? (Elt*SizeRatio) : (Elt*SizeRatio + (SizeRatio-1));
 
       SDValue V = DAG.getNode(ISD::BITCAST, SDLoc(N),
@@ -5680,8 +5680,8 @@ SDValue DAGCombiner::visitBITCAST(SDNode *N) {
   // fold (bitconvert (fneg x)) -> (xor (bitconvert x), signbit)
   // fold (bitconvert (fabs x)) -> (and (bitconvert x), (not signbit))
   // This often reduces constant pool loads.
-  if (((N0.getOpcode() == ISD::FNEG && !TLI.isFNegFree(VT)) ||
-       (N0.getOpcode() == ISD::FABS && !TLI.isFAbsFree(VT))) &&
+  if (((N0.getOpcode() == ISD::FNEG && !TLI.isFNegFree(N0.getValueType())) ||
+       (N0.getOpcode() == ISD::FABS && !TLI.isFAbsFree(N0.getValueType()))) &&
       N0.getNode()->hasOneUse() && VT.isInteger() &&
       !VT.isVector() && !N0.getValueType().isVector()) {
     SDValue NewConv = DAG.getNode(ISD::BITCAST, SDLoc(N0), VT,
@@ -8612,7 +8612,9 @@ SDValue DAGCombiner::visitINSERT_VECTOR_ELT(SDNode *N) {
   // be converted to a BUILD_VECTOR).  Fill in the Ops vector with the
   // vector elements.
   SmallVector<SDValue, 8> Ops;
-  if (InVec.getOpcode() == ISD::BUILD_VECTOR) {
+  // Do not combine these two vectors if the output vector will not replace
+  // the input vector.
+  if (InVec.getOpcode() == ISD::BUILD_VECTOR && InVec.hasOneUse()) {
     Ops.append(InVec.getNode()->op_begin(),
                InVec.getNode()->op_end());
   } else if (InVec.getOpcode() == ISD::UNDEF) {
@@ -8685,7 +8687,7 @@ SDValue DAGCombiner::visitEXTRACT_VECTOR_ELT(SDNode *N) {
       OrigElt -= NumElem;
     }
 
-    EVT IndexTy = N->getOperand(1).getValueType();
+    EVT IndexTy = TLI.getVectorIdxTy();
     return DAG.getNode(ISD::EXTRACT_VECTOR_ELT, SDLoc(N), NVT,
                        InVec, DAG.getConstant(OrigElt, IndexTy));
   }

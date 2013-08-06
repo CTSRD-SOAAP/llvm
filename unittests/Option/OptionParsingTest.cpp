@@ -19,7 +19,7 @@ using namespace llvm::opt;
 
 enum ID {
   OPT_INVALID = 0, // This is not an option ID.
-#define OPTION(PREFIX, NAME, ID, KIND, GROUP, ALIAS, FLAGS, PARAM, \
+#define OPTION(PREFIX, NAME, ID, KIND, GROUP, ALIAS, ALIASARGS, FLAGS, PARAM, \
               HELPTEXT, METAVAR) OPT_##ID,
 #include "Opts.inc"
   LastOption
@@ -37,10 +37,10 @@ enum OptionFlags {
 };
 
 static const OptTable::Info InfoTable[] = {
-#define OPTION(PREFIX, NAME, ID, KIND, GROUP, ALIAS, FLAGS, PARAM, \
+#define OPTION(PREFIX, NAME, ID, KIND, GROUP, ALIAS, ALIASARGS, FLAGS, PARAM, \
                HELPTEXT, METAVAR)   \
   { PREFIX, NAME, HELPTEXT, METAVAR, OPT_##ID, Option::KIND##Class, PARAM, \
-    FLAGS, OPT_##GROUP, OPT_##ALIAS },
+    FLAGS, OPT_##GROUP, OPT_##ALIAS, ALIASARGS },
 #include "Opts.inc"
 #undef OPTION
 };
@@ -135,4 +135,37 @@ TEST(Option, ParseWithFlagExclusions) {
   EXPECT_TRUE(AL->hasArg(OPT_C));
   EXPECT_EQ(AL->getLastArgValue(OPT_SLASH_C), "foo");
   EXPECT_EQ(AL->getLastArgValue(OPT_C), "bar");
+}
+
+TEST(Option, ParseAliasInGroup) {
+  TestOptTable T;
+  unsigned MAI, MAC;
+
+  const char *MyArgs[] = { "-I" };
+  OwningPtr<InputArgList> AL(T.ParseArgs(MyArgs, array_endof(MyArgs), MAI, MAC));
+  EXPECT_TRUE(AL->hasArg(OPT_H));
+}
+
+TEST(Option, AliasArgs) {
+  TestOptTable T;
+  unsigned MAI, MAC;
+
+  const char *MyArgs[] = { "-J", "-Joo" };
+  OwningPtr<InputArgList> AL(T.ParseArgs(MyArgs, array_endof(MyArgs), MAI, MAC));
+  EXPECT_TRUE(AL->hasArg(OPT_B));
+  EXPECT_EQ(AL->getAllArgValues(OPT_B)[0], "foo");
+  EXPECT_EQ(AL->getAllArgValues(OPT_B)[1], "bar");
+}
+
+TEST(Option, DashDash) {
+  TestOptTable T;
+  unsigned MAI, MAC;
+
+  const char *MyArgs[] = { "-A", "--", "-B", "--" };
+  OwningPtr<InputArgList> AL(T.ParseArgs(MyArgs, array_endof(MyArgs), MAI, MAC));
+  EXPECT_TRUE(AL->hasArg(OPT_A));
+  EXPECT_FALSE(AL->hasArg(OPT_B));
+  EXPECT_EQ(AL->getAllArgValues(OPT_INPUT).size(), 2U);
+  EXPECT_EQ(AL->getAllArgValues(OPT_INPUT)[0], "-B");
+  EXPECT_EQ(AL->getAllArgValues(OPT_INPUT)[1], "--");
 }

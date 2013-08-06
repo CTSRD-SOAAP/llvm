@@ -58,8 +58,13 @@ static const unsigned RecursionMaxDepth = 12;
 /// RAII pattern to save the insertion point of the IR builder.
 class BuilderLocGuard {
 public:
-  BuilderLocGuard(IRBuilder<> &B) : Builder(B), Loc(B.GetInsertPoint()) {}
-  ~BuilderLocGuard() { if (Loc) Builder.SetInsertPoint(Loc); }
+  BuilderLocGuard(IRBuilder<> &B) : Builder(B), Loc(B.GetInsertPoint()),
+  DbgLoc(B.getCurrentDebugLocation()) {}
+  ~BuilderLocGuard() {
+    Builder.SetCurrentDebugLocation(DbgLoc);
+    if (Loc)
+      Builder.SetInsertPoint(Loc);
+  }
 
 private:
   // Prevent copying.
@@ -67,6 +72,7 @@ private:
   BuilderLocGuard &operator=(const BuilderLocGuard &);
   IRBuilder<> &Builder;
   AssertingVH<Instruction> Loc;
+  DebugLoc DbgLoc;
 };
 
 /// A helper class for numbering instructions in multible blocks.
@@ -264,11 +270,15 @@ private:
   /// This is the recursive part of buildTree.
   void buildTree_rec(ArrayRef<Value *> Roots, unsigned Depth);
 
-  /// Vectorizer a single entry in the tree.
+  /// Vectorize a single entry in the tree.
   Value *vectorizeTree(TreeEntry *E);
 
-  /// Vectorizer a single entry in the tree, starting in \p VL.
+  /// Vectorize a single entry in the tree, starting in \p VL.
   Value *vectorizeTree(ArrayRef<Value *> VL);
+
+  /// \returns the pointer to the vectorized value if \p VL is already
+  /// vectorized, or NULL. They may happen in cycles.
+  Value *alreadyVectorized(ArrayRef<Value *> VL);
 
   /// \brief Take the pointer operand from the Load/Store instruction.
   /// \returns NULL if this is not a valid Load/Store instruction.
@@ -894,8 +904,13 @@ int BoUpSLP::getTreeCost() {
   DEBUG(dbgs() << "SLP: Calculating cost for tree of size " <<
         VectorizableTree.size() << ".\n");
 
-  if (!VectorizableTree.size()) {
-    assert(!ExternalUses.size() && "We should not have any external users");
+  // Don't vectorize tiny trees. Small load/store chains or consecutive stores
+  // of constants will be vectoried in SelectionDAG in MergeConsecutiveStores.
+  // The SelectionDAG vectorizer can only handle pairs (trees of height = 2).
+  if (VectorizableTree.size() < 3) {
+    if (!VectorizableTree.size()) {
+      assert(!ExternalUses.size() && "We should not have any external users");
+    }
     return 0;
   }
 
@@ -1117,6 +1132,16 @@ Value *BoUpSLP::Gather(ArrayRef<Value *> VL, VectorType *Ty) {
   return Vec;
 }
 
+Value *BoUpSLP::alreadyVectorized(ArrayRef<Value *> VL) {
+  if (ScalarToTreeEntry.count(VL[0])) {
+    int Idx = ScalarToTreeEntry[VL[0]];
+    TreeEntry *En = &VectorizableTree[Idx];
+    if (En->isSame(VL) && En->VectorizedValue)
+      return En->VectorizedValue;
+  }
+  return 0;
+}
+
 Value *BoUpSLP::vectorizeTree(ArrayRef<Value *> VL) {
   if (ScalarToTreeEntry.count(VL[0])) {
     int Idx = ScalarToTreeEntry[VL[0]];
@@ -1158,6 +1183,7 @@ Value *BoUpSLP::vectorizeTree(TreeEntry *E) {
     case Instruction::PHI: {
       PHINode *PH = dyn_cast<PHINode>(VL0);
       Builder.SetInsertPoint(PH->getParent()->getFirstInsertionPt());
+      Builder.SetCurrentDebugLocation(PH->getDebugLoc());
       PHINode *NewPhi = Builder.CreatePHI(VecTy, PH->getNumIncomingValues());
       E->VectorizedValue = NewPhi;
 
@@ -1171,6 +1197,7 @@ Value *BoUpSLP::vectorizeTree(TreeEntry *E) {
                              getIncomingValueForBlock(IBB));
 
         Builder.SetInsertPoint(IBB->getTerminator());
+        Builder.SetCurrentDebugLocation(PH->getDebugLoc());
         Value *Vec = vectorizeTree(Operands);
         NewPhi->addIncoming(Vec, IBB);
       }
@@ -1205,7 +1232,13 @@ Value *BoUpSLP::vectorizeTree(TreeEntry *E) {
         INVL.push_back(cast<Instruction>(E->Scalars[i])->getOperand(0));
 
       Builder.SetInsertPoint(getLastInstruction(E->Scalars));
+      Builder.SetCurrentDebugLocation(VL0->getDebugLoc());
+
       Value *InVec = vectorizeTree(INVL);
+
+      if (Value *V = alreadyVectorized(E->Scalars))
+        return V;
+
       CastInst *CI = dyn_cast<CastInst>(VL0);
       Value *V = Builder.CreateCast(CI->getOpcode(), InVec, VecTy);
       E->VectorizedValue = V;
@@ -1220,11 +1253,16 @@ Value *BoUpSLP::vectorizeTree(TreeEntry *E) {
       }
 
       Builder.SetInsertPoint(getLastInstruction(E->Scalars));
+      Builder.SetCurrentDebugLocation(VL0->getDebugLoc());
+
       Value *L = vectorizeTree(LHSV);
       Value *R = vectorizeTree(RHSV);
-      Value *V;
+
+      if (Value *V = alreadyVectorized(E->Scalars))
+        return V;
 
       CmpInst::Predicate P0 = dyn_cast<CmpInst>(VL0)->getPredicate();
+      Value *V;
       if (Opcode == Instruction::FCmp)
         V = Builder.CreateFCmp(P0, L, R);
       else
@@ -1242,9 +1280,15 @@ Value *BoUpSLP::vectorizeTree(TreeEntry *E) {
       }
 
       Builder.SetInsertPoint(getLastInstruction(E->Scalars));
+      Builder.SetCurrentDebugLocation(VL0->getDebugLoc());
+
       Value *Cond = vectorizeTree(CondVec);
       Value *True = vectorizeTree(TrueVec);
       Value *False = vectorizeTree(FalseVec);
+
+      if (Value *V = alreadyVectorized(E->Scalars))
+        return V;
+      
       Value *V = Builder.CreateSelect(Cond, True, False);
       E->VectorizedValue = V;
       return V;
@@ -1274,12 +1318,17 @@ Value *BoUpSLP::vectorizeTree(TreeEntry *E) {
       }
 
       Builder.SetInsertPoint(getLastInstruction(E->Scalars));
+      Builder.SetCurrentDebugLocation(VL0->getDebugLoc());
+
       Value *LHS = vectorizeTree(LHSVL);
       Value *RHS = vectorizeTree(RHSVL);
 
       if (LHS == RHS && isa<Instruction>(LHS)) {
         assert((VL0->getOperand(0) == VL0->getOperand(1)) && "Invalid order");
       }
+
+      if (Value *V = alreadyVectorized(E->Scalars))
+        return V;
 
       BinaryOperator *BinOp = cast<BinaryOperator>(VL0);
       Value *V = Builder.CreateBinOp(BinOp->getOpcode(), LHS, RHS);
@@ -1290,6 +1339,8 @@ Value *BoUpSLP::vectorizeTree(TreeEntry *E) {
       // Loads are inserted at the head of the tree because we don't want to
       // sink them all the way down past store instructions.
       Builder.SetInsertPoint(getLastInstruction(E->Scalars));
+      Builder.SetCurrentDebugLocation(VL0->getDebugLoc());
+
       LoadInst *LI = cast<LoadInst>(VL0);
       Value *VecPtr =
       Builder.CreateBitCast(LI->getPointerOperand(), VecTy->getPointerTo());
@@ -1308,6 +1359,8 @@ Value *BoUpSLP::vectorizeTree(TreeEntry *E) {
         ValueOp.push_back(cast<StoreInst>(E->Scalars[i])->getValueOperand());
 
       Builder.SetInsertPoint(getLastInstruction(E->Scalars));
+      Builder.SetCurrentDebugLocation(VL0->getDebugLoc());
+
       Value *VecValue = vectorizeTree(ValueOp);
       Value *VecPtr =
       Builder.CreateBitCast(SI->getPointerOperand(), VecTy->getPointerTo());
@@ -1348,30 +1401,33 @@ void BoUpSLP::vectorizeTree() {
     Value *Vec = E->VectorizedValue;
     assert(Vec && "Can't find vectorizable value");
 
+    Value *Lane = Builder.getInt32(it->Lane);
     // Generate extracts for out-of-tree users.
     // Find the insertion point for the extractelement lane.
-    Instruction *Loc = 0;
     if (PHINode *PN = dyn_cast<PHINode>(Vec)) {
-      Loc = PN->getParent()->getFirstInsertionPt();
+      Builder.SetInsertPoint(PN->getParent()->getFirstInsertionPt());
+      Value *Ex = Builder.CreateExtractElement(Vec, Lane);
+      User->replaceUsesOfWith(Scalar, Ex);
     } else if (isa<Instruction>(Vec)){
       if (PHINode *PH = dyn_cast<PHINode>(User)) {
         for (int i = 0, e = PH->getNumIncomingValues(); i != e; ++i) {
           if (PH->getIncomingValue(i) == Scalar) {
-            Loc = PH->getIncomingBlock(i)->getTerminator();
-            break;
+            Builder.SetInsertPoint(PH->getIncomingBlock(i)->getTerminator());
+            Value *Ex = Builder.CreateExtractElement(Vec, Lane);
+            PH->setOperand(i, Ex);
           }
         }
-        assert(Loc && "Unable to find incoming value for the PHI");
       } else {
-        Loc = cast<Instruction>(User);
+        Builder.SetInsertPoint(cast<Instruction>(User));
+        Value *Ex = Builder.CreateExtractElement(Vec, Lane);
+        User->replaceUsesOfWith(Scalar, Ex);
      }
     } else {
-      Loc = F->getEntryBlock().begin();
+      Builder.SetInsertPoint(F->getEntryBlock().begin());
+      Value *Ex = Builder.CreateExtractElement(Vec, Lane);
+      User->replaceUsesOfWith(Scalar, Ex);
     }
 
-    Builder.SetInsertPoint(Loc);
-    Value *Ex = Builder.CreateExtractElement(Vec, Builder.getInt32(it->Lane));
-    User->replaceUsesOfWith(Scalar, Ex);
     DEBUG(dbgs() << "SLP: Replaced:" << *User << ".\n");
   }
 
@@ -1524,6 +1580,11 @@ struct SLPVectorizer : public FunctionPass {
     if (!DL)
       return false;
 
+    // Don't vectorize when the attribute NoImplicitFloat is used.
+    if (F.getAttributes().hasAttribute(AttributeSet::FunctionIndex,
+                                       Attribute::NoImplicitFloat))
+      return false;
+
     DEBUG(dbgs() << "SLP: Analyzing blocks in " << F.getName() << ".\n");
 
     // Use the bollom up slp vectorizer to construct chains that start with
@@ -1636,23 +1697,7 @@ bool SLPVectorizer::vectorizeStoreChain(ArrayRef<Value *> Chain,
     }
   }
 
-  if (Changed || ChainLen > VF)
     return Changed;
-
-  // Handle short chains. This helps us catch types such as <3 x float> that
-  // are smaller than vector size.
-  R.buildTree(Chain);
-
-  int Cost = R.getTreeCost();
-
-  if (Cost < CostThreshold) {
-    DEBUG(dbgs() << "SLP: Found store chain cost = " << Cost
-          << " for size = " << ChainLen << "\n");
-    R.vectorizeTree();
-    return true;
-  }
-
-  return false;
 }
 
 bool SLPVectorizer::vectorizeStores(ArrayRef<StoreInst *> Stores,

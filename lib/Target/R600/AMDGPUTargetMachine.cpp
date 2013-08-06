@@ -91,7 +91,6 @@ public:
   AMDGPUTargetMachine &getAMDGPUTargetMachine() const {
     return getTM<AMDGPUTargetMachine>();
   }
-
   virtual bool addPreISel();
   virtual bool addInstSelector();
   virtual bool addPreRegAlloc();
@@ -105,9 +104,22 @@ TargetPassConfig *AMDGPUTargetMachine::createPassConfig(PassManagerBase &PM) {
   return new AMDGPUPassConfig(this, PM);
 }
 
+//===----------------------------------------------------------------------===//
+// AMDGPU Analysis Pass Setup
+//===----------------------------------------------------------------------===//
+
+void AMDGPUTargetMachine::addAnalysisPasses(PassManagerBase &PM) {
+  // Add first the target-independent BasicTTI pass, then our AMDGPU pass. This
+  // allows the AMDGPU pass to delegate to the target independent layer when
+  // appropriate.
+  PM.add(createBasicTargetTransformInfoPass(this));
+  PM.add(createAMDGPUTargetTransformInfoPass(this));
+}
+
 bool
 AMDGPUPassConfig::addPreISel() {
   const AMDGPUSubtarget &ST = TM->getSubtarget<AMDGPUSubtarget>();
+  addPass(createFlattenCFGPass());
   if (ST.getGeneration() > AMDGPUSubtarget::NORTHERN_ISLANDS) {
     addPass(createStructurizeCFGPass());
     addPass(createSIAnnotateControlFlowPass());

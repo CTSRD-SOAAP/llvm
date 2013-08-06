@@ -97,7 +97,6 @@ class InstSE<dag outs, dag ins, string asmstr, list<dag> pattern,
   let Predicates = [HasStdEnc];
   string BaseOpcode = opstr;
   string Arch;
-  let MnemonicContainsDot = 1;
 }
 
 // Mips Pseudo Instructions Format
@@ -401,17 +400,6 @@ class JALR_FM {
   let Inst{5-0}   = 9;
 }
 
-class BAL_FM {
-  bits<16> offset;
-
-  bits<32> Inst;
-
-  let Inst{31-26} = 1;
-  let Inst{25-21} = 0;
-  let Inst{20-16} = 0x11;
-  let Inst{15-0}  = offset;
-}
-
 class BGEZAL_FM<bits<5> funct> {
   bits<5>  rs;
   bits<16> offset;
@@ -665,13 +653,14 @@ class SWXC1_FM<bits<6> funct> {
 }
 
 class BC1F_FM<bit nd, bit tf> {
+  bits<3>  fcc;
   bits<16> offset;
 
   bits<32> Inst;
 
   let Inst{31-26} = 0x11;
   let Inst{25-21} = 0x8;
-  let Inst{20-18} = 0; // cc
+  let Inst{20-18} = fcc;
   let Inst{17} = nd;
   let Inst{16} = tf;
   let Inst{15-0} = offset;
@@ -715,12 +704,13 @@ class CMov_I_F_FM<bits<6> funct, bits<5> fmt> {
 class CMov_F_I_FM<bit tf> {
   bits<5> rd;
   bits<5> rs;
+  bits<3> fcc;
 
   bits<32> Inst;
 
   let Inst{31-26} = 0;
   let Inst{25-21} = rs;
-  let Inst{20-18} = 0; // cc
+  let Inst{20-18} = fcc;
   let Inst{17} = 0;
   let Inst{16} = tf;
   let Inst{15-11} = rd;
@@ -731,12 +721,13 @@ class CMov_F_I_FM<bit tf> {
 class CMov_F_F_FM<bits<5> fmt, bit tf> {
   bits<5> fd;
   bits<5> fs;
+  bits<3> fcc;
 
   bits<32> Inst;
 
   let Inst{31-26} = 0x11;
   let Inst{25-21} = fmt;
-  let Inst{20-18} = 0; // cc
+  let Inst{20-18} = fcc;
   let Inst{17} = 0;
   let Inst{16} = tf;
   let Inst{15-11} = fs;

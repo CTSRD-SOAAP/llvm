@@ -111,6 +111,9 @@ class MipsAsmParser : public MCTargetAsmParser {
   MipsAsmParser::OperandMatchResultTy
   parseFGR32Regs(SmallVectorImpl<MCParsedAsmOperand*> &Operands);
 
+  MipsAsmParser::OperandMatchResultTy
+  parseFCCRegs(SmallVectorImpl<MCParsedAsmOperand*> &Operands);
+
   bool searchSymbolAlias(SmallVectorImpl<MCParsedAsmOperand*> &Operands,
                          unsigned RegKind);
 
@@ -219,7 +222,8 @@ public:
     Kind_FGR32Regs,
     Kind_FGR64Regs,
     Kind_AFGR64Regs,
-    Kind_CCRRegs
+    Kind_CCRRegs,
+    Kind_FCCRegs
   };
 
 private:
@@ -400,6 +404,10 @@ public:
 
   bool isFGR32Asm() const {
     return (Kind == k_Register) && Reg.Kind == Kind_FGR32Regs;
+  }
+
+  bool isFCCRegsAsm() const {
+    return (Kind == k_Register) && Reg.Kind == Kind_FCCRegs;
   }
 
   /// getStartLoc - Get the location of the first token of this operand.
@@ -1326,6 +1334,39 @@ MipsAsmParser::parseFGR32Regs(SmallVectorImpl<MCParsedAsmOperand*> &Operands) {
   return parseRegs(Operands, (int) MipsOperand::Kind_FGR32Regs);
 }
 
+MipsAsmParser::OperandMatchResultTy
+MipsAsmParser::parseFCCRegs(SmallVectorImpl<MCParsedAsmOperand*> &Operands) {
+  // If the first token is not '$' we have an error.
+  if (Parser.getTok().isNot(AsmToken::Dollar))
+    return MatchOperand_NoMatch;
+
+  SMLoc S = Parser.getTok().getLoc();
+  Parser.Lex(); // Eat the '$'
+
+  const AsmToken &Tok = Parser.getTok(); // Get next token.
+
+  if (Tok.isNot(AsmToken::Identifier))
+    return MatchOperand_NoMatch;
+
+  if (!Tok.getIdentifier().startswith("fcc"))
+    return MatchOperand_NoMatch;
+
+  StringRef NumString = Tok.getIdentifier().substr(3);
+
+  unsigned IntVal;
+  if (NumString.getAsInteger(10, IntVal))
+    return MatchOperand_NoMatch;
+
+  unsigned Reg = matchRegisterByNumber(IntVal, Mips::FCCRegClassID);
+
+  MipsOperand *Op = MipsOperand::CreateReg(Reg, S, Parser.getTok().getLoc());
+  Op->setRegKind(MipsOperand::Kind_FCCRegs);
+  Operands.push_back(Op);
+
+  Parser.Lex(); // Eat the register number.
+  return MatchOperand_Success;
+}
+
 bool MipsAsmParser::searchSymbolAlias(
     SmallVectorImpl<MCParsedAsmOperand*> &Operands, unsigned RegKind) {
 
@@ -1449,30 +1490,23 @@ MipsAsmParser::parseHW64Regs(
 
 MipsAsmParser::OperandMatchResultTy
 MipsAsmParser::parseCCRRegs(SmallVectorImpl<MCParsedAsmOperand*> &Operands) {
-  unsigned RegNum;
   // If the first token is not '$' we have an error.
   if (Parser.getTok().isNot(AsmToken::Dollar))
     return MatchOperand_NoMatch;
+
   SMLoc S = Parser.getTok().getLoc();
   Parser.Lex(); // Eat the '$'
 
   const AsmToken &Tok = Parser.getTok(); // Get next token.
-  if (Tok.is(AsmToken::Integer)) {
-    RegNum = Tok.getIntVal();
-    // At the moment only fcc0 is supported.
-    if (RegNum != 0)
-      return MatchOperand_ParseFail;
-  } else if (Tok.is(AsmToken::Identifier)) {
-    // At the moment only fcc0 is supported.
-    if (Tok.getIdentifier() != "fcc0")
-      return MatchOperand_ParseFail;
-  } else
+
+  if (Tok.isNot(AsmToken::Integer))
     return MatchOperand_NoMatch;
 
-  MipsOperand *op = MipsOperand::CreateReg(Mips::FCC0, S,
-                                           Parser.getTok().getLoc());
-  op->setRegKind(MipsOperand::Kind_CCRRegs);
-  Operands.push_back(op);
+  unsigned Reg = matchRegisterByNumber(Tok.getIntVal(), Mips::CCRRegClassID);
+
+  MipsOperand *Op = MipsOperand::CreateReg(Reg, S, Parser.getTok().getLoc());
+  Op->setRegKind(MipsOperand::Kind_CCRRegs);
+  Operands.push_back(Op);
 
   Parser.Lex(); // Eat the register number.
   return MatchOperand_Success;
@@ -1508,7 +1542,7 @@ bool MipsAsmParser::
 ParseInstruction(ParseInstructionInfo &Info, StringRef Name, SMLoc NameLoc,
                  SmallVectorImpl<MCParsedAsmOperand*> &Operands) {
   // Check if we have valid mnemonic
-  if (!mnemonicIsValid(Name)) {
+  if (!mnemonicIsValid(Name, 0)) {
     Parser.eatToEndOfStatement();
     return Error(NameLoc, "Unknown instruction");
   }

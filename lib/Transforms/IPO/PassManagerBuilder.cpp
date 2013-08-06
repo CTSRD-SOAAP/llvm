@@ -235,7 +235,7 @@ void PassManagerBuilder::populateModulePassManager(PassManagerBase &MPM) {
   }
 
   MPM.add(createAggressiveDCEPass());         // Delete dead instructions
-  MPM.add(createCFGSimplificationPass());     // Merge & remove BBs
+  MPM.add(createCFGSimplificationPass()); // Merge & remove BBs
   MPM.add(createInstructionCombiningPass());  // Clean up after everything.
 
   // As an experimental mode, run any vectorization passes in a separate
