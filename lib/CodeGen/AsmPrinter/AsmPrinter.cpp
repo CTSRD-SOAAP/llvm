@@ -368,9 +368,10 @@ void AsmPrinter::EmitGlobalVariable(const GlobalVariable *GV) {
     MCSymbol *MangSym =
       OutContext.GetOrCreateSymbol(GVSym->getName() + Twine("$tlv$init"));
 
-    if (GVKind.isThreadBSS())
+    if (GVKind.isThreadBSS()) {
+      TheSection = getObjFileLowering().getTLSBSSSection();
       OutStreamer.EmitTBSSSymbol(TheSection, MangSym, Size, 1 << AlignLog);
-    else if (GVKind.isThreadData()) {
+    } else if (GVKind.isThreadData()) {
       OutStreamer.SwitchSection(TheSection);
 
       EmitAlignment(AlignLog, GV);
@@ -645,7 +646,7 @@ bool AsmPrinter::needsRelocationsForDwarfStringPool() const {
 }
 
 void AsmPrinter::emitPrologLabel(const MachineInstr &MI) {
-  MCSymbol *Label = MI.getOperand(0).getMCSymbol();
+  const MCSymbol *Label = MI.getOperand(0).getMCSymbol();
 
   if (MAI->getExceptionHandlingType() != ExceptionHandling::DwarfCFI)
     return;
@@ -656,12 +657,12 @@ void AsmPrinter::emitPrologLabel(const MachineInstr &MI) {
   if (MMI->getCompactUnwindEncoding() != 0)
     OutStreamer.EmitCompactUnwindEncoding(MMI->getCompactUnwindEncoding());
 
-  MachineModuleInfo &MMI = MF->getMMI();
-  std::vector<MCCFIInstruction> Instructions = MMI.getFrameInstructions();
+  const MachineModuleInfo &MMI = MF->getMMI();
+  const std::vector<MCCFIInstruction> &Instrs = MMI.getFrameInstructions();
   bool FoundOne = false;
   (void)FoundOne;
-  for (std::vector<MCCFIInstruction>::iterator I = Instructions.begin(),
-         E = Instructions.end(); I != E; ++I) {
+  for (std::vector<MCCFIInstruction>::const_iterator I = Instrs.begin(),
+         E = Instrs.end(); I != E; ++I) {
     if (I->getLabel() == Label) {
       emitCFIInstruction(*I);
       FoundOne = true;
@@ -1414,9 +1415,9 @@ void AsmPrinter::EmitLabelOffsetDifference(const MCSymbol *Hi, uint64_t Offset,
 /// where the size in bytes of the directive is specified by Size and Label
 /// specifies the label.  This implicitly uses .set if it is available.
 void AsmPrinter::EmitLabelPlusOffset(const MCSymbol *Label, uint64_t Offset,
-                                      unsigned Size)
+                                      unsigned Size, bool IsSectionRelative)
   const {
-  if (MAI->needsDwarfSectionOffsetDirective() && Size == 4) { // secrel32 ONLY works for 32bits.
+  if (MAI->needsDwarfSectionOffsetDirective() && IsSectionRelative) { 
     OutStreamer.EmitCOFFSecRel32(Label);
     return;
   }

@@ -121,6 +121,7 @@ AMDGPUPassConfig::addPreISel() {
   const AMDGPUSubtarget &ST = TM->getSubtarget<AMDGPUSubtarget>();
   addPass(createFlattenCFGPass());
   if (ST.getGeneration() > AMDGPUSubtarget::NORTHERN_ISLANDS) {
+    addPass(createSITypeRewriter());
     addPass(createStructurizeCFGPass());
     addPass(createSIAnnotateControlFlowPass());
   } else {
@@ -146,6 +147,8 @@ bool AMDGPUPassConfig::addPreRegAlloc() {
 
   if (ST.getGeneration() <= AMDGPUSubtarget::NORTHERN_ISLANDS) {
     addPass(createR600VectorRegMerger(*TM));
+  } else {
+    addPass(createSIFixSGPRCopiesPass(*TM));
   }
   return false;
 }

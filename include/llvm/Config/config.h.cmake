@@ -402,6 +402,9 @@
 /* Define to 1 if you have <sys/wait.h> that is POSIX.1 compatible. */
 #cmakedefine HAVE_SYS_WAIT_H ${HAVE_SYS_WAIT_H}
 
+/* Define if the setupterm() function is supported this platform. */
+#cmakedefine HAVE_TERMINFO ${HAVE_TERMINFO}
+
 /* Define to 1 if you have the <termios.h> header file. */
 #cmakedefine HAVE_TERMIOS_H ${HAVE_TERMIOS_H}
 
@@ -652,9 +655,6 @@
 
 /* Define to empty if `const' does not conform to ANSI C. */
 #undef const
-
-/* Define to a type to use for `error_t' if it is not otherwise available. */
-#cmakedefine error_t ${error_t}
 
 /* Define to `int' if <sys/types.h> does not define. */
 #undef pid_t

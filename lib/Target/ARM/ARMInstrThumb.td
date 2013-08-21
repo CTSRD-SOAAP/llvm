@@ -491,7 +491,8 @@ let isBranch = 1, isTerminator = 1, isBarrier = 1 in {
              T1Encoding<{1,1,1,0,0,?}>, Sched<[WriteBr]> {
     bits<11> target;
     let Inst{10-0} = target;
-  }
+    let AsmMatchConverter = "cvtThumbBranches";
+ }
 
   // Far jump
   // Just a pseudo for a tBL instruction. Needed to let regalloc know about
@@ -521,6 +522,7 @@ let isBranch = 1, isTerminator = 1 in
   bits<8> target;
   let Inst{11-8} = p;
   let Inst{7-0} = target;
+  let AsmMatchConverter = "cvtThumbBranches";
 }
 
 
@@ -659,9 +661,6 @@ def tLDRpci : T1pIs<(outs tGPR:$Rt), (ins t_addrmode_pc:$addr), IIC_iLoad_i,
   let Inst{10-8} = Rt;
   let Inst{7-0}  = addr;
 }
-
-def : tInstAlias<"ldr${p}.n $Rt, $addr", 
-                 (tLDRpci tGPR:$Rt, t_addrmode_pc:$addr, pred:$p), 0>;
 
 // A8.6.194 & A8.6.192
 defm tSTR  : thumb_st_rr_ri_enc<0b000, 0b0110, t_addrmode_rrs4,

@@ -253,7 +253,7 @@ class FEXT_T8I8I16_ins<string asmstr, string asmstr2>:
 // I8_MOVR32 instruction format (used only by the MOVR32 instructio
 //
 class FI8_MOVR3216_ins<string asmstr, InstrItinClass itin>:
-       FI8_MOVR3216<(outs CPU16Regs:$rz), (ins CPURegs:$r32),
+       FI8_MOVR3216<(outs CPU16Regs:$rz), (ins GPR32:$r32),
        !strconcat(asmstr,  "\t$rz, $r32"), [], itin>;
 
 //
@@ -261,7 +261,7 @@ class FI8_MOVR3216_ins<string asmstr, InstrItinClass itin>:
 //
 
 class FI8_MOV32R16_ins<string asmstr, InstrItinClass itin>:
-  FI8_MOV32R16<(outs CPURegs:$r32), (ins CPU16Regs:$rz),
+  FI8_MOV32R16<(outs GPR32:$r32), (ins CPU16Regs:$rz),
                !strconcat(asmstr,  "\t$r32, $rz"), [], itin>;
 
 //
@@ -290,6 +290,11 @@ class FMULT16_LO_ins<string asmstr, InstrItinClass itin> :
 class FRR16_ins<bits<5> f, string asmstr, InstrItinClass itin> :
   FRR16<f, (outs CPU16Regs:$rx), (ins CPU16Regs:$ry),
         !strconcat(asmstr, "\t$rx, $ry"), [], itin> {
+}
+
+class FRRBreakNull16_ins<string asmstr, InstrItinClass itin> :
+  FRRBreak16<(outs), (ins), asmstr, [], itin> {
+  let Code=0;
 }
 
 class FRR16R_ins<bits<5> f, string asmstr, InstrItinClass itin> :
@@ -574,6 +579,13 @@ def BnezRxImm16: FRI16_B_ins<0b00101, "bnez", IIAlu>, cbranch16;
 //
 def BnezRxImmX16: FEXT_RI16_B_ins<0b00101, "bnez", IIAlu>, cbranch16;
 
+
+//
+//Format: BREAK immediate
+// Purpose: Breakpoint
+// To cause a Breakpoint exception.
+
+def Break16: FRRBreakNull16_ins<"break 0", NoItinerary>; 
 //
 // Format: BTEQZ offset MIPS16e
 // Purpose: Branch on T Equal to Zero (Extended)
@@ -653,7 +665,7 @@ def CmpiRxImmX16: FEXT_RI16R_ins<0b01110, "cmpi", IIAlu> {
 // To divide 32-bit signed integers.
 //
 def DivRxRy16: FRR16_div_ins<0b11010, "div", IIAlu> {
-  let Defs = [HI, LO];
+  let Defs = [HI0, LO0];
 }
 
 //
@@ -662,7 +674,7 @@ def DivRxRy16: FRR16_div_ins<0b11010, "div", IIAlu> {
 // To divide 32-bit unsigned integers.
 //
 def DivuRxRy16: FRR16_div_ins<0b11011, "divu", IIAlu> {
-  let Defs = [HI, LO];
+  let Defs = [HI0, LO0];
 }
 //
 // Format: JAL target MIPS16e
@@ -672,10 +684,7 @@ def DivuRxRy16: FRR16_div_ins<0b11011, "divu", IIAlu> {
 //
 
 def Jal16 : FJAL16_ins<0b0, "jal", IIAlu> {
-  let isBranch = 1;
   let hasDelaySlot = 0;  // not true, but we add the nop for now
-  let isTerminator=1;
-  let isBarrier=1;
   let isCall=1;
 }
 
@@ -796,7 +805,7 @@ def MoveR3216: FI8_MOVR3216_ins<"move", IIAlu>;
 // To copy the special purpose HI register to a GPR.
 //
 def Mfhi16: FRR16_M_ins<0b10000, "mfhi", IIAlu> {
-  let Uses = [HI];
+  let Uses = [HI0];
   let neverHasSideEffects = 1;
 }
 
@@ -806,7 +815,7 @@ def Mfhi16: FRR16_M_ins<0b10000, "mfhi", IIAlu> {
 // To copy the special purpose LO register to a GPR.
 //
 def Mflo16: FRR16_M_ins<0b10010, "mflo", IIAlu> {
-  let Uses = [LO];
+  let Uses = [LO0];
   let neverHasSideEffects = 1;
 }
 
@@ -816,13 +825,13 @@ def Mflo16: FRR16_M_ins<0b10010, "mflo", IIAlu> {
 def MultRxRy16:  FMULT16_ins<"mult",  IIAlu> {
   let isCommutable = 1;
   let neverHasSideEffects = 1;
-  let Defs = [HI, LO];
+  let Defs = [HI0, LO0];
 }
 
 def MultuRxRy16: FMULT16_ins<"multu", IIAlu> {
   let isCommutable = 1;
   let neverHasSideEffects = 1;
-  let Defs = [HI, LO];
+  let Defs = [HI0, LO0];
 }
 
 //
@@ -833,7 +842,7 @@ def MultuRxRy16: FMULT16_ins<"multu", IIAlu> {
 def MultRxRyRz16: FMULT16_LO_ins<"mult", IIAlu> {
   let isCommutable = 1;
   let neverHasSideEffects = 1;
-  let Defs = [HI, LO];
+  let Defs = [HI0, LO0];
 }
 
 //
@@ -844,7 +853,7 @@ def MultRxRyRz16: FMULT16_LO_ins<"mult", IIAlu> {
 def MultuRxRyRz16: FMULT16_LO_ins<"multu", IIAlu> {
   let isCommutable = 1;
   let neverHasSideEffects = 1;
-  let Defs = [HI, LO];
+  let Defs = [HI0, LO0];
 }
 
 //
@@ -1796,3 +1805,6 @@ def : Mips16Pat<(i32 (extloadi8   addr16:$src)),
                 (LbuRxRyOffMemX16  addr16:$src)>;
 def : Mips16Pat<(i32 (extloadi16  addr16:$src)),
                 (LhuRxRyOffMemX16  addr16:$src)>;
+
+def: Mips16Pat<(trap), (Break16)>;
+

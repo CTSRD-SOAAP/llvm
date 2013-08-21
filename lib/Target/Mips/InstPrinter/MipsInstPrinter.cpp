@@ -250,6 +250,19 @@ bool MipsInstPrinter::printAlias(const MCInst &MI, raw_ostream &OS) {
   case Mips::BC1F:
     // bc1f $fcc0, $L1 => bc1f $L1
     return isReg<Mips::FCC0>(MI, 0) && printAlias("bc1f", MI, 1, OS);
+  case Mips::JALR:
+    // jalr $ra, $r1 => jalr $r1
+    return isReg<Mips::RA>(MI, 0) && printAlias("jalr", MI, 1, OS);
+  case Mips::JALR64:
+    // jalr $ra, $r1 => jalr $r1
+    return isReg<Mips::RA_64>(MI, 0) && printAlias("jalr", MI, 1, OS);
+  case Mips::NOR:
+  case Mips::NOR_MM:
+    // nor $r0, $r1, $zero => not $r0, $r1
+    return isReg<Mips::ZERO>(MI, 2) && printAlias("not", MI, 0, 1, OS);
+  case Mips::NOR64:
+    // nor $r0, $r1, $zero => not $r0, $r1
+    return isReg<Mips::ZERO_64>(MI, 2) && printAlias("not", MI, 0, 1, OS);
   case Mips::OR:
     // or $r0, $r1, $zero => move $r0, $r1
     return isReg<Mips::ZERO>(MI, 2) && printAlias("move", MI, 0, 1, OS);

@@ -828,15 +828,16 @@ example:
     computing edge weights, basic blocks post-dominated by a cold
     function call are also considered to be cold; and, thus, given low
     weight.
-``nonlazybind``
-    This attribute suppresses lazy symbol binding for the function. This
-    may make calls to the function faster, at the cost of extra program
-    startup time if the function is not called during program startup.
 ``inlinehint``
     This attribute indicates that the source code contained a hint that
     inlining this function is desirable (such as the "inline" keyword in
     C/C++). It is just a hint; it imposes no requirements on the
     inliner.
+``minsize``
+    This attribute suggests that optimization passes and code generator
+    passes make choices that keep the code size of this function as small
+    as possible and perform optimizations that may sacrifice runtime 
+    performance in order to minimize the size of the generated code.
 ``naked``
     This attribute disables prologue / epilogue emission for the
     function. This can have very system-specific consequences.
@@ -863,6 +864,10 @@ example:
     This attribute indicates that the inliner should never inline this
     function in any situation. This attribute may not be used together
     with the ``alwaysinline`` attribute.
+``nonlazybind``
+    This attribute suppresses lazy symbol binding for the function. This
+    may make calls to the function faster, at the cost of extra program
+    startup time if the function is not called during program startup.
 ``noredzone``
     This attribute indicates that the code generator should not use a
     red zone, even if the target-specific ABI normally permits it.
@@ -877,7 +882,8 @@ example:
 ``optsize``
     This attribute suggests that optimization passes and code generator
     passes make choices that keep the code size of this function low,
-    and otherwise do optimizations specifically to reduce code size.
+    and otherwise do optimizations specifically to reduce code size as
+    long as they do not significantly impact runtime performance.
 ``readnone``
     On a function, this attribute indicates that the function computes its
     result (or decides to unwind an exception) based strictly on its arguments,
@@ -7347,6 +7353,42 @@ Semantics:
 This function returns the same values as the libm ``fabs`` functions
 would, and handles error conditions in the same way.
 
+'``llvm.copysign.*``' Intrinsic
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Syntax:
+"""""""
+
+This is an overloaded intrinsic. You can use ``llvm.copysign`` on any
+floating point or vector of floating point type. Not all targets support
+all types however.
+
+::
+
+      declare float     @llvm.copysign.f32(float  %Mag, float  %Sgn)
+      declare double    @llvm.copysign.f64(double %Mag, double %Sgn)
+      declare x86_fp80  @llvm.copysign.f80(x86_fp80  %Mag, x86_fp80  %Sgn)
+      declare fp128     @llvm.copysign.f128(fp128 %Mag, fp128 %Sgn)
+      declare ppc_fp128 @llvm.copysign.ppcf128(ppc_fp128  %Mag, ppc_fp128  %Sgn)
+
+Overview:
+"""""""""
+
+The '``llvm.copysign.*``' intrinsics return a value with the magnitude of the
+first operand and the sign of the second operand.
+
+Arguments:
+""""""""""
+
+The arguments and return value are floating point numbers of the same
+type.
+
+Semantics:
+""""""""""
+
+This function returns the same values as the libm ``copysign``
+functions would, and handles error conditions in the same way.
+
 '``llvm.floor.*``' Intrinsic
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -7524,6 +7566,42 @@ Semantics:
 """"""""""
 
 This function returns the same values as the libm ``nearbyint``
+functions would, and handles error conditions in the same way.
+
+'``llvm.round.*``' Intrinsic
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Syntax:
+"""""""
+
+This is an overloaded intrinsic. You can use ``llvm.round`` on any
+floating point or vector of floating point type. Not all targets support
+all types however.
+
+::
+
+      declare float     @llvm.round.f32(float  %Val)
+      declare double    @llvm.round.f64(double %Val)
+      declare x86_fp80  @llvm.round.f80(x86_fp80  %Val)
+      declare fp128     @llvm.round.f128(fp128 %Val)
+      declare ppc_fp128 @llvm.round.ppcf128(ppc_fp128  %Val)
+
+Overview:
+"""""""""
+
+The '``llvm.round.*``' intrinsics returns the operand rounded to the
+nearest integer.
+
+Arguments:
+""""""""""
+
+The argument and return value are floating point numbers of the same
+type.
+
+Semantics:
+""""""""""
+
+This function returns the same values as the libm ``round``
 functions would, and handles error conditions in the same way.
 
 Bit Manipulation Intrinsics
@@ -8599,13 +8677,51 @@ enough space to hold the value of the guard.
 Semantics:
 """"""""""
 
-This intrinsic causes the prologue/epilogue inserter to force the
-position of the ``AllocaInst`` stack slot to be before local variables
-on the stack. This is to ensure that if a local variable on the stack is
-overwritten, it will destroy the value of the guard. When the function
-exits, the guard on the stack is checked against the original guard. If
-they are different, then the program aborts by calling the
+This intrinsic causes the prologue/epilogue inserter to force the position of
+the ``AllocaInst`` stack slot to be before local variables on the stack. This is
+to ensure that if a local variable on the stack is overwritten, it will destroy
+the value of the guard. When the function exits, the guard on the stack is
+checked against the original guard by ``llvm.stackprotectorcheck``. If they are
+different, then ``llvm.stackprotectorcheck`` causes the program to abort by
+calling the ``__stack_chk_fail()`` function.
+
+'``llvm.stackprotectorcheck``' Intrinsic
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Syntax:
+"""""""
+
+::
+
+      declare void @llvm.stackprotectorcheck(i8** <guard>)
+
+Overview:
+"""""""""
+
+The ``llvm.stackprotectorcheck`` intrinsic compares ``guard`` against an already
+created stack protector and if they are not equal calls the
 ``__stack_chk_fail()`` function.
+
+Arguments:
+""""""""""
+
+The ``llvm.stackprotectorcheck`` intrinsic requires one pointer argument, the
+the variable ``@__stack_chk_guard``.
+
+Semantics:
+""""""""""
+
+This intrinsic is provided to perform the stack protector check by comparing
+``guard`` with the stack slot created by ``llvm.stackprotector`` and if the
+values do not match call the ``__stack_chk_fail()`` function.
+
+The reason to provide this as an IR level intrinsic instead of implementing it
+via other IR operations is that in order to perform this operation at the IR
+level without an intrinsic, one would need to create additional basic blocks to
+handle the success/failure cases. This makes it difficult to stop the stack
+protector check from disrupting sibling tail calls in Codegen. With this
+intrinsic, we are able to generate the stack protector basic blocks late in
+codegen after the tail call decision has occured.
 
 '``llvm.objectsize``' Intrinsic
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

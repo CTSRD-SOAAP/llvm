@@ -39,8 +39,8 @@ const unsigned MaxDepth = 6;
 static unsigned getBitWidth(Type *Ty, const DataLayout *TD) {
   if (unsigned BitWidth = Ty->getScalarSizeInBits())
     return BitWidth;
-  assert(isa<PointerType>(Ty) && "Expected a pointer type!");
-  return TD ? TD->getPointerSizeInBits() : 0;
+
+  return TD ? TD->getPointerTypeSizeInBits(Ty) : 0;
 }
 
 static void ComputeMaskedBitsAddSub(bool Add, Value *Op0, Value *Op1, bool NSW,
@@ -629,9 +629,19 @@ void llvm::ComputeMaskedBits(Value *V, APInt &KnownZero, APInt &KnownOne,
       Value *Index = I->getOperand(i);
       if (StructType *STy = dyn_cast<StructType>(*GTI)) {
         // Handle struct member offset arithmetic.
-        if (!TD) return;
-        const StructLayout *SL = TD->getStructLayout(STy);
+        if (!TD)
+          return;
+
+        // Handle case when index is vector zeroinitializer
+        Constant *CIndex = cast<Constant>(Index);
+        if (CIndex->isZeroValue())
+          continue;
+
+        if (CIndex->getType()->isVectorTy())
+          Index = CIndex->getSplatValue();
+
         unsigned Idx = cast<ConstantInt>(Index)->getZExtValue();
+        const StructLayout *SL = TD->getStructLayout(STy);
         uint64_t Offset = SL->getElementOffset(Idx);
         TrailZ = std::min<unsigned>(TrailZ,
                                     countTrailingZeros(Offset));
@@ -1704,20 +1714,24 @@ Value *llvm::FindInsertedValue(Value *V, ArrayRef<unsigned> idx_range,
 /// it can be expressed as a base pointer plus a constant offset.  Return the
 /// base and offset to the caller.
 Value *llvm::GetPointerBaseWithConstantOffset(Value *Ptr, int64_t &Offset,
-                                              const DataLayout *TD) {
+                                              const DataLayout *DL) {
   // Without DataLayout, conservatively assume 64-bit offsets, which is
   // the widest we support.
-  unsigned BitWidth = TD ? TD->getPointerSizeInBits() : 64;
+  unsigned BitWidth = DL ? DL->getPointerTypeSizeInBits(Ptr->getType()) : 64;
   APInt ByteOffset(BitWidth, 0);
   while (1) {
     if (Ptr->getType()->isVectorTy())
       break;
 
     if (GEPOperator *GEP = dyn_cast<GEPOperator>(Ptr)) {
-      APInt GEPOffset(BitWidth, 0);
-      if (TD && !GEP->accumulateConstantOffset(*TD, GEPOffset))
-        break;
-      ByteOffset += GEPOffset;
+      if (DL) {
+        APInt GEPOffset(BitWidth, 0);
+        if (!GEP->accumulateConstantOffset(*DL, GEPOffset))
+          break;
+
+        ByteOffset += GEPOffset;
+      }
+
       Ptr = GEP->getPointerOperand();
     } else if (Operator::getOpcode(Ptr) == Instruction::BitCast) {
       Ptr = cast<Operator>(Ptr)->getOperand(0);

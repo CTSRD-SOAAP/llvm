@@ -293,6 +293,103 @@ SystemZInstrInfo::InsertBranch(MachineBasicBlock &MBB, MachineBasicBlock *TBB,
   return Count;
 }
 
+bool SystemZInstrInfo::analyzeCompare(const MachineInstr *MI,
+                                      unsigned &SrcReg, unsigned &SrcReg2,
+                                      int &Mask, int &Value) const {
+  assert(MI->isCompare() && "Caller should have checked for a comparison");
+
+  if (MI->getNumExplicitOperands() == 2 &&
+      MI->getOperand(0).isReg() &&
+      MI->getOperand(1).isImm()) {
+    SrcReg = MI->getOperand(0).getReg();
+    SrcReg2 = 0;
+    Value = MI->getOperand(1).getImm();
+    Mask = ~0;
+    return true;
+  }
+
+  return false;
+}
+
+// If Reg is a virtual register, return its definition, otherwise return null.
+static MachineInstr *getDef(unsigned Reg,
+                            const MachineRegisterInfo *MRI) {
+  if (TargetRegisterInfo::isPhysicalRegister(Reg))
+    return 0;
+  return MRI->getUniqueVRegDef(Reg);
+}
+
+// Return true if MI is a shift of type Opcode by Imm bits.
+static bool isShift(MachineInstr *MI, int Opcode, int64_t Imm) {
+  return (MI->getOpcode() == Opcode &&
+          !MI->getOperand(2).getReg() &&
+          MI->getOperand(3).getImm() == Imm);
+}
+
+// If the destination of MI has no uses, delete it as dead.
+static void eraseIfDead(MachineInstr *MI, const MachineRegisterInfo *MRI) {
+  if (MRI->use_nodbg_empty(MI->getOperand(0).getReg()))
+    MI->eraseFromParent();
+}
+
+// Compare compares SrcReg against zero.  Check whether SrcReg contains
+// the result of an IPM sequence whose input CC survives until Compare,
+// and whether Compare is therefore redundant.  Delete it and return
+// true if so.
+static bool removeIPMBasedCompare(MachineInstr *Compare, unsigned SrcReg,
+                                  const MachineRegisterInfo *MRI,
+                                  const TargetRegisterInfo *TRI) {
+  MachineInstr *LGFR = 0;
+  MachineInstr *RLL = getDef(SrcReg, MRI);
+  if (RLL && RLL->getOpcode() == SystemZ::LGFR) {
+    LGFR = RLL;
+    RLL = getDef(LGFR->getOperand(1).getReg(), MRI);
+  }
+  if (!RLL || !isShift(RLL, SystemZ::RLL, 31))
+    return false;
+
+  MachineInstr *SRL = getDef(RLL->getOperand(1).getReg(), MRI);
+  if (!SRL || !isShift(SRL, SystemZ::SRL, 28))
+    return false;
+
+  MachineInstr *IPM = getDef(SRL->getOperand(1).getReg(), MRI);
+  if (!IPM || IPM->getOpcode() != SystemZ::IPM)
+    return false;
+
+  // Check that there are no assignments to CC between the IPM and Compare,
+  if (IPM->getParent() != Compare->getParent())
+    return false;
+  MachineBasicBlock::iterator MBBI = IPM, MBBE = Compare;
+  for (++MBBI; MBBI != MBBE; ++MBBI) {
+    MachineInstr *MI = MBBI;
+    if (MI->modifiesRegister(SystemZ::CC, TRI))
+      return false;
+  }
+
+  Compare->eraseFromParent();
+  if (LGFR)
+    eraseIfDead(LGFR, MRI);
+  eraseIfDead(RLL, MRI);
+  eraseIfDead(SRL, MRI);
+  eraseIfDead(IPM, MRI);
+
+  return true;
+}
+
+bool
+SystemZInstrInfo::optimizeCompareInstr(MachineInstr *Compare,
+                                       unsigned SrcReg, unsigned SrcReg2,
+                                       int Mask, int Value,
+                                       const MachineRegisterInfo *MRI) const {
+  assert(!SrcReg2 && "Only optimizing constant comparisons so far");
+  bool IsLogical = (Compare->getDesc().TSFlags & SystemZII::IsLogical) != 0;
+  if (Value == 0 &&
+      !IsLogical &&
+      removeIPMBasedCompare(Compare, SrcReg, MRI, TM.getRegisterInfo()))
+    return true;
+  return false;
+}
+
 // If Opcode is a move that has a conditional variant, return that variant,
 // otherwise return 0.
 static unsigned getConditionalMove(unsigned Opcode) {
@@ -770,6 +867,9 @@ unsigned SystemZInstrInfo::getLoadAndTest(unsigned Opcode) const {
   case SystemZ::LR:   return SystemZ::LTR;
   case SystemZ::LGFR: return SystemZ::LTGFR;
   case SystemZ::LGR:  return SystemZ::LTGR;
+  case SystemZ::LER:  return SystemZ::LTEBR;
+  case SystemZ::LDR:  return SystemZ::LTDBR;
+  case SystemZ::LXR:  return SystemZ::LTXBR;
   default:            return 0;
   }
 }

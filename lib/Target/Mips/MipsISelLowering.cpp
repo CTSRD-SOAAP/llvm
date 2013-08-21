@@ -34,6 +34,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
+#include <cctype>
 
 using namespace llvm;
 
@@ -424,8 +425,8 @@ static SDValue performDivRemCombine(SDNode *N, SelectionDAG &DAG,
     return SDValue();
 
   EVT Ty = N->getValueType(0);
-  unsigned LO = (Ty == MVT::i32) ? Mips::LO : Mips::LO64;
-  unsigned HI = (Ty == MVT::i32) ? Mips::HI : Mips::HI64;
+  unsigned LO = (Ty == MVT::i32) ? Mips::LO0 : Mips::LO0_64;
+  unsigned HI = (Ty == MVT::i32) ? Mips::HI0 : Mips::HI0_64;
   unsigned Opc = N->getOpcode() == ISD::SDIVREM ? MipsISD::DivRem16 :
                                                   MipsISD::DivRemU16;
   SDLoc DL(N);
@@ -796,107 +797,75 @@ MipsTargetLowering::EmitInstrWithCustomInserter(MachineInstr *MI,
   default:
     llvm_unreachable("Unexpected instr type to insert");
   case Mips::ATOMIC_LOAD_ADD_I8:
-  case Mips::ATOMIC_LOAD_ADD_I8_P8:
     return emitAtomicBinaryPartword(MI, BB, 1, Mips::ADDu);
   case Mips::ATOMIC_LOAD_ADD_I16:
-  case Mips::ATOMIC_LOAD_ADD_I16_P8:
     return emitAtomicBinaryPartword(MI, BB, 2, Mips::ADDu);
   case Mips::ATOMIC_LOAD_ADD_I32:
-  case Mips::ATOMIC_LOAD_ADD_I32_P8:
     return emitAtomicBinary(MI, BB, 4, Mips::ADDu);
   case Mips::ATOMIC_LOAD_ADD_I64:
-  case Mips::ATOMIC_LOAD_ADD_I64_P8:
     return emitAtomicBinary(MI, BB, 8, Mips::DADDu);
 
   case Mips::ATOMIC_LOAD_AND_I8:
-  case Mips::ATOMIC_LOAD_AND_I8_P8:
     return emitAtomicBinaryPartword(MI, BB, 1, Mips::AND);
   case Mips::ATOMIC_LOAD_AND_I16:
-  case Mips::ATOMIC_LOAD_AND_I16_P8:
     return emitAtomicBinaryPartword(MI, BB, 2, Mips::AND);
   case Mips::ATOMIC_LOAD_AND_I32:
-  case Mips::ATOMIC_LOAD_AND_I32_P8:
     return emitAtomicBinary(MI, BB, 4, Mips::AND);
   case Mips::ATOMIC_LOAD_AND_I64:
-  case Mips::ATOMIC_LOAD_AND_I64_P8:
     return emitAtomicBinary(MI, BB, 8, Mips::AND64);
 
   case Mips::ATOMIC_LOAD_OR_I8:
-  case Mips::ATOMIC_LOAD_OR_I8_P8:
     return emitAtomicBinaryPartword(MI, BB, 1, Mips::OR);
   case Mips::ATOMIC_LOAD_OR_I16:
-  case Mips::ATOMIC_LOAD_OR_I16_P8:
     return emitAtomicBinaryPartword(MI, BB, 2, Mips::OR);
   case Mips::ATOMIC_LOAD_OR_I32:
-  case Mips::ATOMIC_LOAD_OR_I32_P8:
     return emitAtomicBinary(MI, BB, 4, Mips::OR);
   case Mips::ATOMIC_LOAD_OR_I64:
-  case Mips::ATOMIC_LOAD_OR_I64_P8:
     return emitAtomicBinary(MI, BB, 8, Mips::OR64);
 
   case Mips::ATOMIC_LOAD_XOR_I8:
-  case Mips::ATOMIC_LOAD_XOR_I8_P8:
     return emitAtomicBinaryPartword(MI, BB, 1, Mips::XOR);
   case Mips::ATOMIC_LOAD_XOR_I16:
-  case Mips::ATOMIC_LOAD_XOR_I16_P8:
     return emitAtomicBinaryPartword(MI, BB, 2, Mips::XOR);
   case Mips::ATOMIC_LOAD_XOR_I32:
-  case Mips::ATOMIC_LOAD_XOR_I32_P8:
     return emitAtomicBinary(MI, BB, 4, Mips::XOR);
   case Mips::ATOMIC_LOAD_XOR_I64:
-  case Mips::ATOMIC_LOAD_XOR_I64_P8:
     return emitAtomicBinary(MI, BB, 8, Mips::XOR64);
 
   case Mips::ATOMIC_LOAD_NAND_I8:
-  case Mips::ATOMIC_LOAD_NAND_I8_P8:
     return emitAtomicBinaryPartword(MI, BB, 1, 0, true);
   case Mips::ATOMIC_LOAD_NAND_I16:
-  case Mips::ATOMIC_LOAD_NAND_I16_P8:
     return emitAtomicBinaryPartword(MI, BB, 2, 0, true);
   case Mips::ATOMIC_LOAD_NAND_I32:
-  case Mips::ATOMIC_LOAD_NAND_I32_P8:
     return emitAtomicBinary(MI, BB, 4, 0, true);
   case Mips::ATOMIC_LOAD_NAND_I64:
-  case Mips::ATOMIC_LOAD_NAND_I64_P8:
     return emitAtomicBinary(MI, BB, 8, 0, true);
 
   case Mips::ATOMIC_LOAD_SUB_I8:
-  case Mips::ATOMIC_LOAD_SUB_I8_P8:
     return emitAtomicBinaryPartword(MI, BB, 1, Mips::SUBu);
   case Mips::ATOMIC_LOAD_SUB_I16:
-  case Mips::ATOMIC_LOAD_SUB_I16_P8:
     return emitAtomicBinaryPartword(MI, BB, 2, Mips::SUBu);
   case Mips::ATOMIC_LOAD_SUB_I32:
-  case Mips::ATOMIC_LOAD_SUB_I32_P8:
     return emitAtomicBinary(MI, BB, 4, Mips::SUBu);
   case Mips::ATOMIC_LOAD_SUB_I64:
-  case Mips::ATOMIC_LOAD_SUB_I64_P8:
     return emitAtomicBinary(MI, BB, 8, Mips::DSUBu);
 
   case Mips::ATOMIC_SWAP_I8:
-  case Mips::ATOMIC_SWAP_I8_P8:
     return emitAtomicBinaryPartword(MI, BB, 1, 0);
   case Mips::ATOMIC_SWAP_I16:
-  case Mips::ATOMIC_SWAP_I16_P8:
     return emitAtomicBinaryPartword(MI, BB, 2, 0);
   case Mips::ATOMIC_SWAP_I32:
-  case Mips::ATOMIC_SWAP_I32_P8:
     return emitAtomicBinary(MI, BB, 4, 0);
   case Mips::ATOMIC_SWAP_I64:
-  case Mips::ATOMIC_SWAP_I64_P8:
     return emitAtomicBinary(MI, BB, 8, 0);
 
   case Mips::ATOMIC_CMP_SWAP_I8:
-  case Mips::ATOMIC_CMP_SWAP_I8_P8:
     return emitAtomicCmpSwapPartword(MI, BB, 1);
   case Mips::ATOMIC_CMP_SWAP_I16:
-  case Mips::ATOMIC_CMP_SWAP_I16_P8:
     return emitAtomicCmpSwapPartword(MI, BB, 2);
   case Mips::ATOMIC_CMP_SWAP_I32:
-  case Mips::ATOMIC_CMP_SWAP_I32_P8:
     return emitAtomicCmpSwap(MI, BB, 4);
   case Mips::ATOMIC_CMP_SWAP_I64:
-  case Mips::ATOMIC_CMP_SWAP_I64_P8:
     return emitAtomicCmpSwap(MI, BB, 8);
   case Mips::PseudoSDIV:
   case Mips::PseudoUDIV:
@@ -923,16 +892,16 @@ MipsTargetLowering::emitAtomicBinary(MachineInstr *MI, MachineBasicBlock *BB,
   unsigned LL, SC, AND, NOR, ZERO, BEQ;
 
   if (Size == 4) {
-    LL = IsN64 ? Mips::LL_P8 : Mips::LL;
-    SC = IsN64 ? Mips::SC_P8 : Mips::SC;
+    LL = Mips::LL;
+    SC = Mips::SC;
     AND = Mips::AND;
     NOR = Mips::NOR;
     ZERO = Mips::ZERO;
     BEQ = Mips::BEQ;
   }
   else {
-    LL = IsN64 ? Mips::LLD_P8 : Mips::LLD;
-    SC = IsN64 ? Mips::SCD_P8 : Mips::SCD;
+    LL = Mips::LLD;
+    SC = Mips::SCD;
     AND = Mips::AND64;
     NOR = Mips::NOR64;
     ZERO = Mips::ZERO_64;
@@ -1008,8 +977,6 @@ MipsTargetLowering::emitAtomicBinaryPartword(MachineInstr *MI,
   const TargetRegisterClass *RC = getRegClassFor(MVT::i32);
   const TargetInstrInfo *TII = getTargetMachine().getInstrInfo();
   DebugLoc DL = MI->getDebugLoc();
-  unsigned LL = IsN64 ? Mips::LL_P8 : Mips::LL;
-  unsigned SC = IsN64 ? Mips::SC_P8 : Mips::SC;
 
   unsigned Dest = MI->getOperand(0).getReg();
   unsigned Ptr = MI->getOperand(1).getReg();
@@ -1106,7 +1073,7 @@ MipsTargetLowering::emitAtomicBinaryPartword(MachineInstr *MI,
   //   beq     success,$0,loopMBB
 
   BB = loopMBB;
-  BuildMI(BB, DL, TII->get(LL), OldVal).addReg(AlignedAddr).addImm(0);
+  BuildMI(BB, DL, TII->get(Mips::LL), OldVal).addReg(AlignedAddr).addImm(0);
   if (Nand) {
     //  and andres, oldval, incr2
     //  nor binopres, $0, andres
@@ -1129,7 +1096,7 @@ MipsTargetLowering::emitAtomicBinaryPartword(MachineInstr *MI,
     .addReg(OldVal).addReg(Mask2);
   BuildMI(BB, DL, TII->get(Mips::OR), StoreVal)
     .addReg(MaskedOldVal0).addReg(NewVal);
-  BuildMI(BB, DL, TII->get(SC), Success)
+  BuildMI(BB, DL, TII->get(Mips::SC), Success)
     .addReg(StoreVal).addReg(AlignedAddr).addImm(0);
   BuildMI(BB, DL, TII->get(Mips::BEQ))
     .addReg(Success).addReg(Mips::ZERO).addMBB(loopMBB);
@@ -1170,15 +1137,15 @@ MipsTargetLowering::emitAtomicCmpSwap(MachineInstr *MI,
   unsigned LL, SC, ZERO, BNE, BEQ;
 
   if (Size == 4) {
-    LL = IsN64 ? Mips::LL_P8 : Mips::LL;
-    SC = IsN64 ? Mips::SC_P8 : Mips::SC;
+    LL = Mips::LL;
+    SC = Mips::SC;
     ZERO = Mips::ZERO;
     BNE = Mips::BNE;
     BEQ = Mips::BEQ;
   }
   else {
-    LL = IsN64 ? Mips::LLD_P8 : Mips::LLD;
-    SC = IsN64 ? Mips::SCD_P8 : Mips::SCD;
+    LL = Mips::LLD;
+    SC = Mips::SCD;
     ZERO = Mips::ZERO_64;
     BNE = Mips::BNE64;
     BEQ = Mips::BEQ64;
@@ -1250,8 +1217,6 @@ MipsTargetLowering::emitAtomicCmpSwapPartword(MachineInstr *MI,
   const TargetRegisterClass *RC = getRegClassFor(MVT::i32);
   const TargetInstrInfo *TII = getTargetMachine().getInstrInfo();
   DebugLoc DL = MI->getDebugLoc();
-  unsigned LL = IsN64 ? Mips::LL_P8 : Mips::LL;
-  unsigned SC = IsN64 ? Mips::SC_P8 : Mips::SC;
 
   unsigned Dest    = MI->getOperand(0).getReg();
   unsigned Ptr     = MI->getOperand(1).getReg();
@@ -1348,7 +1313,7 @@ MipsTargetLowering::emitAtomicCmpSwapPartword(MachineInstr *MI,
   //    and     maskedoldval0,oldval,mask
   //    bne     maskedoldval0,shiftedcmpval,sinkMBB
   BB = loop1MBB;
-  BuildMI(BB, DL, TII->get(LL), OldVal).addReg(AlignedAddr).addImm(0);
+  BuildMI(BB, DL, TII->get(Mips::LL), OldVal).addReg(AlignedAddr).addImm(0);
   BuildMI(BB, DL, TII->get(Mips::AND), MaskedOldVal0)
     .addReg(OldVal).addReg(Mask);
   BuildMI(BB, DL, TII->get(Mips::BNE))
@@ -1364,7 +1329,7 @@ MipsTargetLowering::emitAtomicCmpSwapPartword(MachineInstr *MI,
     .addReg(OldVal).addReg(Mask2);
   BuildMI(BB, DL, TII->get(Mips::OR), StoreVal)
     .addReg(MaskedOldVal1).addReg(ShiftedNewVal);
-  BuildMI(BB, DL, TII->get(SC), Success)
+  BuildMI(BB, DL, TII->get(Mips::SC), Success)
       .addReg(StoreVal).addReg(AlignedAddr).addImm(0);
   BuildMI(BB, DL, TII->get(Mips::BEQ))
       .addReg(Success).addReg(Mips::ZERO).addMBB(loop1MBB);
@@ -2154,7 +2119,8 @@ SDValue MipsTargetLowering::lowerFP_TO_SINT(SDValue Op,
 
 static bool CC_MipsO32(unsigned ValNo, MVT ValVT,
                        MVT LocVT, CCValAssign::LocInfo LocInfo,
-                       ISD::ArgFlagsTy ArgFlags, CCState &State) {
+                       ISD::ArgFlagsTy ArgFlags, CCState &State,
+                       const uint16_t *F64Regs) {
 
   static const unsigned IntRegsSize=4, FloatRegsSize=2;
 
@@ -2163,9 +2129,6 @@ static bool CC_MipsO32(unsigned ValNo, MVT ValVT,
   };
   static const uint16_t F32Regs[] = {
       Mips::F12, Mips::F14
-  };
-  static const uint16_t F64Regs[] = {
-      Mips::D6, Mips::D7
   };
 
   // Do not process byval args here.
@@ -2233,6 +2196,22 @@ static bool CC_MipsO32(unsigned ValNo, MVT ValVT,
     State.addLoc(CCValAssign::getReg(ValNo, ValVT, Reg, LocVT, LocInfo));
 
   return false;
+}
+
+static bool CC_MipsO32_FP32(unsigned ValNo, MVT ValVT,
+                            MVT LocVT, CCValAssign::LocInfo LocInfo,
+                            ISD::ArgFlagsTy ArgFlags, CCState &State) {
+  static const uint16_t F64Regs[] = { Mips::D6, Mips::D7 };
+
+  return CC_MipsO32(ValNo, ValVT, LocVT, LocInfo, ArgFlags, State, F64Regs);
+}
+
+static bool CC_MipsO32_FP64(unsigned ValNo, MVT ValVT,
+                            MVT LocVT, CCValAssign::LocInfo LocInfo,
+                            ISD::ArgFlagsTy ArgFlags, CCState &State) {
+  static const uint16_t F64Regs[] = { Mips::D12_64, Mips::D12_64 };
+
+  return CC_MipsO32(ValNo, ValVT, LocVT, LocInfo, ArgFlags, State, F64Regs);
 }
 
 #include "MipsGenCallingConv.inc"
@@ -2347,7 +2326,8 @@ MipsTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
                  getTargetMachine(), ArgLocs, *DAG.getContext());
   MipsCC::SpecialCallingConvType SpecialCallingConv =
     getSpecialCallingConv(Callee);
-  MipsCC MipsCCInfo(CallConv, IsO32, CCInfo, SpecialCallingConv);
+  MipsCC MipsCCInfo(CallConv, IsO32, Subtarget->isFP64bit(), CCInfo,
+                    SpecialCallingConv);
 
   MipsCCInfo.analyzeCallOperands(Outs, IsVarArg,
                                  getTargetMachine().Options.UseSoftFloat,
@@ -2534,7 +2514,7 @@ MipsTargetLowering::LowerCallResult(SDValue Chain, SDValue InFlag,
   SmallVector<CCValAssign, 16> RVLocs;
   CCState CCInfo(CallConv, IsVarArg, DAG.getMachineFunction(),
                  getTargetMachine(), RVLocs, *DAG.getContext());
-  MipsCC MipsCCInfo(CallConv, IsO32, CCInfo);
+  MipsCC MipsCCInfo(CallConv, IsO32, Subtarget->isFP64bit(), CCInfo);
 
   MipsCCInfo.analyzeCallResult(Ins, getTargetMachine().Options.UseSoftFloat,
                                CallNode, RetTy);
@@ -2581,7 +2561,7 @@ MipsTargetLowering::LowerFormalArguments(SDValue Chain,
   SmallVector<CCValAssign, 16> ArgLocs;
   CCState CCInfo(CallConv, IsVarArg, DAG.getMachineFunction(),
                  getTargetMachine(), ArgLocs, *DAG.getContext());
-  MipsCC MipsCCInfo(CallConv, IsO32, CCInfo);
+  MipsCC MipsCCInfo(CallConv, IsO32, Subtarget->isFP64bit(), CCInfo);
   Function::const_arg_iterator FuncArg =
     DAG.getMachineFunction().getFunction()->arg_begin();
   bool UseSoftFloat = getTargetMachine().Options.UseSoftFloat;
@@ -2619,13 +2599,14 @@ MipsTargetLowering::LowerFormalArguments(SDValue Chain,
 
       if (RegVT == MVT::i32)
         RC = Subtarget->inMips16Mode()? &Mips::CPU16RegsRegClass :
-                                        &Mips::CPURegsRegClass;
+                                        &Mips::GPR32RegClass;
       else if (RegVT == MVT::i64)
-        RC = &Mips::CPU64RegsRegClass;
+        RC = &Mips::GPR64RegClass;
       else if (RegVT == MVT::f32)
         RC = &Mips::FGR32RegClass;
       else if (RegVT == MVT::f64)
-        RC = HasMips64 ? &Mips::FGR64RegClass : &Mips::AFGR64RegClass;
+        RC = Subtarget->isFP64bit() ? &Mips::FGR64RegClass :
+                                      &Mips::AFGR64RegClass;
       else
         llvm_unreachable("RegVT not supported by FormalArguments Lowering");
 
@@ -2740,7 +2721,7 @@ MipsTargetLowering::LowerReturn(SDValue Chain,
   // CCState - Info about the registers and stack slot.
   CCState CCInfo(CallConv, IsVarArg, MF, getTargetMachine(), RVLocs,
                  *DAG.getContext());
-  MipsCC MipsCCInfo(CallConv, IsO32, CCInfo);
+  MipsCC MipsCCInfo(CallConv, IsO32, Subtarget->isFP64bit(), CCInfo);
 
   // Analyze return values.
   MipsCCInfo.analyzeReturn(Outs, getTargetMachine().Options.UseSoftFloat,
@@ -2880,6 +2861,79 @@ MipsTargetLowering::getSingleConstraintMatchWeight(
   return weight;
 }
 
+/// This is a helper function to parse a physical register string and split it
+/// into non-numeric and numeric parts (Prefix and Reg). The first boolean flag
+/// that is returned indicates whether parsing was successful. The second flag
+/// is true if the numeric part exists.
+static std::pair<bool, bool>
+parsePhysicalReg(const StringRef &C, std::string &Prefix,
+                 unsigned long long &Reg) {
+  if (C.front() != '{' || C.back() != '}')
+    return std::make_pair(false, false);
+
+  // Search for the first numeric character.
+  StringRef::const_iterator I, B = C.begin() + 1, E = C.end() - 1;
+  I = std::find_if(B, E, std::ptr_fun(isdigit));
+
+  Prefix.assign(B, I - B);
+
+  // The second flag is set to false if no numeric characters were found.
+  if (I == E)
+    return std::make_pair(true, false);
+
+  // Parse the numeric characters.
+  return std::make_pair(!getAsUnsignedInteger(StringRef(I, E - I), 10, Reg),
+                        true);
+}
+
+std::pair<unsigned, const TargetRegisterClass *> MipsTargetLowering::
+parseRegForInlineAsmConstraint(const StringRef &C, MVT VT) const {
+  const TargetRegisterInfo *TRI = getTargetMachine().getRegisterInfo();
+  const TargetRegisterClass *RC;
+  std::string Prefix;
+  unsigned long long Reg;
+
+  std::pair<bool, bool> R = parsePhysicalReg(C, Prefix, Reg);
+
+  if (!R.first)
+    return std::make_pair((unsigned)0, (const TargetRegisterClass*)0);
+
+  if ((Prefix == "hi" || Prefix == "lo")) { // Parse hi/lo.
+    // No numeric characters follow "hi" or "lo".
+    if (R.second)
+      return std::make_pair((unsigned)0, (const TargetRegisterClass*)0);
+
+    RC = TRI->getRegClass(Prefix == "hi" ?
+                          Mips::HI32RegClassID : Mips::LO32RegClassID);
+    return std::make_pair(*(RC->begin()), RC);
+  }
+
+  if (!R.second)
+    return std::make_pair((unsigned)0, (const TargetRegisterClass*)0);
+
+  if (Prefix == "$f") { // Parse $f0-$f31.
+    // If the size of FP registers is 64-bit or Reg is an even number, select
+    // the 64-bit register class. Otherwise, select the 32-bit register class.
+    if (VT == MVT::Other)
+      VT = (Subtarget->isFP64bit() || !(Reg % 2)) ? MVT::f64 : MVT::f32;
+
+    RC= getRegClassFor(VT);
+
+    if (RC == &Mips::AFGR64RegClass) {
+      assert(Reg % 2 == 0);
+      Reg >>= 1;
+    }
+  } else if (Prefix == "$fcc") { // Parse $fcc0-$fcc7.
+    RC = TRI->getRegClass(Mips::FCCRegClassID);
+  } else { // Parse $0-$31.
+    assert(Prefix == "$");
+    RC = getRegClassFor((VT == MVT::Other) ? MVT::i32 : VT);
+  }
+
+  assert(Reg < RC->getNumRegs());
+  return std::make_pair(*(RC->begin() + Reg), RC);
+}
+
 /// Given a register class constraint, like 'r', if this corresponds directly
 /// to an LLVM register class, return a register of 0 and the register class
 /// pointer.
@@ -2894,12 +2948,12 @@ getRegForInlineAsmConstraint(const std::string &Constraint, MVT VT) const
       if (VT == MVT::i32 || VT == MVT::i16 || VT == MVT::i8) {
         if (Subtarget->inMips16Mode())
           return std::make_pair(0U, &Mips::CPU16RegsRegClass);
-        return std::make_pair(0U, &Mips::CPURegsRegClass);
+        return std::make_pair(0U, &Mips::GPR32RegClass);
       }
       if (VT == MVT::i64 && !HasMips64)
-        return std::make_pair(0U, &Mips::CPURegsRegClass);
+        return std::make_pair(0U, &Mips::GPR32RegClass);
       if (VT == MVT::i64 && HasMips64)
-        return std::make_pair(0U, &Mips::CPU64RegsRegClass);
+        return std::make_pair(0U, &Mips::GPR64RegClass);
       // This will generate an error message
       return std::make_pair(0u, static_cast<const TargetRegisterClass*>(0));
     case 'f':
@@ -2913,19 +2967,26 @@ getRegForInlineAsmConstraint(const std::string &Constraint, MVT VT) const
       break;
     case 'c': // register suitable for indirect jump
       if (VT == MVT::i32)
-        return std::make_pair((unsigned)Mips::T9, &Mips::CPURegsRegClass);
+        return std::make_pair((unsigned)Mips::T9, &Mips::GPR32RegClass);
       assert(VT == MVT::i64 && "Unexpected type.");
-      return std::make_pair((unsigned)Mips::T9_64, &Mips::CPU64RegsRegClass);
+      return std::make_pair((unsigned)Mips::T9_64, &Mips::GPR64RegClass);
     case 'l': // register suitable for indirect jump
       if (VT == MVT::i32)
-        return std::make_pair((unsigned)Mips::LO, &Mips::LORegsRegClass);
-      return std::make_pair((unsigned)Mips::LO64, &Mips::LORegs64RegClass);
+        return std::make_pair((unsigned)Mips::LO0, &Mips::LO32RegClass);
+      return std::make_pair((unsigned)Mips::LO0_64, &Mips::LO64RegClass);
     case 'x': // register suitable for indirect jump
       // Fixme: Not triggering the use of both hi and low
       // This will generate an error message
       return std::make_pair(0u, static_cast<const TargetRegisterClass*>(0));
     }
   }
+
+  std::pair<unsigned, const TargetRegisterClass *> R;
+  R = parseRegForInlineAsmConstraint(Constraint, VT);
+
+  if (R.second)
+    return R;
+
   return TargetLowering::getRegForInlineAsmConstraint(Constraint, VT);
 }
 
@@ -3133,9 +3194,9 @@ MipsTargetLowering::MipsCC::SpecialCallingConvType
 }
 
 MipsTargetLowering::MipsCC::MipsCC(
-  CallingConv::ID CC, bool IsO32_, CCState &Info,
+  CallingConv::ID CC, bool IsO32_, bool IsFP64_, CCState &Info,
     MipsCC::SpecialCallingConvType SpecialCallingConv_)
-  : CCInfo(Info), CallConv(CC), IsO32(IsO32_),
+  : CCInfo(Info), CallConv(CC), IsO32(IsO32_), IsFP64(IsFP64_),
     SpecialCallingConv(SpecialCallingConv_){
   // Pre-allocate reserved argument area.
   CCInfo.AllocateStack(reservedArgArea(), 1);
@@ -3291,11 +3352,11 @@ llvm::CCAssignFn *MipsTargetLowering::MipsCC::fixedArgFn() const {
 
   if (SpecialCallingConv == Mips16RetHelperConv)
     return CC_Mips16RetHelper;
-  return IsO32 ? CC_MipsO32 : CC_MipsN;
+  return IsO32 ? (IsFP64 ? CC_MipsO32_FP64 : CC_MipsO32_FP32) : CC_MipsN;
 }
 
 llvm::CCAssignFn *MipsTargetLowering::MipsCC::varArgFn() const {
-  return IsO32 ? CC_MipsO32 : CC_MipsN_VarArg;
+  return IsO32 ? (IsFP64 ? CC_MipsO32_FP64 : CC_MipsO32_FP32) : CC_MipsN_VarArg;
 }
 
 const uint16_t *MipsTargetLowering::MipsCC::shadowRegs() const {

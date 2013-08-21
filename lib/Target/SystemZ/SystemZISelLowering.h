@@ -32,6 +32,7 @@ namespace SystemZISD {
     // is the target address.  The arguments start at operand 2.
     // There is an optional glue operand at the end.
     CALL,
+    SIBCALL,
 
     // Wraps a TargetGlobalAddress that should be loaded using PC-relative
     // accesses (LARL).  Operand 0 is the address.
@@ -79,6 +80,26 @@ namespace SystemZISD {
     // This isn't a memory opcode because we'd need to attach two
     // MachineMemOperands rather than one.
     MVC,
+
+    // Use CLC to compare two blocks of memory, with the same comments
+    // as for MVC.
+    CLC,
+
+    // Use an MVST-based sequence to implement stpcpy().
+    STPCPY,
+
+    // Use a CLST-based sequence to implement strcmp().  The two input operands
+    // are the addresses of the strings to compare.
+    STRCMP,
+
+    // Use an SRST-based sequence to search a block of memory.  The first
+    // operand is the end address, the second is the start, and the third
+    // is the character to search for.  CC is set to 1 on success and 2
+    // on failure.
+    SEARCH_STRING,
+
+    // Store the CC value in bits 29 and 28 of an integer.
+    IPM,
 
     // Wrappers around the inner loop of an 8- or 16-bit ATOMIC_SWAP or
     // ATOMIC_LOAD_<op>.
@@ -135,6 +156,8 @@ public:
      LLVM_OVERRIDE;
   virtual bool allowsUnalignedMemoryAccesses(EVT VT, bool *Fast) const
     LLVM_OVERRIDE;
+  virtual bool isTruncateFree(Type *, Type *) const LLVM_OVERRIDE;
+  virtual bool isTruncateFree(EVT, EVT) const LLVM_OVERRIDE;
   virtual const char *getTargetNodeName(unsigned Opcode) const LLVM_OVERRIDE;
   virtual std::pair<unsigned, const TargetRegisterClass *>
     getRegForInlineAsmConstraint(const std::string &Constraint,
@@ -154,6 +177,8 @@ public:
                                 MachineBasicBlock *BB) const LLVM_OVERRIDE;
   virtual SDValue LowerOperation(SDValue Op,
                                  SelectionDAG &DAG) const LLVM_OVERRIDE;
+  virtual bool allowTruncateForTailCall(Type *, Type *) const LLVM_OVERRIDE;
+  virtual bool mayBeEmittedAsTailCall(CallInst *CI) const LLVM_OVERRIDE;
   virtual SDValue
     LowerFormalArguments(SDValue Chain,
                          CallingConv::ID CallConv, bool isVarArg,
@@ -189,6 +214,7 @@ private:
   SDValue lowerVASTART(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerVACOPY(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerDYNAMIC_STACKALLOC(SDValue Op, SelectionDAG &DAG) const;
+  SDValue lowerSMUL_LOHI(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerUMUL_LOHI(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerSDIVREM(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerUDIVREM(SDValue Op, SelectionDAG &DAG) const;
@@ -230,8 +256,12 @@ private:
                                           unsigned BitSize) const;
   MachineBasicBlock *emitAtomicCmpSwapW(MachineInstr *MI,
                                         MachineBasicBlock *BB) const;
-  MachineBasicBlock *emitMVCWrapper(MachineInstr *MI,
-                                    MachineBasicBlock *BB) const;
+  MachineBasicBlock *emitMemMemWrapper(MachineInstr *MI,
+                                       MachineBasicBlock *BB,
+                                       unsigned Opcode) const;
+  MachineBasicBlock *emitStringWrapper(MachineInstr *MI,
+                                       MachineBasicBlock *BB,
+                                       unsigned Opcode) const;
 };
 } // end namespace llvm
 

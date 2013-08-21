@@ -123,6 +123,8 @@ set(FFI_INCLUDE_DIR "" CACHE PATH "Additional directory, where CMake should sear
 set(LLVM_TARGET_ARCH "host"
   CACHE STRING "Set target to use for LLVM JIT or use \"host\" for automatic detection.")
 
+option(LLVM_ENABLE_TERMINFO "Use terminfo database if available." ON)
+
 option(LLVM_ENABLE_THREADS "Use threads if available." ON)
 
 option(LLVM_ENABLE_ZLIB "Use zlib for compression/decompression if available." ON)
@@ -286,7 +288,7 @@ execute_process(
             --enable-optional-components "${LLVMOPTIONALCOMPONENTS}"
             --write-library-table ${LLVMCONFIGLIBRARYDEPENDENCIESINC}
             --write-cmake-fragment ${LLVMBUILDCMAKEFRAG}
-            ERROR_VARIABLE LLVMBUILDOUTPUT
+            OUTPUT_VARIABLE LLVMBUILDOUTPUT
             ERROR_VARIABLE LLVMBUILDERRORS
             OUTPUT_STRIP_TRAILING_WHITESPACE
             ERROR_STRIP_TRAILING_WHITESPACE
@@ -491,7 +493,16 @@ install(DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/include/
 set(CPACK_PACKAGE_VENDOR "LLVM")
 set(CPACK_PACKAGE_VERSION_MAJOR ${LLVM_VERSION_MAJOR})
 set(CPACK_PACKAGE_VERSION_MINOR ${LLVM_VERSION_MINOR})
-add_version_info_from_vcs(CPACK_PACKAGE_VERSION_PATCH)
+if( LLVM_APPEND_VC_REV )
+  add_version_info_from_vcs(CPACK_PACKAGE_VERSION_PATCH)
+else()
+  set(CPACK_PACKAGE_VERSION_PATCH "svn")
+endif()
+set(CPACK_RESOURCE_FILE_LICENSE "${LLVM_MAIN_SRC_DIR}/LICENSE.TXT")
+if(WIN32 AND NOT UNIX)
+  set(CPACK_PACKAGE_ICON "${LLVM_MAIN_SRC_DIR}\\\\cmake\\\\nsis_logo.bmp")
+  set(CPACK_NSIS_MODIFY_PATH "ON")
+endif()
 include(CPack)
 
 # Workaround for MSVS10 to avoid the Dialog Hell

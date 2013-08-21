@@ -712,6 +712,50 @@
 	cl	%r0, -1
 	cl	%r0, 4096
 
+#CHECK: error: missing length in address
+#CHECK: clc	0, 0
+#CHECK: error: missing length in address
+#CHECK: clc	0(%r1), 0(%r1)
+#CHECK: error: invalid use of length addressing
+#CHECK: clc	0(1,%r1), 0(2,%r1)
+#CHECK: error: invalid operand
+#CHECK: clc	0(0,%r1), 0(%r1)
+#CHECK: error: invalid operand
+#CHECK: clc	0(257,%r1), 0(%r1)
+#CHECK: error: invalid operand
+#CHECK: clc	-1(1,%r1), 0(%r1)
+#CHECK: error: invalid operand
+#CHECK: clc	4096(1,%r1), 0(%r1)
+#CHECK: error: invalid operand
+#CHECK: clc	0(1,%r1), -1(%r1)
+#CHECK: error: invalid operand
+#CHECK: clc	0(1,%r1), 4096(%r1)
+#CHECK: error: %r0 used in an address
+#CHECK: clc	0(1,%r0), 0(%r1)
+#CHECK: error: %r0 used in an address
+#CHECK: clc	0(1,%r1), 0(%r0)
+#CHECK: error: invalid use of indexed addressing
+#CHECK: clc	0(%r1,%r2), 0(%r1)
+#CHECK: error: invalid use of indexed addressing
+#CHECK: clc	0(1,%r2), 0(%r1,%r2)
+#CHECK: error: unknown token in expression
+#CHECK: clc	0(-), 0
+
+	clc	0, 0
+	clc	0(%r1), 0(%r1)
+	clc	0(1,%r1), 0(2,%r1)
+	clc	0(0,%r1), 0(%r1)
+	clc	0(257,%r1), 0(%r1)
+	clc	-1(1,%r1), 0(%r1)
+	clc	4096(1,%r1), 0(%r1)
+	clc	0(1,%r1), -1(%r1)
+	clc	0(1,%r1), 4096(%r1)
+	clc	0(1,%r0), 0(%r1)
+	clc	0(1,%r1), 0(%r0)
+	clc	0(%r1,%r2), 0(%r1)
+	clc	0(1,%r2), 0(%r1,%r2)
+	clc	0(-), 0
+
 #CHECK: error: invalid operand
 #CHECK: clfhsi	-1, 0
 #CHECK: error: invalid operand
@@ -1098,6 +1142,11 @@
 	fidbr	%f0, -1, %f0
 	fidbr	%f0, 16, %f0
 
+#CHECK: error: {{(instruction requires: fp-extension)?}}
+#CHECK: fidbra	%f0, 0, %f0, 0
+
+	fidbra	%f0, 0, %f0, 0
+
 #CHECK: error: invalid operand
 #CHECK: fiebr	%f0, -1, %f0
 #CHECK: error: invalid operand
@@ -1105,6 +1154,11 @@
 
 	fiebr	%f0, -1, %f0
 	fiebr	%f0, 16, %f0
+
+#CHECK: error: {{(instruction requires: fp-extension)?}}
+#CHECK: fiebra	%f0, 0, %f0, 0
+
+	fiebra	%f0, 0, %f0, 0
 
 #CHECK: error: invalid operand
 #CHECK: fixbr	%f0, -1, %f0
@@ -1119,6 +1173,11 @@
 	fixbr	%f0, 16, %f0
 	fixbr	%f0, 0, %f2
 	fixbr	%f2, 0, %f0
+
+#CHECK: error: {{(instruction requires: fp-extension)?}}
+#CHECK: fixbra	%f0, 0, %f0, 0
+
+	fixbra	%f0, 0, %f0, 0
 
 #CHECK: error: invalid register pair
 #CHECK: flogr	%r1, %r0
@@ -1643,6 +1702,14 @@
 
 	ltgf	%r0, -524289
 	ltgf	%r0, 524288
+
+#CHECK: error: invalid register pair
+#CHECK: ltxbr	%f0, %f14
+#CHECK: error: invalid register pair
+#CHECK: ltxbr	%f14, %f0
+
+	ltxbr	%f0, %f14
+	ltxbr	%f14, %f0
 
 #CHECK: error: invalid register pair
 #CHECK: lxr	%f0, %f2

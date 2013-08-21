@@ -71,7 +71,7 @@ void DWARFDebugInfoEntryMinimal::dumpAttribute(raw_ostream &OS,
                                                uint16_t attr,
                                                uint16_t form,
                                                unsigned indent) const {
-  OS << format("0x%8.8x: ", *offset_ptr);
+  OS << "            ";
   OS.indent(indent+2);
   const char *attrString = AttributeString(attr);
   if (attrString)
@@ -366,19 +366,18 @@ void DWARFDebugInfoEntryMinimal::getCallerFrame(const DWARFCompileUnit *CU,
   CallColumn = getAttributeValueAsUnsigned(CU, DW_AT_call_column, 0);
 }
 
-DWARFDebugInfoEntryMinimal::InlinedChain
+DWARFDebugInfoEntryInlinedChain
 DWARFDebugInfoEntryMinimal::getInlinedChainForAddress(
-                                                     const DWARFCompileUnit *CU,
-                                                     const uint64_t Address)
-                                                     const {
-  DWARFDebugInfoEntryMinimal::InlinedChain InlinedChain;
+    const DWARFCompileUnit *CU, const uint64_t Address) const {
+  DWARFDebugInfoEntryInlinedChain InlinedChain;
+  InlinedChain.CU = CU;
   if (isNULL())
     return InlinedChain;
   for (const DWARFDebugInfoEntryMinimal *DIE = this; DIE; ) {
     // Append current DIE to inlined chain only if it has correct tag
     // (e.g. it is not a lexical block).
     if (DIE->isSubroutineDIE()) {
-      InlinedChain.push_back(*DIE);
+      InlinedChain.DIEs.push_back(*DIE);
     }
     // Try to get child which also contains provided address.
     const DWARFDebugInfoEntryMinimal *Child = DIE->getFirstChild();
@@ -392,6 +391,6 @@ DWARFDebugInfoEntryMinimal::getInlinedChainForAddress(
     DIE = Child;
   }
   // Reverse the obtained chain to make the root of inlined chain last.
-  std::reverse(InlinedChain.begin(), InlinedChain.end());
+  std::reverse(InlinedChain.DIEs.begin(), InlinedChain.DIEs.end());
   return InlinedChain;
 }

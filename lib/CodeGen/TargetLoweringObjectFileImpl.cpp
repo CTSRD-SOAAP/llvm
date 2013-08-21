@@ -771,12 +771,18 @@ SelectSectionForGlobal(const GlobalValue *GV, SectionKind Kind,
   }
 
   if (Kind.isText())
-    return getTextSection();
+    return TextSection;
 
   if (Kind.isThreadLocal())
-    return getTLSDataSection();
+    return TLSDataSection;
 
-  return getDataSection();
+  if (Kind.isReadOnly())
+    return ReadOnlySection;
+
+  if (Kind.isBSS())
+    return BSSSection;
+
+  return DataSection;
 }
 
 void TargetLoweringObjectFileCOFF::

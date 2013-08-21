@@ -90,6 +90,7 @@ static const Mips16Libcall HardFloatLibCalls[] = {
 };
 
 static const Mips16IntrinsicHelperType Mips16IntrinsicHelper[] = {
+  {"__fixunsdfsi", "__mips16_call_stub_2" },
   {"ceil",  "__mips16_call_stub_df_2"},
   {"ceilf", "__mips16_call_stub_sf_1"},
   {"copysign",  "__mips16_call_stub_df_10"},
@@ -119,7 +120,7 @@ Mips16TargetLowering::Mips16TargetLowering(MipsTargetMachine &TM)
   //
   // set up as if mips32 and then revert so we can test the mechanism
   // for switching
-  addRegisterClass(MVT::i32, &Mips::CPURegsRegClass);
+  addRegisterClass(MVT::i32, &Mips::GPR32RegClass);
   addRegisterClass(MVT::f32, &Mips::FGR32RegClass);
   computeRegisterProperties();
   clearRegisterClasses();
