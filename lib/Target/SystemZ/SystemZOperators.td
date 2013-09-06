@@ -57,13 +57,21 @@ def SDT_ZAtomicCmpSwapW     : SDTypeProfile<1, 6,
 def SDT_ZMemMemLength       : SDTypeProfile<0, 3,
                                             [SDTCisPtrTy<0>,
                                              SDTCisPtrTy<1>,
-                                             SDTCisVT<2, i32>]>;
+                                             SDTCisVT<2, i64>]>;
+def SDT_ZMemMemLoop         : SDTypeProfile<0, 4,
+                                            [SDTCisPtrTy<0>,
+                                             SDTCisPtrTy<1>,
+                                             SDTCisVT<2, i64>,
+                                             SDTCisVT<3, i64>]>;
 def SDT_ZString             : SDTypeProfile<1, 3,
                                             [SDTCisPtrTy<0>,
                                              SDTCisPtrTy<1>,
                                              SDTCisPtrTy<2>,
                                              SDTCisVT<3, i32>]>;
 def SDT_ZI32Intrinsic       : SDTypeProfile<1, 0, [SDTCisVT<0, i32>]>;
+def SDT_ZPrefetch           : SDTypeProfile<0, 2,
+                                            [SDTCisVT<0, i8>,
+                                             SDTCisPtrTy<1>]>;
 
 //===----------------------------------------------------------------------===//
 // Node definitions
@@ -88,6 +96,7 @@ def z_sibcall           : SDNode<"SystemZISD::SIBCALL", SDT_ZCall,
 def z_pcrel_wrapper     : SDNode<"SystemZISD::PCREL_WRAPPER", SDT_ZWrapPtr, []>;
 def z_cmp               : SDNode<"SystemZISD::CMP", SDT_ZCmp, [SDNPOutGlue]>;
 def z_ucmp              : SDNode<"SystemZISD::UCMP", SDT_ZCmp, [SDNPOutGlue]>;
+def z_tm                : SDNode<"SystemZISD::TM", SDT_ZCmp, [SDNPOutGlue]>;
 def z_br_ccmask         : SDNode<"SystemZISD::BR_CCMASK", SDT_ZBRCCMask,
                                  [SDNPHasChain, SDNPInGlue]>;
 def z_select_ccmask     : SDNode<"SystemZISD::SELECT_CCMASK", SDT_ZSelectCCMask,
@@ -120,7 +129,23 @@ def z_atomic_cmp_swapw  : AtomicWOp<"ATOMIC_CMP_SWAPW", SDT_ZAtomicCmpSwapW>;
 
 def z_mvc               : SDNode<"SystemZISD::MVC", SDT_ZMemMemLength,
                                  [SDNPHasChain, SDNPMayStore, SDNPMayLoad]>;
+def z_mvc_loop          : SDNode<"SystemZISD::MVC_LOOP", SDT_ZMemMemLoop,
+                                 [SDNPHasChain, SDNPMayStore, SDNPMayLoad]>;
+def z_nc                : SDNode<"SystemZISD::NC", SDT_ZMemMemLength,
+                                  [SDNPHasChain, SDNPMayStore, SDNPMayLoad]>;
+def z_nc_loop           : SDNode<"SystemZISD::NC_LOOP", SDT_ZMemMemLoop,
+                                  [SDNPHasChain, SDNPMayStore, SDNPMayLoad]>;
+def z_oc                : SDNode<"SystemZISD::OC", SDT_ZMemMemLength,
+                                  [SDNPHasChain, SDNPMayStore, SDNPMayLoad]>;
+def z_oc_loop           : SDNode<"SystemZISD::OC_LOOP", SDT_ZMemMemLoop,
+                                  [SDNPHasChain, SDNPMayStore, SDNPMayLoad]>;
+def z_xc                : SDNode<"SystemZISD::XC", SDT_ZMemMemLength,
+                                  [SDNPHasChain, SDNPMayStore, SDNPMayLoad]>;
+def z_xc_loop           : SDNode<"SystemZISD::XC_LOOP", SDT_ZMemMemLoop,
+                                  [SDNPHasChain, SDNPMayStore, SDNPMayLoad]>;
 def z_clc               : SDNode<"SystemZISD::CLC", SDT_ZMemMemLength,
+                                 [SDNPHasChain, SDNPOutGlue, SDNPMayLoad]>;
+def z_clc_loop          : SDNode<"SystemZISD::CLC_LOOP", SDT_ZMemMemLoop,
                                  [SDNPHasChain, SDNPOutGlue, SDNPMayLoad]>;
 def z_strcmp            : SDNode<"SystemZISD::STRCMP", SDT_ZString,
                                  [SDNPHasChain, SDNPOutGlue, SDNPMayLoad]>;
@@ -130,6 +155,9 @@ def z_search_string     : SDNode<"SystemZISD::SEARCH_STRING", SDT_ZString,
                                  [SDNPHasChain, SDNPOutGlue, SDNPMayLoad]>;
 def z_ipm               : SDNode<"SystemZISD::IPM", SDT_ZI32Intrinsic,
                                  [SDNPInGlue]>;
+def z_prefetch          : SDNode<"SystemZISD::PREFETCH", SDT_ZPrefetch,
+                                 [SDNPHasChain, SDNPMayLoad, SDNPMayStore,
+                                  SDNPMemOperand]>;
 
 //===----------------------------------------------------------------------===//
 // Pattern fragments
@@ -207,6 +235,31 @@ def nonvolatile_store         : NonvolatileStore<store>;
 def nonvolatile_truncstorei8  : NonvolatileStore<truncstorei8>;
 def nonvolatile_truncstorei16 : NonvolatileStore<truncstorei16>;
 def nonvolatile_truncstorei32 : NonvolatileStore<truncstorei32>;
+
+// A store of a load that can be implemented using MVC.
+def mvc_store : PatFrag<(ops node:$value, node:$addr),
+                        (unindexedstore node:$value, node:$addr),
+                        [{ return storeLoadCanUseMVC(N); }]>;
+
+// Binary read-modify-write operations on memory in which the other
+// operand is also memory and for which block operations like NC can
+// be used.  There are two patterns for each operator, depending on
+// which operand contains the "other" load.
+multiclass block_op<SDPatternOperator operator> {
+  def "1" : PatFrag<(ops node:$value, node:$addr),
+                    (unindexedstore (operator node:$value,
+                                              (unindexedload node:$addr)),
+                                    node:$addr),
+                    [{ return storeLoadCanUseBlockBinary(N, 0); }]>;
+  def "2" : PatFrag<(ops node:$value, node:$addr),
+                    (unindexedstore (operator (unindexedload node:$addr),
+                                              node:$value),
+                                    node:$addr),
+                    [{ return storeLoadCanUseBlockBinary(N, 1); }]>;
+}
+defm block_and : block_op<and>;
+defm block_or  : block_op<or>;
+defm block_xor : block_op<xor>;
 
 // Insertions.
 def inserti8 : PatFrag<(ops node:$src1, node:$src2),

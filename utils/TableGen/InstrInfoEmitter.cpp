@@ -132,8 +132,8 @@ InstrInfoEmitter::GetOperandInfo(const CodeGenInstruction &Inst) {
         Res += "|(1<<MCOI::LookupPtrRegClass)";
 
       // Predicate operands.  Check to see if the original unexpanded operand
-      // was of type PredicateOperand.
-      if (Inst.Operands[i].Rec->isSubClassOf("PredicateOperand"))
+      // was of type PredicateOp.
+      if (Inst.Operands[i].Rec->isSubClassOf("PredicateOp"))
         Res += "|(1<<MCOI::Predicate)";
 
       // Optional def operands.  Check to see if the original unexpanded operand
@@ -545,7 +545,15 @@ void InstrInfoEmitter::emitEnums(raw_ostream &OS) {
        << "\t= " << i << ",\n";
   }
   OS << "    INSTRUCTION_LIST_END = " << NumberedInstructions.size() << "\n";
-  OS << "  };\n}\n";
+  OS << "  };\n";
+  OS << "namespace Sched {\n";
+  OS << "  enum {\n";
+  for (unsigned i = 0, e = SchedModels.numInstrSchedClasses(); i != e; ++i) {
+    OS << "    " << SchedModels.getSchedClass(i).Name
+       << "\t= " << i << ",\n";
+  }
+  OS << "    SCHED_LIST_END = " << SchedModels.numInstrSchedClasses() << "\n";
+  OS << "  };\n}\n}\n";
   OS << "} // End llvm namespace \n";
 
   OS << "#endif // GET_INSTRINFO_ENUM\n\n";

@@ -344,25 +344,11 @@ def MVGHI : StoreSIL<"mvghi", 0xE548, store,         imm64sx16>;
 
 // Memory-to-memory moves.
 let mayLoad = 1, mayStore = 1 in
-  defm MVC : MemorySS<"mvc", 0xD2, z_mvc>;
+  defm MVC : MemorySS<"mvc", 0xD2, z_mvc, z_mvc_loop>;
 
 // String moves.
 let mayLoad = 1, mayStore = 1, Defs = [CC], Uses = [R0W] in
   defm MVST : StringRRE<"mvst", 0xB255, z_stpcpy>;
-
-defm LoadStore8_32  : MVCLoadStore<anyextloadi8, truncstorei8, i32,
-                                   MVCWrapper, 1>;
-defm LoadStore16_32 : MVCLoadStore<anyextloadi16, truncstorei16, i32,
-                                   MVCWrapper, 2>;
-defm LoadStore32_32 : MVCLoadStore<load, store, i32, MVCWrapper, 4>;
-
-defm LoadStore8  : MVCLoadStore<anyextloadi8, truncstorei8, i64,
-                                MVCWrapper, 1>;
-defm LoadStore16 : MVCLoadStore<anyextloadi16, truncstorei16, i64,
-                                MVCWrapper, 2>;
-defm LoadStore32 : MVCLoadStore<anyextloadi32, truncstorei32, i64,
-                                MVCWrapper, 4>;
-defm LoadStore64 : MVCLoadStore<load, store, i64, MVCWrapper, 8>;
 
 //===----------------------------------------------------------------------===//
 // Sign extensions
@@ -770,6 +756,10 @@ let Defs = [CC] in {
 
   // AND to memory
   defm NI : BinarySIPair<"ni", 0x94, 0xEB54, null_frag, uimm8>;
+
+  // Block AND.
+  let mayLoad = 1, mayStore = 1 in
+    defm NC : MemorySS<"nc", 0xD4, z_nc, z_nc_loop>;
 }
 defm : RMWIByte<and, bdaddr12pair, NI>;
 defm : RMWIByte<and, bdaddr20pair, NIY>;
@@ -812,6 +802,10 @@ let Defs = [CC] in {
 
   // OR to memory
   defm OI : BinarySIPair<"oi", 0x96, 0xEB56, null_frag, uimm8>;
+
+  // Block OR.
+  let mayLoad = 1, mayStore = 1 in
+    defm OC : MemorySS<"oc", 0xD6, z_oc, z_oc_loop>;
 }
 defm : RMWIByte<or, bdaddr12pair, OI>;
 defm : RMWIByte<or, bdaddr20pair, OIY>;
@@ -843,6 +837,10 @@ let Defs = [CC] in {
 
   // XOR to memory
   defm XI : BinarySIPair<"xi", 0x97, 0xEB57, null_frag, uimm8>;
+
+  // Block XOR.
+  let mayLoad = 1, mayStore = 1 in
+    defm XC : MemorySS<"xc", 0xD7, z_xc, z_xc_loop>;
 }
 defm : RMWIByte<xor, bdaddr12pair, XI>;
 defm : RMWIByte<xor, bdaddr20pair, XIY>;
@@ -1028,11 +1026,31 @@ defm : ZXB<z_ucmp, GR64, CLGFR>;
 
 // Memory-to-memory comparison.
 let mayLoad = 1, Defs = [CC] in
-  defm CLC : MemorySS<"clc", 0xD5, z_clc>;
+  defm CLC : MemorySS<"clc", 0xD5, z_clc, z_clc_loop>;
 
 // String comparison.
 let mayLoad = 1, Defs = [CC], Uses = [R0W] in
   defm CLST : StringRRE<"clst", 0xB25D, z_strcmp>;
+
+// Test under mask.
+let Defs = [CC] in {
+  let isCodeGenOnly = 1 in {
+    def TMLL32 : CompareRI<"tmll", 0xA71, z_tm, GR32, imm32ll16>;
+    def TMLH32 : CompareRI<"tmlh", 0xA70, z_tm, GR32, imm32lh16>;
+  }
+
+  def TMLL : CompareRI<"tmll", 0xA71, z_tm, GR64, imm64ll16>;
+  def TMLH : CompareRI<"tmlh", 0xA70, z_tm, GR64, imm64lh16>;
+  def TMHL : CompareRI<"tmhl", 0xA73, z_tm, GR64, imm64hl16>;
+  def TMHH : CompareRI<"tmhh", 0xA72, z_tm, GR64, imm64hh16>;
+}
+
+//===----------------------------------------------------------------------===//
+// Prefetch
+//===----------------------------------------------------------------------===//
+
+def PFD : PrefetchRXY<"pfd", 0xE336, z_prefetch>;
+def PFDRL : PrefetchRILPC<"pfdrl", 0xC62, z_prefetch>;
 
 //===----------------------------------------------------------------------===//
 // Atomic operations
@@ -1226,3 +1244,19 @@ def : Pat<(sra (shl (i64 (anyext (i32 (z_select_ccmask 1, 0, uimm8zx4:$valid,
                     (i32 63)),
                (i32 63)),
           (Select64 (LGHI -1), (LGHI 0), uimm8zx4:$valid, uimm8zx4:$cc)>;
+
+// Peepholes for turning scalar operations into block operations.
+defm : BlockLoadStore<anyextloadi8, i32, MVCSequence, NCSequence, OCSequence,
+                      XCSequence, 1>;
+defm : BlockLoadStore<anyextloadi16, i32, MVCSequence, NCSequence, OCSequence,
+                      XCSequence, 2>;
+defm : BlockLoadStore<load, i32, MVCSequence, NCSequence, OCSequence,
+                      XCSequence, 4>;
+defm : BlockLoadStore<anyextloadi8, i64, MVCSequence, NCSequence,
+                      OCSequence, XCSequence, 1>;
+defm : BlockLoadStore<anyextloadi16, i64, MVCSequence, NCSequence, OCSequence,
+                      XCSequence, 2>;
+defm : BlockLoadStore<anyextloadi32, i64, MVCSequence, NCSequence, OCSequence,
+                      XCSequence, 4>;
+defm : BlockLoadStore<load, i64, MVCSequence, NCSequence, OCSequence,
+                      XCSequence, 8>;

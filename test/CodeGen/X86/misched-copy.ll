@@ -1,12 +1,4 @@
 ; REQUIRES: asserts
-;
-; FIXME: The following line is a hack to remove any stray files which might have
-; been left dangling around by this test. It can be removed once the various
-; bots have cycled past this commit.
-;
-; RUN: rm -f misched-copy.s %S/misched-copy.s
-;
-;
 ; RUN: llc < %s -march=x86 -mcpu=core2 -pre-RA-sched=source -enable-misched -verify-misched -debug-only=misched -o - 2>&1 > /dev/null | FileCheck %s
 ;
 ; Test scheduling of copy instructions.
@@ -16,11 +8,11 @@
 ; MUL_HiLo PhysReg use copies should be just above the mul.
 ; MUL_HiLo PhysReg def copies should be just below the mul.
 ;
-; CHECK:      *** Final schedule for BB#1 ***
-; CHECK-NEXT: %EAX<def> = COPY
-; CHECK:      MUL32r %vreg{{[0-9]+}}, %EAX<imp-def>, %EDX<imp-def>, %EFLAGS<imp-def,dead>, %EAX<imp-use>;
-; CHECK-NEXT: COPY %E{{[AD]}}X;
-; CHECK-NEXT: COPY %E{{[AD]}}X;
+; CHECK: *** Final schedule for BB#1 ***
+; CHECK:      %EAX<def> = COPY
+; CHECK-NEXT: MUL32r %vreg{{[0-9]+}}, %EAX<imp-def>, %EDX<imp-def>, %EFLAGS<imp-def,dead>, %EAX<imp-use>;
+; CHECK-NEXT: COPY %E{{[AD]}}X
+; CHECK-NEXT: COPY %E{{[AD]}}X
 ; CHECK:      DIVSSrm
 define i64 @mulhoist(i32 %a, i32 %b) #0 {
 entry:
@@ -50,7 +42,7 @@ end:
   ret i64 %add
 }
 
-attributes #0 = { nounwind ssp uwtable "less-precise-fpmad"="false" "no-frame-pointer-elim"="false" "no-frame-pointer-elim-non-leaf"="false" "no-infs-fp-math"="false" "no-nans-fp-math"="false" "unsafe-fp-math"="false" "use-soft-float"="false" }
+attributes #0 = { nounwind ssp uwtable "less-precise-fpmad"="false" "no-frame-pointer-elim"="false" "no-infs-fp-math"="false" "no-nans-fp-math"="false" "unsafe-fp-math"="false" "use-soft-float"="false" }
 
 !0 = metadata !{metadata !"float", metadata !1}
 !1 = metadata !{metadata !"omnipotent char", metadata !2}

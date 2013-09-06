@@ -107,6 +107,10 @@ class MachineSchedStrategy {
 public:
   virtual ~MachineSchedStrategy() {}
 
+  /// Check if pressure tracking is needed before building the DAG and
+  /// initializing this strategy.
+  virtual bool shouldTrackPressure(unsigned NumRegionInstrs) { return true; }
+
   /// Initialize the strategy after building the DAG for a new region.
   virtual void initialize(ScheduleDAGMI *DAG) = 0;
 
@@ -221,14 +225,20 @@ protected:
 
   MachineBasicBlock::iterator LiveRegionEnd;
 
-  /// Register pressure in this region computed by buildSchedGraph.
+  // Map each SU to its summary of pressure changes. This array is updated for
+  // liveness during bottom-up scheduling. Top-down scheduling may proceed but
+  // has no affect on the pressure diffs.
+  PressureDiffs SUPressureDiffs;
+
+  /// Register pressure in this region computed by initRegPressure.
+  bool ShouldTrackPressure;
   IntervalPressure RegPressure;
   RegPressureTracker RPTracker;
 
   /// List of pressure sets that exceed the target's pressure limit before
   /// scheduling, listed in increasing set ID order. Each pressure set is paired
   /// with its max pressure in the currently scheduled regions.
-  std::vector<PressureElement> RegionCriticalPSets;
+  std::vector<PressureChange> RegionCriticalPSets;
 
   /// The top of the unscheduled zone.
   MachineBasicBlock::iterator CurrentTop;
@@ -254,8 +264,9 @@ public:
   ScheduleDAGMI(MachineSchedContext *C, MachineSchedStrategy *S):
     ScheduleDAGInstrs(*C->MF, *C->MLI, *C->MDT, /*IsPostRA=*/false, C->LIS),
     AA(C->AA), RegClassInfo(C->RegClassInfo), SchedImpl(S), DFSResult(0),
-    Topo(SUnits, &ExitSU), RPTracker(RegPressure), CurrentTop(),
-    TopRPTracker(TopPressure), CurrentBottom(), BotRPTracker(BotPressure),
+    Topo(SUnits, &ExitSU), ShouldTrackPressure(false),
+    RPTracker(RegPressure), CurrentTop(), TopRPTracker(TopPressure),
+    CurrentBottom(), BotRPTracker(BotPressure),
     NextClusterPred(NULL), NextClusterSucc(NULL) {
 #ifndef NDEBUG
     NumInstrsScheduled = 0;
@@ -263,6 +274,9 @@ public:
   }
 
   virtual ~ScheduleDAGMI();
+
+  /// \brief Return true if register pressure tracking is enabled.
+  bool isTrackingPressure() const { return ShouldTrackPressure; }
 
   /// Add a postprocessing step to the DAG builder.
   /// Mutations are applied in the order that they are added after normal DAG
@@ -293,8 +307,7 @@ public:
   void enterRegion(MachineBasicBlock *bb,
                    MachineBasicBlock::iterator begin,
                    MachineBasicBlock::iterator end,
-                   unsigned endcount);
-
+                   unsigned regioninstrs) LLVM_OVERRIDE;
 
   /// Implement ScheduleDAGInstrs interface for scheduling a sequence of
   /// reorderable instructions.
@@ -315,8 +328,12 @@ public:
   /// Get register pressure for the entire scheduling region before scheduling.
   const IntervalPressure &getRegPressure() const { return RegPressure; }
 
-  const std::vector<PressureElement> &getRegionCriticalPSets() const {
+  const std::vector<PressureChange> &getRegionCriticalPSets() const {
     return RegionCriticalPSets;
+  }
+
+  PressureDiff &getPressureDiff(const SUnit *SU) {
+    return SUPressureDiffs[SU->NodeNum];
   }
 
   const SUnit *getNextClusterPred() const { return NextClusterPred; }
@@ -331,6 +348,9 @@ public:
   const SchedDFSResult *getDFSResult() const { return DFSResult; }
 
   BitVector &getScheduledTrees() { return ScheduledTrees; }
+
+  /// Compute the cyclic critical path through the DAG.
+  unsigned computeCyclicCriticalPath();
 
   void viewGraph(const Twine &Name, const Twine &Title) LLVM_OVERRIDE;
   void viewGraph() LLVM_OVERRIDE;
@@ -366,6 +386,8 @@ protected:
   // Lesser helpers...
 
   void initRegPressure();
+
+  void updatePressureDiffs(ArrayRef<unsigned> LiveUses);
 
   void updateScheduledPressure(const std::vector<unsigned> &NewMaxPressure);
 

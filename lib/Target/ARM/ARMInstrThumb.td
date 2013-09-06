@@ -300,6 +300,13 @@ def tBKPT : T1I<(outs), (ins imm0_255:$val), NoItinerary, "bkpt\t$val",
   let Inst{7-0} = val;
 }
 
+def tHLT : T1I<(outs), (ins imm0_63:$val), NoItinerary, "hlt\t$val",
+                []>, T1Encoding<0b101110>, Requires<[IsThumb, HasV8]> {
+  let Inst{9-6} = 0b1010;
+  bits<6> val;
+  let Inst{5-0} = val;
+}
+
 def tSETEND : T1I<(outs), (ins setend_op:$end), NoItinerary, "setend\t$end",
                   []>, T1Encoding<0b101101> {
   bits<1> end;
@@ -1204,9 +1211,9 @@ def tUXTH :                     // A8.6.264
 // Expanded after instruction selection into a branch sequence.
 let usesCustomInserter = 1 in  // Expanded after instruction selection.
   def tMOVCCr_pseudo :
-  PseudoInst<(outs tGPR:$dst), (ins tGPR:$false, tGPR:$true, pred:$cc),
-              NoItinerary,
-             [/*(set tGPR:$dst, (ARMcmov tGPR:$false, tGPR:$true, imm:$cc))*/]>;
+  PseudoInst<(outs tGPR:$dst), (ins tGPR:$false, tGPR:$true, cmovpred:$p),
+             NoItinerary,
+             [(set tGPR:$dst, (ARMcmov tGPR:$false, tGPR:$true, cmovpred:$p))]>;
 
 // tLEApcrel - Load a pc-relative address into a register without offending the
 // assembler.
