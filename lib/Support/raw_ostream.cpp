@@ -287,6 +287,13 @@ raw_ostream &raw_ostream::write(unsigned char C) {
 }
 
 raw_ostream &raw_ostream::write(const char *Ptr, size_t Size) {
+#ifdef __FreeBSD__  
+  if (LLVM_UNLIKELY(Size > INT_MAX)) {
+    write(Ptr, INT_MAX);
+    return write(Ptr + INT_MAX, Size - INT_MAX);
+  }
+#endif
+
   // Group exceptional cases into a single branch.
   if (LLVM_UNLIKELY(size_t(OutBufEnd - OutBufCur) < Size)) {
     if (LLVM_UNLIKELY(!OutBufStart)) {
