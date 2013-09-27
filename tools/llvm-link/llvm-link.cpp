@@ -19,19 +19,22 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IRReader/IRReader.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/PrettyStackTrace.h"
 #include "llvm/Support/Signals.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/SystemUtils.h"
+#include "llvm/Support/system_error.h"
 #include "llvm/Support/ToolOutputFile.h"
 #include <memory>
 using namespace llvm;
+using namespace llvm::sys::fs;
 
 static cl::list<std::string>
 InputFilenames(cl::Positional, cl::OneOrMore,
-               cl::desc("<input bitcode files>"));
+               cl::desc("<input bitcode files|input bitcode directory>"));
 
 static cl::opt<std::string>
 OutputFilename("o", cl::desc("Override output filename"), cl::init("-"),
@@ -49,6 +52,12 @@ Verbose("v", cl::desc("Print information about actions taken"));
 
 static cl::opt<bool>
 DumpAsm("d", cl::desc("Print assembly as linked"), cl::Hidden);
+
+static cl::opt<bool>
+Directory("dir", cl::desc("Input argument is a directory containing bitcode files"));
+
+static cl::opt<bool>
+NoVerify("disable-verify", cl::desc("Do not verify linked module"), cl::Hidden);
 
 // LoadFile - Read the specified bitcode file in and return it.  This routine
 // searches the link path for the specified file to try to find it...
@@ -74,6 +83,29 @@ int main(int argc, char **argv) {
   LLVMContext &Context = getGlobalContext();
   llvm_shutdown_obj Y;  // Call llvm_shutdown() on exit.
   cl::ParseCommandLineOptions(argc, argv, "llvm linker\n");
+
+  if (Directory) {
+    if (InputFilenames.size() > 1) {
+      errs() << "Error: More than one directory specified\n";
+    }
+
+    // fill InputFilenames with the name of the files in the argument directory,
+    // thus allowing the code below to work with no changes
+    error_code ec; // output parameter to store error codes
+    std::string dir = InputFilenames[0];
+    InputFilenames.clear();
+    int fileCount = 0;
+    for (directory_iterator I = directory_iterator(dir, ec), E; I != E; I.increment(ec)) {
+      if (ec != ec.success()) {
+        errs() << "Error iterating directory: " << ec.message() << "\n";
+        return -1;
+      }
+      InputFilenames.push_back(I->path());
+      fileCount++;
+      //outs() << "File: " << I->path() << "\n";
+    }
+    if (Verbose) errs() << "Found " << fileCount << " files in " << dir << "\n";
+  }
 
   unsigned BaseArg = 0;
   std::string ErrorMessage;
@@ -112,7 +144,7 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  if (verifyModule(*Composite)) {
+  if (!NoVerify && verifyModule(*Composite)) {
     errs() << argv[0] << ": linked module is broken!\n";
     return 1;
   }
