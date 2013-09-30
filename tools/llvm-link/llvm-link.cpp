@@ -87,6 +87,7 @@ int main(int argc, char **argv) {
   if (Directory) {
     if (InputFilenames.size() > 1) {
       errs() << "Error: More than one directory specified\n";
+      return -1;
     }
 
     // fill InputFilenames with the name of the files in the argument directory,
