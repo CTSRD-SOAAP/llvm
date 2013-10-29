@@ -343,6 +343,13 @@ def main(builtinParameters = {}):
             for suiteName in bySuite:
                 s = bySuite[suiteName]
                 xmlFile.write("<testsuite name='" + suiteName + "'")
+                xmlFile.write(" tests='" + str(s['passes'] + s['failures']) + "'")
+                xmlFile.write(" failures='" + str(s['failures']) + "'>\n")
+                for t in s['tests']:
+                    xmlFile.write(t.getJUnitXML() + "\n")
+                xmlFile.write("</testsuite>\n")
+            xmlFile.write("</testsuites>")
+            xmlFile.close()
 
     # If we encountered any additional errors, exit abnormally.
     if litConfig.numErrors:
