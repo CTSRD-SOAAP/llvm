@@ -1,5 +1,6 @@
 import os
-import re
+
+from xml.sax.saxutils import escape
 
 # Test results.
 
@@ -99,7 +100,7 @@ class Test:
         xml += "' name='" + '/'.join(self.path_in_suite) + "'"
         if self.result.code.isFailure:
           xml += ">\n\t<failure >\n"
-	  xml += re.escape(self.result.output)
+	  xml += escape(self.result.output)
 	  xml += "\n\t</failure>"
           xml += "\n</testcase>"
         else:
