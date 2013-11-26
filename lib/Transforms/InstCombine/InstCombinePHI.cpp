@@ -604,8 +604,6 @@ namespace llvm {
              LHS.Width == RHS.Width;
     }
   };
-  template <>
-  struct isPodLike<LoweredPHIRecord> { static const bool value = true; };
 }
 
 
@@ -792,7 +790,7 @@ Instruction *InstCombiner::SliceUpIllegalIntegerPHI(PHINode &FirstPhi) {
 // PHINode simplification
 //
 Instruction *InstCombiner::visitPHINode(PHINode &PN) {
-  if (Value *V = SimplifyInstruction(&PN, TD))
+  if (Value *V = SimplifyInstruction(&PN, TD, TLI))
     return ReplaceInstUsesWith(PN, V);
 
   // If all PHI operands are the same operation, pull them through the PHI,

@@ -959,6 +959,10 @@ void FrameEmitterImpl::EmitCFIInstruction(MCStreamer &Streamer,
     Streamer.EmitULEB128IntValue(Reg2);
     return;
   }
+  case MCCFIInstruction::OpWindowSave: {
+    Streamer.EmitIntValue(dwarf::DW_CFA_GNU_window_save, 1);
+    return;
+  }
   case MCCFIInstruction::OpUndefined: {
     unsigned Reg = Instr.getRegister();
     if (VerboseAsm) {
@@ -1415,9 +1419,10 @@ namespace llvm {
   };
 }
 
-void MCDwarfFrameEmitter::Emit(MCStreamer &Streamer,
-                               bool UsingCFI,
-                               bool IsEH) {
+void MCDwarfFrameEmitter::Emit(MCStreamer &Streamer, MCAsmBackend *MAB,
+                               bool UsingCFI, bool IsEH) {
+  Streamer.generateCompactUnwindEncodings(MAB);
+
   MCContext &Context = Streamer.getContext();
   const MCObjectFileInfo *MOFI = Context.getObjectFileInfo();
   FrameEmitterImpl Emitter(UsingCFI, IsEH);

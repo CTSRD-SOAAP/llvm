@@ -270,6 +270,7 @@ def MTCRF8 : XFXForm_5<31, 144, (outs), (ins i32imm:$FXM, g8rc:$rS),
                       "mtcrf $FXM, $rS", BrMCRX>,
             PPC970_MicroCode, PPC970_Unit_CRU;
 
+let hasExtraSrcRegAllocReq = 1 in // to enable post-ra anti-dep breaking.
 def MFOCRF8: XFXForm_5a<31, 19, (outs g8rc:$rT), (ins crbitm:$FXM),
                         "mfocrf $rT, $FXM", SprMFCR>,
              PPC970_DGroup_First, PPC970_Unit_CRU;
@@ -528,16 +529,16 @@ defm SRADI  : XSForm_1rc<31, 413, (outs g8rc:$rA), (ins g8rc:$rS, u6imm:$SH),
 defm CNTLZD : XForm_11r<31, 58, (outs g8rc:$rA), (ins g8rc:$rS),
                         "cntlzd", "$rA, $rS", IntGeneral,
                         [(set i64:$rA, (ctlz i64:$rS))]>;
-defm POPCNTD : XForm_11r<31, 506, (outs g8rc:$rA), (ins g8rc:$rS),
-                         "popcntd", "$rA, $rS", IntGeneral,
-                         [(set i64:$rA, (ctpop i64:$rS))]>;
+def POPCNTD : XForm_11<31, 506, (outs g8rc:$rA), (ins g8rc:$rS),
+                       "popcntd $rA, $rS", IntGeneral,
+                       [(set i64:$rA, (ctpop i64:$rS))]>;
 
 // popcntw also does a population count on the high 32 bits (storing the
 // results in the high 32-bits of the output). We'll ignore that here (which is
 // safe because we never separately use the high part of the 64-bit registers).
-defm POPCNTW : XForm_11r<31, 378, (outs gprc:$rA), (ins gprc:$rS),
-                         "popcntw", "$rA, $rS", IntGeneral,
-                         [(set i32:$rA, (ctpop i32:$rS))]>;
+def POPCNTW : XForm_11<31, 378, (outs gprc:$rA), (ins gprc:$rS),
+                       "popcntw $rA, $rS", IntGeneral,
+                       [(set i32:$rA, (ctpop i32:$rS))]>;
 
 defm DIVD  : XOForm_1r<31, 489, 0, (outs g8rc:$rT), (ins g8rc:$rA, g8rc:$rB),
                        "divd", "$rT, $rA, $rB", IntDivD,
@@ -967,6 +968,9 @@ let PPC970_Unit = 3, neverHasSideEffects = 1,
 defm FCFID  : XForm_26r<63, 846, (outs f8rc:$frD), (ins f8rc:$frB),
                         "fcfid", "$frD, $frB", FPGeneral,
                         [(set f64:$frD, (PPCfcfid f64:$frB))]>, isPPC64;
+defm FCTID  : XForm_26r<63, 814, (outs f8rc:$frD), (ins f8rc:$frB),
+                        "fctid", "$frD, $frB", FPGeneral,
+                        []>, isPPC64;
 defm FCTIDZ : XForm_26r<63, 815, (outs f8rc:$frD), (ins f8rc:$frB),
                         "fctidz", "$frD, $frB", FPGeneral,
                         [(set f64:$frD, (PPCfctidz f64:$frB))]>, isPPC64;

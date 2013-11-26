@@ -104,8 +104,12 @@ Pass *createPruneEHPass();
 
 //===----------------------------------------------------------------------===//
 /// createInternalizePass - This pass loops over all of the functions in the
-/// input module, internalizing all globals (functions and variables) not in the
-/// given exportList.
+/// input module, internalizing all globals (functions and variables) it can.
+////
+/// The symbols in \p ExportList are never internalized.
+///
+/// The symbol in DSOList are internalized if it is safe to drop them from
+/// the symbol table.
 ///
 /// Note that commandline options that are used with the above function are not
 /// used now!

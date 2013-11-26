@@ -9,7 +9,7 @@ target triple = "x86_64-apple-darwin10.0.0"
 @sgv = internal addrspace(2) constant [1 x i8] zeroinitializer
 @fgv = internal addrspace(2) constant [1 x i8] zeroinitializer
 @lvgv = internal constant [0 x i8*] zeroinitializer
-@llvm.global.annotations = appending global [1 x %0] [%0 { i8* bitcast (void (i32 addrspace(1)*)* @__OpenCL_nbt02_kernel to i8*), i8* bitcast ([1 x i8] addrspace(2)* @sgv to i8*), i8* bitcast ([1 x i8] addrspace(2)* @fgv to i8*), i8* bitcast ([0 x i8*]* @lvgv to i8*), i32 0 }], section "llvm.metadata"
+@llvm.global.annotations = appending global [1 x %0] [%0 { i8* bitcast (void (i32 addrspace(1)*)* @__OpenCL_nbt02_kernel to i8*), i8* addrspacecast ([1 x i8] addrspace(2)* @sgv to i8*), i8* addrspacecast ([1 x i8] addrspace(2)* @fgv to i8*), i8* bitcast ([0 x i8*]* @lvgv to i8*), i32 0 }], section "llvm.metadata"
 
 define void @__OpenCL_nbt02_kernel(i32 addrspace(1)* %ip) nounwind {
 entry:
@@ -79,11 +79,12 @@ declare <4 x i32> @__amdil_get_global_id_int() nounwind
 declare void @llvm.dbg.value(metadata, i64, metadata) nounwind readnone
 
 !llvm.dbg.cu = !{!2}
+!llvm.module.flags = !{!22}
 
-!0 = metadata !{i32 786478, metadata !20, metadata !1, metadata !"__OpenCL_nbt02_kernel", metadata !"__OpenCL_nbt02_kernel", metadata !"__OpenCL_nbt02_kernel", i32 2, metadata !3, i1 false, i1 true, i32 0, i32 0, i32 0, i32 0, i1 false, null, null, null, null, i32 0} ; [ DW_TAG_subprogram ]
+!0 = metadata !{i32 786478, metadata !20, metadata !1, metadata !"__OpenCL_nbt02_kernel", metadata !"__OpenCL_nbt02_kernel", metadata !"__OpenCL_nbt02_kernel", i32 2, metadata !3, i1 false, i1 true, i32 0, i32 0, null, i32 0, i1 false, null, null, null, null, i32 0} ; [ DW_TAG_subprogram ] [line 2] [def] [scope 0] [__OpenCL_nbt02_kernel]
 !1 = metadata !{i32 786473, metadata !20} ; [ DW_TAG_file_type ]
 !2 = metadata !{i32 786449, metadata !20, i32 1, metadata !"clc", i1 false, metadata !"", i32 0, metadata !21, metadata !21, metadata !19, null,  null, null} ; [ DW_TAG_compile_unit ]
-!3 = metadata !{i32 786453, metadata !20, metadata !1, metadata !"", i32 0, i64 0, i64 0, i32 0, i32 0, i32 0, metadata !4, i32 0, i32 0, null, null} ; [ DW_TAG_subroutine_type ] [line 0, size 0, align 0, offset 0] [from ]
+!3 = metadata !{i32 786453, metadata !20, metadata !1, metadata !"", i32 0, i64 0, i64 0, i32 0, i32 0, null, metadata !4, i32 0, null, null, null} ; [ DW_TAG_subroutine_type ] [line 0, size 0, align 0, offset 0] [from ]
 !4 = metadata !{null, metadata !5}
 !5 = metadata !{i32 786447, null, metadata !2, metadata !"", i32 0, i64 32, i64 32, i64 0, i32 0, metadata !6} ; [ DW_TAG_pointer_type ]
 !6 = metadata !{i32 589846, metadata !20, metadata !2, metadata !"uint", i32 0, i64 0, i64 0, i64 0, i32 0, metadata !7} ; [ DW_TAG_typedef ]
@@ -102,3 +103,4 @@ declare void @llvm.dbg.value(metadata, i64, metadata) nounwind readnone
 !19 = metadata !{metadata !0}
 !20 = metadata !{metadata !"OCLlLwTXZ.cl", metadata !"/tmp"}
 !21 = metadata !{i32 0}
+!22 = metadata !{i32 1, metadata !"Debug Info Version", i32 1}

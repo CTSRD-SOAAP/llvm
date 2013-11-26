@@ -206,6 +206,14 @@ public:
         return false;
       }
     }
+
+    bool ARDef = TII->definesAddressRegister(MII) ||
+                 TII->definesAddressRegister(MIJ);
+    bool ARUse = TII->usesAddressRegister(MII) ||
+                 TII->usesAddressRegister(MIJ);
+    if (ARDef && ARUse)
+      return false;
+
     return true;
   }
 
@@ -272,6 +280,10 @@ public:
       return false;
     }
 
+    // We cannot read LDS source registrs from the Trans slot.
+    if (isTransSlot && TII->readsLDSSrcReg(MI))
+      return false;
+
     CurrentPacketMIs.pop_back();
     return true;
   }
@@ -336,7 +348,7 @@ bool R600Packetizer::runOnMachineFunction(MachineFunction &Fn) {
     MachineBasicBlock::iterator End = MBB->end();
     MachineBasicBlock::iterator MI = MBB->begin();
     while (MI != End) {
-      if (MI->isKill() ||
+      if (MI->isKill() || MI->getOpcode() == AMDGPU::IMPLICIT_DEF ||
           (MI->getOpcode() == AMDGPU::CF_ALU && !MI->getOperand(8).getImm())) {
         MachineBasicBlock::iterator DeleteMI = MI;
         ++MI;

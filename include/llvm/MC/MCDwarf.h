@@ -23,6 +23,7 @@
 #include <vector>
 
 namespace llvm {
+class MCAsmBackend;
 class MCContext;
 class MCSection;
 class MCStreamer;
@@ -289,7 +290,8 @@ public:
     OpEscape,
     OpRestore,
     OpUndefined,
-    OpRegister
+    OpRegister,
+    OpWindowSave
   };
 
 private:
@@ -361,6 +363,11 @@ public:
   static MCCFIInstruction createRegister(MCSymbol *L, unsigned Register1,
                                          unsigned Register2) {
     return MCCFIInstruction(OpRegister, L, Register1, Register2);
+  }
+
+  /// \brief .cfi_window_save SPARC register window is saved.
+  static MCCFIInstruction createWindowSave(MCSymbol *L) {
+    return MCCFIInstruction(OpWindowSave, L, 0, 0, "");
   }
 
   /// \brief .cfi_restore says that the rule for Register is now the same as it
@@ -449,7 +456,8 @@ public:
   //
   // This emits the frame info section.
   //
-  static void Emit(MCStreamer &streamer, bool usingCFI, bool isEH);
+  static void Emit(MCStreamer &streamer, MCAsmBackend *MAB,
+                   bool usingCFI, bool isEH);
   static void EmitAdvanceLoc(MCStreamer &Streamer, uint64_t AddrDelta);
   static void EncodeAdvanceLoc(MCContext &Context, uint64_t AddrDelta,
                                raw_ostream &OS);

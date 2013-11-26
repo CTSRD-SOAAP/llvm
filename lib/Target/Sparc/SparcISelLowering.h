@@ -37,11 +37,17 @@ namespace llvm {
 
       FTOI,        // FP to Int within a FP register.
       ITOF,        // Int to FP within a FP register.
+      FTOX,        // FP to Int64 within a FP register.
+      XTOF,        // Int64 to FP within a FP register.
 
       CALL,        // A call instruction.
       RET_FLAG,    // Return with a flag operand.
-      GLOBAL_BASE_REG, // Global base reg for PIC
-      FLUSHW       // FLUSH register windows to stack
+      GLOBAL_BASE_REG, // Global base reg for PIC.
+      FLUSHW,      // FLUSH register windows to stack.
+
+      TLS_ADD,     // For Thread Local Storage (TLS).
+      TLS_LD,
+      TLS_CALL
     };
   }
 
@@ -119,6 +125,7 @@ namespace llvm {
                            SDLoc DL, SelectionDAG &DAG) const;
 
     SDValue LowerGlobalAddress(SDValue Op, SelectionDAG &DAG) const;
+    SDValue LowerGlobalTLSAddress(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerConstantPool(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerBlockAddress(SDValue Op, SelectionDAG &DAG) const;
 
@@ -144,6 +151,10 @@ namespace llvm {
       // (ldd, call _Q_fdtoq) is more expensive than two ldds.
       return VT != MVT::f128;
     }
+
+    virtual void ReplaceNodeResults(SDNode *N,
+                                    SmallVectorImpl<SDValue>& Results,
+                                    SelectionDAG &DAG) const;
   };
 } // end namespace llvm
 

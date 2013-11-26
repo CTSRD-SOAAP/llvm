@@ -12,6 +12,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Support/Dwarf.h"
+#include "llvm/Support/ErrorHandling.h"
+
 using namespace llvm;
 using namespace dwarf;
 
@@ -454,10 +456,11 @@ const char *llvm::dwarf::OperationEncodingString(unsigned Encoding) {
   case DW_OP_bit_piece:                  return "DW_OP_bit_piece";
   case DW_OP_implicit_value:             return "DW_OP_implicit_value";
   case DW_OP_stack_value:                return "DW_OP_stack_value";
-  case DW_OP_lo_user:                    return "DW_OP_lo_user";
-  case DW_OP_hi_user:                    return "DW_OP_hi_user";
 
-    // DWARF5 Fission Proposal Op Extensions
+  // GNU thread-local storage
+  case DW_OP_GNU_push_tls_address:       return "DW_OP_GNU_push_tls_address";
+
+  // DWARF5 Fission Proposal Op Extensions
   case DW_OP_GNU_addr_index:             return "DW_OP_GNU_addr_index";
   case DW_OP_GNU_const_index:            return "DW_OP_GNU_const_index";
   }
@@ -738,4 +741,36 @@ const char *llvm::dwarf::AtomTypeString(unsigned AT) {
     return "DW_ATOM_type_flags";
   }
   return 0;
+}
+
+const char *llvm::dwarf::GDBIndexEntryKindString(GDBIndexEntryKind Kind) {
+  switch (Kind) {
+  case GIEK_NONE:
+    return "NONE";
+  case GIEK_TYPE:
+    return "TYPE";
+  case GIEK_VARIABLE:
+    return "VARIABLE";
+  case GIEK_FUNCTION:
+    return "FUNCTION";
+  case GIEK_OTHER:
+    return "OTHER";
+  case GIEK_UNUSED5:
+    return "UNUSED5";
+  case GIEK_UNUSED6:
+    return "UNUSED6";
+  case GIEK_UNUSED7:
+    return "UNUSED7";
+  }
+  llvm_unreachable("Unknown GDBIndexEntryKind value");
+}
+
+const char *llvm::dwarf::GDBIndexEntryLinkageString(GDBIndexEntryLinkage Linkage) {
+  switch (Linkage) {
+  case GIEL_EXTERNAL:
+    return "EXTERNAL";
+  case GIEL_STATIC:
+    return "STATIC";
+  }
+  llvm_unreachable("Unknown GDBIndexEntryLinkage value");
 }

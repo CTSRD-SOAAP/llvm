@@ -269,25 +269,26 @@ class T1SystemEncoding<bits<8> opc>
   let Inst{7-0} = opc;
 }
 
-def tNOP : T1pI<(outs), (ins), NoItinerary, "nop", "", []>,
-           T1SystemEncoding<0x00>, // A8.6.110
-        Requires<[IsThumb2]>;
+def tHINT : T1pI<(outs), (ins imm0_15:$imm), NoItinerary, "hint", "\t$imm", []>,
+            T1SystemEncoding<0x00>,
+            Requires<[IsThumb, HasV6M]> {
+  bits<4> imm;
+  let Inst{7-4} = imm;
+}
 
-def tYIELD : T1pI<(outs), (ins), NoItinerary, "yield", "", []>,
-           T1SystemEncoding<0x10>, // A8.6.410
-           Requires<[IsThumb2]>;
+class tHintAlias<string Asm, dag Result> : tInstAlias<Asm, Result> {
+  let Predicates = [IsThumb, HasV6M];
+}
 
-def tWFE : T1pI<(outs), (ins), NoItinerary, "wfe", "", []>,
-           T1SystemEncoding<0x20>, // A8.6.408
-           Requires<[IsThumb2]>;
-
-def tWFI : T1pI<(outs), (ins), NoItinerary, "wfi", "", []>,
-           T1SystemEncoding<0x30>, // A8.6.409
-           Requires<[IsThumb2]>;
-
-def tSEV : T1pI<(outs), (ins), NoItinerary, "sev", "", []>,
-           T1SystemEncoding<0x40>, // A8.6.157
-           Requires<[IsThumb2]>;
+def : tHintAlias<"nop$p", (tHINT 0, pred:$p)>; // A8.6.110
+def : tHintAlias<"yield$p", (tHINT 1, pred:$p)>; // A8.6.410
+def : tHintAlias<"wfe$p", (tHINT 2, pred:$p)>; // A8.6.408
+def : tHintAlias<"wfi$p", (tHINT 3, pred:$p)>; // A8.6.409
+def : tHintAlias<"sev$p", (tHINT 4, pred:$p)>; // A8.6.157
+def : tInstAlias<"sevl$p", (tHINT 5, pred:$p)> {
+  let Predicates = [IsThumb2, HasV8];
+}
+def : T2Pat<(int_arm_sevl), (tHINT 5)>;
 
 // The imm operand $val can be used by a debugger to store more information
 // about the breakpoint.
@@ -308,7 +309,7 @@ def tHLT : T1I<(outs), (ins imm0_63:$val), NoItinerary, "hlt\t$val",
 }
 
 def tSETEND : T1I<(outs), (ins setend_op:$end), NoItinerary, "setend\t$end",
-                  []>, T1Encoding<0b101101> {
+                  []>, T1Encoding<0b101101>, Deprecated<HasV8Ops> {
   bits<1> end;
   // A8.6.156
   let Inst{9-5} = 0b10010;
@@ -1305,8 +1306,7 @@ def : T1Pat<(addc   tGPR:$lhs, imm8_255_neg:$rhs),
 def : T1Pat<(subc   tGPR:$lhs, tGPR:$rhs),
             (tSUBrr tGPR:$lhs, tGPR:$rhs)>;
 
-// ConstantPool, GlobalAddress
-def : T1Pat<(ARMWrapper  tglobaladdr :$dst), (tLEApcrel tglobaladdr :$dst)>;
+// ConstantPool
 def : T1Pat<(ARMWrapper  tconstpool  :$dst), (tLEApcrel tconstpool  :$dst)>;
 
 // JumpTable

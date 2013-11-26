@@ -342,6 +342,7 @@ namespace llvm {
       VBROADCAST,
       // masked broadcast
       VBROADCASTM,
+      VINSERT,
 
       // PMULUDQ - Vector multiply packed unsigned doubleword integers
       PMULUDQ,
@@ -774,6 +775,8 @@ namespace llvm {
     SDValue BuildFILD(SDValue Op, EVT SrcVT, SDValue Chain, SDValue StackSlot,
                       SelectionDAG &DAG) const;
 
+    virtual bool isNoopAddrSpaceCast(unsigned SrcAS, unsigned DestAS) const LLVM_OVERRIDE;
+
     /// \brief Reset the operation actions based on target options.
     virtual void resetOperationActions();
 
@@ -924,6 +927,8 @@ namespace llvm {
                    const SmallVectorImpl<ISD::OutputArg> &Outs,
                    LLVMContext &Context) const;
 
+    virtual const uint16_t *getScratchRegisters(CallingConv::ID CC) const;
+
     /// Utility function to emit atomic-load-arith operations (and, or, xor,
     /// nand, max, min, umax, umin). It takes the corresponding instruction to
     /// expand, the associated machine basic block, and the associated X86
@@ -967,6 +972,9 @@ namespace llvm {
 
     MachineBasicBlock *emitEHSjLjLongJmp(MachineInstr *MI,
                                          MachineBasicBlock *MBB) const;
+
+    MachineBasicBlock *emitPatchPoint(MachineInstr *MI,
+                                      MachineBasicBlock *MBB) const;
 
     /// Emit nodes that will be selected as "test Op0,Op0", or something
     /// equivalent, for use with the given x86 condition code.

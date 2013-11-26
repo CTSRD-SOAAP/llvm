@@ -465,6 +465,18 @@ class T2ThreeReg<dag oops, dag iops, InstrItinClass itin,
   let Inst{3-0}   = Rm;
 }
 
+class T2ThreeRegNoP<dag oops, dag iops, InstrItinClass itin,
+           string asm, list<dag> pattern>
+  : T2XI<oops, iops, itin, asm, pattern> {
+  bits<4> Rd;
+  bits<4> Rn;
+  bits<4> Rm;
+
+  let Inst{11-8}  = Rd;
+  let Inst{19-16} = Rn;
+  let Inst{3-0}   = Rm;
+}
+
 class T2sThreeReg<dag oops, dag iops, InstrItinClass itin,
            string opc, string asm, list<dag> pattern>
   : T2sI<oops, iops, itin, opc, asm, pattern> {
@@ -3004,6 +3016,34 @@ def : T2Pat<(or (and rGPR:$src1, 0xFFFF0000),
             Requires<[HasT2ExtractPack, IsThumb2]>;
 
 //===----------------------------------------------------------------------===//
+// CRC32 Instructions
+//
+// Polynomials:
+// + CRC32{B,H,W}       0x04C11DB7
+// + CRC32C{B,H,W}      0x1EDC6F41
+//
+
+class T2I_crc32<bit C, bits<2> sz, string suffix, SDPatternOperator builtin>
+  : T2ThreeRegNoP<(outs rGPR:$Rd), (ins rGPR:$Rn, rGPR:$Rm), NoItinerary,
+               !strconcat("crc32", suffix, "\t$Rd, $Rn, $Rm"),
+               [(set rGPR:$Rd, (builtin rGPR:$Rn, rGPR:$Rm))]>,
+               Requires<[IsThumb2, HasV8, HasCRC]> {
+  let Inst{31-27} = 0b11111;
+  let Inst{26-21} = 0b010110;
+  let Inst{20}    = C;
+  let Inst{15-12} = 0b1111;
+  let Inst{7-6}   = 0b10;
+  let Inst{5-4}   = sz;
+}
+
+def t2CRC32B  : T2I_crc32<0, 0b00, "b", int_arm_crc32b>;
+def t2CRC32CB : T2I_crc32<1, 0b00, "cb", int_arm_crc32cb>;
+def t2CRC32H  : T2I_crc32<0, 0b01, "h", int_arm_crc32h>;
+def t2CRC32CH : T2I_crc32<1, 0b01, "ch", int_arm_crc32ch>;
+def t2CRC32W  : T2I_crc32<0, 0b10, "w", int_arm_crc32w>;
+def t2CRC32CW : T2I_crc32<1, 0b10, "cw", int_arm_crc32cw>;
+
+//===----------------------------------------------------------------------===//
 //  Comparison Instructions...
 //
 defm t2CMP  : T2I_cmp_irs<0b1101, "cmp",
@@ -3525,7 +3565,8 @@ let isCall = 1, isTerminator = 1, isReturn = 1, isBarrier = 1 in {
 let Defs = [ITSTATE] in
 def t2IT : Thumb2XI<(outs), (ins it_pred:$cc, it_mask:$mask),
                     AddrModeNone, 2,  IIC_iALUx,
-                    "it$mask\t$cc", "", []> {
+                    "it$mask\t$cc", "", []>,
+           ComplexDeprecationPredicate<"IT"> {
   // 16-bit instruction.
   let Inst{31-16} = 0x0000;
   let Inst{15-8} = 0b10111111;
@@ -3612,18 +3653,21 @@ def : t2InstAlias<"cps.w $mode", (t2CPS1p imm0_31:$mode), 0>;
 
 // A6.3.4 Branches and miscellaneous control
 // Table A6-14 Change Processor State, and hint instructions
-def t2HINT : T2I<(outs), (ins imm0_4:$imm), NoItinerary, "hint", "\t$imm",[]> {
-  bits<3> imm;
+def t2HINT : T2I<(outs), (ins imm0_239:$imm), NoItinerary, "hint", ".w\t$imm",[]> {
+  bits<8> imm;
   let Inst{31-3} = 0b11110011101011111000000000000;
-  let Inst{2-0} = imm;
+  let Inst{7-0} = imm;
 }
 
-def : t2InstAlias<"hint$p.w $imm", (t2HINT imm0_4:$imm, pred:$p)>;
+def : t2InstAlias<"hint$p $imm", (t2HINT imm0_239:$imm, pred:$p)>;
 def : t2InstAlias<"nop$p.w", (t2HINT 0, pred:$p)>;
 def : t2InstAlias<"yield$p.w", (t2HINT 1, pred:$p)>;
 def : t2InstAlias<"wfe$p.w", (t2HINT 2, pred:$p)>;
 def : t2InstAlias<"wfi$p.w", (t2HINT 3, pred:$p)>;
 def : t2InstAlias<"sev$p.w", (t2HINT 4, pred:$p)>;
+def : t2InstAlias<"sevl$p.w", (t2HINT 5, pred:$p)> {
+  let Predicates = [IsThumb2, HasV8];
+}
 
 def t2DBG : T2I<(outs), (ins imm0_15:$opt), NoItinerary, "dbg", "\t$opt", []> {
   bits<4> opt;
@@ -3715,9 +3759,12 @@ def t2RFEIA  : T2RFE<0b111010011001,
                    [/* For disassembly only; pattern left blank */]>;
 
 // B9.3.19 SUBS PC, LR, #imm (Thumb2) system instruction.
-let Defs = [PC], Uses = [LR] in
+// Exception return instruction is "subs pc, lr, #imm".
+let isReturn = 1, isBarrier = 1, isTerminator = 1, Defs = [PC] in
 def t2SUBS_PC_LR : T2I <(outs), (ins imm0_255:$imm), NoItinerary,
-                   "subs", "\tpc, lr, $imm", []>, Requires<[IsThumb2]> {
+                        "subs", "\tpc, lr, $imm",
+                        [(ARMintretflag imm0_255:$imm)]>,
+                   Requires<[IsThumb2]> {
   let Inst{31-8} = 0b111100111101111010001111;
 
   bits<8> imm;
@@ -3746,15 +3793,9 @@ def t2MOV_ga_pcrel : PseudoInst<(outs rGPR:$dst), (ins i32imm:$addr),
                           [(set rGPR:$dst, (ARMWrapperPIC tglobaladdr:$addr))]>,
                           Requires<[IsThumb2, UseMovt]>;
 
-def t2MOV_ga_dyn : PseudoInst<(outs rGPR:$dst), (ins i32imm:$addr),
-                              IIC_iMOVix2,
-                          [(set rGPR:$dst, (ARMWrapperDYN tglobaladdr:$addr))]>,
-                          Requires<[IsThumb2, UseMovt]>;
 }
 
 // ConstantPool, GlobalAddress, and JumpTable
-def : T2Pat<(ARMWrapper  tglobaladdr :$dst), (t2LEApcrel tglobaladdr :$dst)>,
-           Requires<[IsThumb2, DontUseMovt]>;
 def : T2Pat<(ARMWrapper  tconstpool  :$dst), (t2LEApcrel tconstpool  :$dst)>;
 def : T2Pat<(ARMWrapper  tglobaladdr :$dst), (t2MOVi32imm tglobaladdr :$dst)>,
            Requires<[IsThumb2, UseMovt]>;
@@ -3867,10 +3908,10 @@ defm t2LDC   : t2LdStCop<0b1110, 1, 0, "ldc">;
 defm t2LDCL  : t2LdStCop<0b1110, 1, 1, "ldcl">;
 defm t2STC   : t2LdStCop<0b1110, 0, 0, "stc">;
 defm t2STCL  : t2LdStCop<0b1110, 0, 1, "stcl">;
-defm t2LDC2  : t2LdStCop<0b1111, 1, 0, "ldc2">;
-defm t2LDC2L : t2LdStCop<0b1111, 1, 1, "ldc2l">;
-defm t2STC2  : t2LdStCop<0b1111, 0, 0, "stc2">;
-defm t2STC2L : t2LdStCop<0b1111, 0, 1, "stc2l">;
+defm t2LDC2  : t2LdStCop<0b1111, 1, 0, "ldc2">, Requires<[PreV8]>;
+defm t2LDC2L : t2LdStCop<0b1111, 1, 1, "ldc2l">, Requires<[PreV8]>;
+defm t2STC2  : t2LdStCop<0b1111, 0, 0, "stc2">, Requires<[PreV8]>;
+defm t2STC2L : t2LdStCop<0b1111, 0, 1, "stc2l">, Requires<[PreV8]>;
 
 
 //===----------------------------------------------------------------------===//
@@ -3882,7 +3923,7 @@ defm t2STC2L : t2LdStCop<0b1111, 0, 1, "stc2l">;
 //
 // A/R class can only move from CPSR or SPSR.
 def t2MRS_AR : T2I<(outs GPR:$Rd), (ins), NoItinerary, "mrs", "\t$Rd, apsr",
-                  []>, Requires<[IsThumb2,IsARClass]> {
+                  []>, Requires<[IsThumb2,IsNotMClass]> {
   bits<4> Rd;
   let Inst{31-12} = 0b11110011111011111000;
   let Inst{11-8} = Rd;
@@ -3892,7 +3933,7 @@ def t2MRS_AR : T2I<(outs GPR:$Rd), (ins), NoItinerary, "mrs", "\t$Rd, apsr",
 def : t2InstAlias<"mrs${p} $Rd, cpsr", (t2MRS_AR GPR:$Rd, pred:$p)>;
 
 def t2MRSsys_AR: T2I<(outs GPR:$Rd), (ins), NoItinerary, "mrs", "\t$Rd, spsr",
-                   []>, Requires<[IsThumb2,IsARClass]> {
+                   []>, Requires<[IsThumb2,IsNotMClass]> {
   bits<4> Rd;
   let Inst{31-12} = 0b11110011111111111000;
   let Inst{11-8} = Rd;
@@ -3925,7 +3966,7 @@ def t2MRS_M : T2I<(outs rGPR:$Rd), (ins msr_mask:$mask), NoItinerary,
 // the mask with the fields to be accessed in the special register.
 def t2MSR_AR : T2I<(outs), (ins msr_mask:$mask, rGPR:$Rn),
                    NoItinerary, "msr", "\t$mask, $Rn", []>,
-               Requires<[IsThumb2,IsARClass]> {
+               Requires<[IsThumb2,IsNotMClass]> {
   bits<5> mask;
   bits<4> Rn;
   let Inst{31-21} = 0b11110011100;
@@ -4007,7 +4048,8 @@ def t2MCR : t2MovRCopro<0b1110, "mcr", 0,
            (ins p_imm:$cop, imm0_7:$opc1, GPR:$Rt, c_imm:$CRn,
                 c_imm:$CRm, imm0_7:$opc2),
            [(int_arm_mcr imm:$cop, imm:$opc1, GPR:$Rt, imm:$CRn,
-                         imm:$CRm, imm:$opc2)]>;
+                         imm:$CRm, imm:$opc2)]>,
+           ComplexDeprecationPredicate<"MCR">;
 def : t2InstAlias<"mcr${p} $cop, $opc1, $Rt, $CRn, $CRm",
                   (t2MCR p_imm:$cop, imm0_7:$opc1, GPR:$Rt, c_imm:$CRn,
                          c_imm:$CRm, 0, pred:$p)>;
@@ -4015,7 +4057,9 @@ def t2MCR2 : t2MovRCopro<0b1111, "mcr2", 0,
              (outs), (ins p_imm:$cop, imm0_7:$opc1, GPR:$Rt, c_imm:$CRn,
                           c_imm:$CRm, imm0_7:$opc2),
              [(int_arm_mcr2 imm:$cop, imm:$opc1, GPR:$Rt, imm:$CRn,
-                            imm:$CRm, imm:$opc2)]>;
+                            imm:$CRm, imm:$opc2)]> {
+  let Predicates = [IsThumb2, PreV8];
+}
 def : t2InstAlias<"mcr2${p} $cop, $opc1, $Rt, $CRn, $CRm",
                   (t2MCR2 p_imm:$cop, imm0_7:$opc1, GPR:$Rt, c_imm:$CRn,
                           c_imm:$CRm, 0, pred:$p)>;
@@ -4030,7 +4074,9 @@ def : t2InstAlias<"mrc${p} $cop, $opc1, $Rt, $CRn, $CRm",
 
 def t2MRC2 : t2MovRCopro<0b1111, "mrc2", 1,
              (outs GPRwithAPSR:$Rt), (ins p_imm:$cop, imm0_7:$opc1, c_imm:$CRn,
-                                  c_imm:$CRm, imm0_7:$opc2), []>;
+                                  c_imm:$CRm, imm0_7:$opc2), []> {
+  let Predicates = [IsThumb2, PreV8];
+}
 def : t2InstAlias<"mrc2${p} $cop, $opc1, $Rt, $CRn, $CRm",
                   (t2MRC2 GPRwithAPSR:$Rt, p_imm:$cop, imm0_7:$opc1, c_imm:$CRn,
                           c_imm:$CRm, 0, pred:$p)>;
@@ -4048,11 +4094,16 @@ def t2MCRR : t2MovRRCopro<0b1110, "mcrr", 0,
                                        imm:$CRm)]>;
 def t2MCRR2 : t2MovRRCopro<0b1111, "mcrr2", 0,
                            [(int_arm_mcrr2 imm:$cop, imm:$opc1, GPR:$Rt,
-                                           GPR:$Rt2, imm:$CRm)]>;
+                                           GPR:$Rt2, imm:$CRm)]> {
+  let Predicates = [IsThumb2, PreV8];
+}
+
 /* from coprocessor to ARM core register */
 def t2MRRC : t2MovRRCopro<0b1110, "mrrc", 1>;
 
-def t2MRRC2 : t2MovRRCopro<0b1111, "mrrc2", 1>;
+def t2MRRC2 : t2MovRRCopro<0b1111, "mrrc2", 1> {
+  let Predicates = [IsThumb2, PreV8];
+}
 
 //===----------------------------------------------------------------------===//
 // Other Coprocessor Instructions.
@@ -4079,6 +4130,8 @@ def t2CDP : T2Cop<0b1110, (outs), (ins p_imm:$cop, imm0_15:$opc1,
   let Inst{15-12} = CRd;
   let Inst{19-16} = CRn;
   let Inst{23-20} = opc1;
+
+  let Predicates = [IsThumb2, PreV8];
 }
 
 def t2CDP2 : T2Cop<0b1111, (outs), (ins p_imm:$cop, imm0_15:$opc1,
@@ -4102,6 +4155,8 @@ def t2CDP2 : T2Cop<0b1111, (outs), (ins p_imm:$cop, imm0_15:$opc1,
   let Inst{15-12} = CRd;
   let Inst{19-16} = CRn;
   let Inst{23-20} = opc1;
+
+  let Predicates = [IsThumb2, PreV8];
 }
 
 
@@ -4174,6 +4229,15 @@ def : T2Pat<(atomic_store_32 t2addrmode_negimm8:$addr, GPR:$val),
             (t2STRi8    GPR:$val, t2addrmode_negimm8:$addr)>;
 def : T2Pat<(atomic_store_32 t2addrmode_so_reg:$addr, GPR:$val),
             (t2STRs     GPR:$val, t2addrmode_so_reg:$addr)>;
+
+let AddedComplexity = 8 in {
+  def : T2Pat<(atomic_load_acquire_8 addr_offset_none:$addr),  (t2LDAB addr_offset_none:$addr)>;
+  def : T2Pat<(atomic_load_acquire_16 addr_offset_none:$addr), (t2LDAH addr_offset_none:$addr)>;
+  def : T2Pat<(atomic_load_acquire_32 addr_offset_none:$addr), (t2LDA  addr_offset_none:$addr)>;
+  def : T2Pat<(atomic_store_release_8 addr_offset_none:$addr, GPR:$val),  (t2STLB GPR:$val, addr_offset_none:$addr)>;
+  def : T2Pat<(atomic_store_release_16 addr_offset_none:$addr, GPR:$val), (t2STLH GPR:$val, addr_offset_none:$addr)>;
+  def : T2Pat<(atomic_store_release_32 addr_offset_none:$addr, GPR:$val), (t2STL  GPR:$val, addr_offset_none:$addr)>;
+}
 
 
 //===----------------------------------------------------------------------===//
@@ -4272,9 +4336,9 @@ def : t2InstAlias<"tst${p} $Rn, $Rm",
                   (t2TSTrr GPRnopc:$Rn, rGPR:$Rm, pred:$p)>;
 
 // Memory barriers
-def : InstAlias<"dmb${p}", (t2DMB 0xf, pred:$p)>, Requires<[IsThumb2, HasDB]>;
-def : InstAlias<"dsb${p}", (t2DSB 0xf, pred:$p)>, Requires<[IsThumb2, HasDB]>;
-def : InstAlias<"isb${p}", (t2ISB 0xf, pred:$p)>, Requires<[IsThumb2, HasDB]>;
+def : InstAlias<"dmb${p}", (t2DMB 0xf, pred:$p)>, Requires<[HasDB]>;
+def : InstAlias<"dsb${p}", (t2DSB 0xf, pred:$p)>, Requires<[HasDB]>;
+def : InstAlias<"isb${p}", (t2ISB 0xf, pred:$p)>, Requires<[HasDB]>;
 
 // Alias for LDR, LDRB, LDRH, LDRSB, and LDRSH without the ".w" optional
 // width specifier.

@@ -15,6 +15,7 @@
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Analysis/InstructionSimplify.h"
+#include "llvm/Analysis/MemoryBuiltins.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/GlobalAlias.h"
@@ -759,7 +760,6 @@ void llvm::ComputeMaskedBits(Value *V, APInt &KnownZero, APInt &KnownOne,
         KnownZero = APInt::getHighBitsSet(BitWidth, BitWidth - LowBits);
         break;
       }
-      case Intrinsic::x86_sse42_crc32_64_8:
       case Intrinsic::x86_sse42_crc32_64_64:
         KnownZero = APInt::getHighBitsSet(64, 32);
         break;
@@ -2006,7 +2006,9 @@ bool llvm::isSafeToSpeculativelyExecute(const Value *V,
   }
   case Instruction::Load: {
     const LoadInst *LI = cast<LoadInst>(Inst);
-    if (!LI->isUnordered())
+    if (!LI->isUnordered() ||
+        // Speculative load may create a race that did not exist in the source.
+        LI->getParent()->getParent()->hasFnAttribute(Attribute::SanitizeThread))
       return false;
     return LI->getPointerOperand()->isDereferenceablePointer();
   }
@@ -2064,7 +2066,7 @@ bool llvm::isSafeToSpeculativelyExecute(const Value *V,
 
 /// isKnownNonNull - Return true if we know that the specified value is never
 /// null.
-bool llvm::isKnownNonNull(const Value *V) {
+bool llvm::isKnownNonNull(const Value *V, const TargetLibraryInfo *TLI) {
   // Alloca never returns null, malloc might.
   if (isa<AllocaInst>(V)) return true;
 
@@ -2075,5 +2077,10 @@ bool llvm::isKnownNonNull(const Value *V) {
   // Global values are not null unless extern weak.
   if (const GlobalValue *GV = dyn_cast<GlobalValue>(V))
     return !GV->hasExternalWeakLinkage();
+
+  // operator new never returns null.
+  if (isOperatorNewLikeFn(V, TLI, /*LookThroughBitCast=*/true))
+    return true;
+
   return false;
 }

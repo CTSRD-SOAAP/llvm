@@ -11,9 +11,11 @@ set(CMAKE_MODULE_PATH
   )
 
 set(LLVM_VERSION_MAJOR 3)
-set(LLVM_VERSION_MINOR 4)
+set(LLVM_VERSION_MINOR 5)
 
-set(PACKAGE_VERSION "${LLVM_VERSION_MAJOR}.${LLVM_VERSION_MINOR}svn")
+if (NOT PACKAGE_VERSION)
+  set(PACKAGE_VERSION "${LLVM_VERSION_MAJOR}.${LLVM_VERSION_MINOR}svn")
+endif()
 
 option(LLVM_INSTALL_TOOLCHAIN_ONLY "Only include toolchain files in the 'install' target." OFF)
 
@@ -36,16 +38,14 @@ set(PACKAGE_STRING "${PACKAGE_NAME} ${PACKAGE_VERSION}")
 set(PACKAGE_BUGREPORT "http://llvm.org/bugs/")
 
 # Configure CPack.
+set(CPACK_PACKAGE_INSTALL_DIRECTORY "LLVM")
 set(CPACK_PACKAGE_VENDOR "LLVM")
 set(CPACK_PACKAGE_VERSION_MAJOR ${LLVM_VERSION_MAJOR})
 set(CPACK_PACKAGE_VERSION_MINOR ${LLVM_VERSION_MINOR})
-if( LLVM_APPEND_VC_REV )
-  add_version_info_from_vcs(CPACK_PACKAGE_VERSION_PATCH)
-else()
-  set(CPACK_PACKAGE_VERSION_PATCH "svn")
-endif()
+set(CPACK_PACKAGE_VERSION ${PACKAGE_VERSION})
 set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE.TXT")
 if(WIN32 AND NOT UNIX)
+  set(CPACK_PACKAGE_INSTALL_REGISTRY_KEY "LLVM")
   set(CPACK_PACKAGE_ICON "${CMAKE_CURRENT_SOURCE_DIR}\\\\cmake\\\\nsis_logo.bmp")
   set(CPACK_NSIS_MODIFY_PATH "ON")
   set(CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL "ON")
@@ -179,6 +179,7 @@ else( MSVC )
   option(LLVM_ENABLE_WARNINGS "Enable compiler warnings." ON)
 endif()
 
+option(LLVM_ENABLE_CXX11 "Compile with C++11 enabled." OFF)
 option(LLVM_ENABLE_PEDANTIC "Compile with pedantic enabled." ON)
 option(LLVM_ENABLE_WERROR "Fail and stop if a warning is triggered." OFF)
 
@@ -237,18 +238,15 @@ if( WIN32 AND NOT CYGWIN )
 endif()
 
 # Define options to control the inclusion and default build behavior for
-# components which may not strictly be necessary (tools, runtime, examples, and
-# tests).
+# components which may not strictly be necessary (tools, examples, and tests).
 #
 # This is primarily to support building smaller or faster project files.
 option(LLVM_INCLUDE_TOOLS "Generate build targets for the LLVM tools." ON)
 option(LLVM_BUILD_TOOLS
   "Build the LLVM tools. If OFF, just generate build targets." ON)
 
-option(LLVM_INCLUDE_RUNTIME "Generate build targets for the LLVM runtimes" ON)
 option(LLVM_BUILD_RUNTIME
-  "Build the LLVM runtime libraries. If OFF, just generate build targets." ON)
-
+  "Build the LLVM runtime libraries." ON)
 option(LLVM_BUILD_EXAMPLES
   "Build the LLVM example programs. If OFF, just generate build targets." OFF)
 option(LLVM_INCLUDE_EXAMPLES "Generate build targets for the LLVM examples" ON)
@@ -275,7 +273,7 @@ set(TARGET_TRIPLE "${LLVM_DEFAULT_TARGET_TRIPLE}")
 include(HandleLLVMOptions)
 
 # Verify that we can find a Python 2 interpreter.  Python 3 is unsupported.
-set(Python_ADDITIONAL_VERSIONS 2.7 2.6 2.5 2.4)
+set(Python_ADDITIONAL_VERSIONS 2.7 2.6 2.5)
 include(FindPythonInterp)
 if( NOT PYTHONINTERP_FOUND )
   message(FATAL_ERROR
@@ -462,10 +460,6 @@ if( LLVM_INCLUDE_TOOLS )
   add_subdirectory(tools)
 endif()
 
-if( LLVM_INCLUDE_RUNTIME )
-  add_subdirectory(runtime)
-endif()
-
 if( LLVM_INCLUDE_EXAMPLES )
   add_subdirectory(examples)
 endif()
@@ -534,3 +528,4 @@ if(MSVC_VERSION EQUAL 1600)
     file(APPEND "${LLVM_SLN_FILENAME}" "\n# This should be regenerated!\n")
   endif()
 endif()
+

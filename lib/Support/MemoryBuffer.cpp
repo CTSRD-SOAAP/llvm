@@ -177,7 +177,7 @@ error_code MemoryBuffer::getFileOrSTDIN(StringRef Filename,
 //===----------------------------------------------------------------------===//
 
 namespace {
-/// \brief Memorry maps a file descriptor using sys::fs::mapped_file_region.
+/// \brief Memory maps a file descriptor using sys::fs::mapped_file_region.
 ///
 /// This handles converting the offset into a legal offset on the platform.
 class MemoryBufferMMapFile : public MemoryBuffer {
@@ -238,14 +238,19 @@ static error_code getMemoryBufferForStream(int FD,
   return error_code::success();
 }
 
-error_code MemoryBuffer::getFile(StringRef Filename,
+static error_code getFileAux(const char *Filename,
+                             OwningPtr<MemoryBuffer> &result, int64_t FileSize,
+                             bool RequiresNullTerminator);
+
+error_code MemoryBuffer::getFile(Twine Filename,
                                  OwningPtr<MemoryBuffer> &result,
                                  int64_t FileSize,
                                  bool RequiresNullTerminator) {
   // Ensure the path is null terminated.
-  SmallString<256> PathBuf(Filename.begin(), Filename.end());
-  return MemoryBuffer::getFile(PathBuf.c_str(), result, FileSize,
-                               RequiresNullTerminator);
+  SmallString<256> PathBuf;
+  StringRef NullTerminatedName = Filename.toNullTerminatedStringRef(PathBuf);
+  return getFileAux(NullTerminatedName.data(), result, FileSize,
+                    RequiresNullTerminator);
 }
 
 static error_code getOpenFileImpl(int FD, const char *Filename,
@@ -253,10 +258,9 @@ static error_code getOpenFileImpl(int FD, const char *Filename,
                                   uint64_t FileSize, uint64_t MapSize,
                                   int64_t Offset, bool RequiresNullTerminator);
 
-error_code MemoryBuffer::getFile(const char *Filename,
-                                 OwningPtr<MemoryBuffer> &result,
-                                 int64_t FileSize,
-                                 bool RequiresNullTerminator) {
+static error_code getFileAux(const char *Filename,
+                             OwningPtr<MemoryBuffer> &result, int64_t FileSize,
+                             bool RequiresNullTerminator) {
   int FD;
   error_code EC = sys::fs::openFileForRead(Filename, FD);
   if (EC)

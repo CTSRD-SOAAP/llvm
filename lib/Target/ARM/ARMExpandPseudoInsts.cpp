@@ -692,10 +692,9 @@ bool ARMExpandPseudo::ExpandMI(MachineBasicBlock &MBB,
       unsigned newOpc = Opcode == ARM::VMOVScc ? ARM::VMOVS : ARM::VMOVD;
       BuildMI(MBB, MBBI, MI.getDebugLoc(), TII->get(newOpc),
               MI.getOperand(1).getReg())
-        .addReg(MI.getOperand(2).getReg(),
-                getKillRegState(MI.getOperand(2).isKill()))
+        .addOperand(MI.getOperand(2))
         .addImm(MI.getOperand(3).getImm()) // 'pred'
-        .addReg(MI.getOperand(4).getReg());
+        .addOperand(MI.getOperand(4));
 
       MI.eraseFromParent();
       return true;
@@ -705,10 +704,9 @@ bool ARMExpandPseudo::ExpandMI(MachineBasicBlock &MBB,
       unsigned Opc = AFI->isThumbFunction() ? ARM::t2MOVr : ARM::MOVr;
       BuildMI(MBB, MBBI, MI.getDebugLoc(), TII->get(Opc),
               MI.getOperand(1).getReg())
-        .addReg(MI.getOperand(2).getReg(),
-                getKillRegState(MI.getOperand(2).isKill()))
+        .addOperand(MI.getOperand(2))
         .addImm(MI.getOperand(3).getImm()) // 'pred'
-        .addReg(MI.getOperand(4).getReg())
+        .addOperand(MI.getOperand(4))
         .addReg(0); // 's' bit
 
       MI.eraseFromParent();
@@ -717,11 +715,10 @@ bool ARMExpandPseudo::ExpandMI(MachineBasicBlock &MBB,
     case ARM::MOVCCsi: {
       BuildMI(MBB, MBBI, MI.getDebugLoc(), TII->get(ARM::MOVsi),
               (MI.getOperand(1).getReg()))
-        .addReg(MI.getOperand(2).getReg(),
-                getKillRegState(MI.getOperand(2).isKill()))
+        .addOperand(MI.getOperand(2))
         .addImm(MI.getOperand(3).getImm())
         .addImm(MI.getOperand(4).getImm()) // 'pred'
-        .addReg(MI.getOperand(5).getReg())
+        .addOperand(MI.getOperand(5))
         .addReg(0); // 's' bit
 
       MI.eraseFromParent();
@@ -730,13 +727,11 @@ bool ARMExpandPseudo::ExpandMI(MachineBasicBlock &MBB,
     case ARM::MOVCCsr: {
       BuildMI(MBB, MBBI, MI.getDebugLoc(), TII->get(ARM::MOVsr),
               (MI.getOperand(1).getReg()))
-        .addReg(MI.getOperand(2).getReg(),
-                getKillRegState(MI.getOperand(2).isKill()))
-        .addReg(MI.getOperand(3).getReg(),
-                getKillRegState(MI.getOperand(3).isKill()))
+        .addOperand(MI.getOperand(2))
+        .addOperand(MI.getOperand(3))
         .addImm(MI.getOperand(4).getImm())
         .addImm(MI.getOperand(5).getImm()) // 'pred'
-        .addReg(MI.getOperand(6).getReg())
+        .addOperand(MI.getOperand(6))
         .addReg(0); // 's' bit
 
       MI.eraseFromParent();
@@ -749,7 +744,7 @@ bool ARMExpandPseudo::ExpandMI(MachineBasicBlock &MBB,
               MI.getOperand(1).getReg())
         .addImm(MI.getOperand(2).getImm())
         .addImm(MI.getOperand(3).getImm()) // 'pred'
-        .addReg(MI.getOperand(4).getReg());
+        .addOperand(MI.getOperand(4));
       MI.eraseFromParent();
       return true;
     }
@@ -760,7 +755,7 @@ bool ARMExpandPseudo::ExpandMI(MachineBasicBlock &MBB,
               MI.getOperand(1).getReg())
         .addImm(MI.getOperand(2).getImm())
         .addImm(MI.getOperand(3).getImm()) // 'pred'
-        .addReg(MI.getOperand(4).getReg())
+        .addOperand(MI.getOperand(4))
         .addReg(0); // 's' bit
 
       MI.eraseFromParent();
@@ -773,7 +768,7 @@ bool ARMExpandPseudo::ExpandMI(MachineBasicBlock &MBB,
               MI.getOperand(1).getReg())
         .addImm(MI.getOperand(2).getImm())
         .addImm(MI.getOperand(3).getImm()) // 'pred'
-        .addReg(MI.getOperand(4).getReg())
+        .addOperand(MI.getOperand(4))
         .addReg(0); // 's' bit
 
       MI.eraseFromParent();
@@ -793,10 +788,10 @@ bool ARMExpandPseudo::ExpandMI(MachineBasicBlock &MBB,
       }
       BuildMI(MBB, MBBI, MI.getDebugLoc(), TII->get(NewOpc),
               MI.getOperand(1).getReg())
-        .addReg(MI.getOperand(2).getReg())
+        .addOperand(MI.getOperand(2))
         .addImm(MI.getOperand(3).getImm())
         .addImm(MI.getOperand(4).getImm()) // 'pred'
-        .addReg(MI.getOperand(5).getReg())
+        .addOperand(MI.getOperand(5))
         .addReg(0); // 's' bit
       MI.eraseFromParent();
       return true;
@@ -847,7 +842,7 @@ bool ARMExpandPseudo::ExpandMI(MachineBasicBlock &MBB,
 
     case ARM::MOVsrl_flag:
     case ARM::MOVsra_flag: {
-      // These are just fancy MOVs insructions.
+      // These are just fancy MOVs instructions.
       AddDefaultPred(BuildMI(MBB, MBBI, MI.getDebugLoc(), TII->get(ARM::MOVsi),
                              MI.getOperand(0).getReg())
                      .addOperand(MI.getOperand(1))
@@ -903,10 +898,8 @@ bool ARMExpandPseudo::ExpandMI(MachineBasicBlock &MBB,
       return true;
     }
 
-    case ARM::MOV_ga_dyn:
     case ARM::MOV_ga_pcrel:
     case ARM::MOV_ga_pcrel_ldr:
-    case ARM::t2MOV_ga_dyn:
     case ARM::t2MOV_ga_pcrel: {
       // Expand into movw + movw. Also "add pc" / ldr [pc] in PIC mode.
       unsigned LabelId = AFI->createPICLabelUId();
@@ -915,14 +908,11 @@ bool ARMExpandPseudo::ExpandMI(MachineBasicBlock &MBB,
       const MachineOperand &MO1 = MI.getOperand(1);
       const GlobalValue *GV = MO1.getGlobal();
       unsigned TF = MO1.getTargetFlags();
-      bool isARM = (Opcode != ARM::t2MOV_ga_pcrel && Opcode!=ARM::t2MOV_ga_dyn);
-      bool isPIC = (Opcode != ARM::MOV_ga_dyn && Opcode != ARM::t2MOV_ga_dyn);
+      bool isARM = Opcode != ARM::t2MOV_ga_pcrel;
       unsigned LO16Opc = isARM ? ARM::MOVi16_ga_pcrel : ARM::t2MOVi16_ga_pcrel;
       unsigned HI16Opc = isARM ? ARM::MOVTi16_ga_pcrel :ARM::t2MOVTi16_ga_pcrel;
-      unsigned LO16TF = isPIC
-        ? ARMII::MO_LO16_NONLAZY_PIC : ARMII::MO_LO16_NONLAZY;
-      unsigned HI16TF = isPIC
-        ? ARMII::MO_HI16_NONLAZY_PIC : ARMII::MO_HI16_NONLAZY;
+      unsigned LO16TF = TF | ARMII::MO_LO16;
+      unsigned HI16TF = TF | ARMII::MO_HI16;
       unsigned PICAddOpc = isARM
         ? (Opcode == ARM::MOV_ga_pcrel_ldr ? ARM::PICLDR : ARM::PICADD)
         : ARM::tPICADD;
@@ -930,16 +920,11 @@ bool ARMExpandPseudo::ExpandMI(MachineBasicBlock &MBB,
                                          TII->get(LO16Opc), DstReg)
         .addGlobalAddress(GV, MO1.getOffset(), TF | LO16TF)
         .addImm(LabelId);
-      MachineInstrBuilder MIB2 = BuildMI(MBB, MBBI, MI.getDebugLoc(),
-                                         TII->get(HI16Opc), DstReg)
+
+      BuildMI(MBB, MBBI, MI.getDebugLoc(), TII->get(HI16Opc), DstReg)
         .addReg(DstReg)
         .addGlobalAddress(GV, MO1.getOffset(), TF | HI16TF)
         .addImm(LabelId);
-      if (!isPIC) {
-        TransferImpOps(MI, MIB1, MIB2);
-        MI.eraseFromParent();
-        return true;
-      }
 
       MachineInstrBuilder MIB3 = BuildMI(MBB, MBBI, MI.getDebugLoc(),
                                          TII->get(PICAddOpc))
@@ -962,6 +947,18 @@ bool ARMExpandPseudo::ExpandMI(MachineBasicBlock &MBB,
       ExpandMOV32BitImm(MBB, MBBI);
       return true;
 
+    case ARM::SUBS_PC_LR: {
+      MachineInstrBuilder MIB =
+          BuildMI(MBB, MBBI, MI.getDebugLoc(), TII->get(ARM::SUBri), ARM::PC)
+              .addReg(ARM::LR)
+              .addOperand(MI.getOperand(0))
+              .addOperand(MI.getOperand(1))
+              .addOperand(MI.getOperand(2))
+              .addReg(ARM::CPSR, RegState::Undef);
+      TransferImpOps(MI, MIB, MIB);
+      MI.eraseFromParent();
+      return true;
+    }
     case ARM::VLDMQIA: {
       unsigned NewOpc = ARM::VLDMDIA;
       MachineInstrBuilder MIB =

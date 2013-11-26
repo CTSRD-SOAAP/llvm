@@ -254,10 +254,10 @@ bool ARMFastISel::DefinesOptionalPredicate(MachineInstr *MI, bool *CPSR) {
 bool ARMFastISel::isARMNEONPred(const MachineInstr *MI) {
   const MCInstrDesc &MCID = MI->getDesc();
 
-  // If we're a thumb2 or not NEON function we were handled via isPredicable.
+  // If we're a thumb2 or not NEON function we'll be handled via isPredicable.
   if ((MCID.TSFlags & ARMII::DomainMask) != ARMII::DomainNEON ||
        AFI->isThumb2Function())
-    return false;
+    return MI->isPredicable();
 
   for (unsigned i = 0, e = MCID.getNumOperands(); i != e; ++i)
     if (MCID.OpInfo[i].isPredicate())
@@ -278,7 +278,7 @@ ARMFastISel::AddOptionalDefs(const MachineInstrBuilder &MIB) {
   // Do we use a predicate? or...
   // Are we NEON in ARM mode and have a predicate operand? If so, I know
   // we're not predicable but add it anyways.
-  if (TII.isPredicable(MI) || isARMNEONPred(MI))
+  if (isARMNEONPred(MI))
     AddDefaultPred(MIB);
 
   // Do we optionally set a predicate?  Preds is size > 0 iff the predicate
@@ -685,19 +685,20 @@ unsigned ARMFastISel::ARMMaterializeGV(const GlobalValue *GV, MVT VT) {
   if (Subtarget->useMovt() &&
       Subtarget->isTargetDarwin() == (RelocM != Reloc::Static)) {
     unsigned Opc;
+    unsigned char TF = 0;
+    if (Subtarget->isTargetDarwin() && RelocM != Reloc::Static)
+      TF = ARMII::MO_NONLAZY;
+
     switch (RelocM) {
     case Reloc::PIC_:
       Opc = isThumb2 ? ARM::t2MOV_ga_pcrel : ARM::MOV_ga_pcrel;
-      break;
-    case Reloc::DynamicNoPIC:
-      Opc = isThumb2 ? ARM::t2MOV_ga_dyn : ARM::MOV_ga_dyn;
       break;
     default:
       Opc = isThumb2 ? ARM::t2MOVi32imm : ARM::MOVi32imm;
       break;
     }
     AddOptionalDefs(BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DL, TII.get(Opc),
-                            DestReg).addGlobalAddress(GV));
+                            DestReg).addGlobalAddress(GV, 0, TF));
   } else {
     // MachineConstantPool wants an explicit alignment.
     unsigned Align = TD.getPrefTypeAlignment(GV->getType());
@@ -900,13 +901,8 @@ bool ARMFastISel::ARMComputeAddress(const Value *Obj, Address &Addr) {
               TmpOffset += CI->getSExtValue() * S;
               break;
             }
-            if (isa<AddOperator>(Op) &&
-                (!isa<Instruction>(Op) ||
-                 FuncInfo.MBBMap[cast<Instruction>(Op)->getParent()]
-                 == FuncInfo.MBB) &&
-                isa<ConstantInt>(cast<AddOperator>(Op)->getOperand(1))) {
-              // An add (in the same block) with a constant operand. Fold the
-              // constant.
+            if (canFoldAddIntoGEP(U, Op)) {
+              // A compatible add with a constant operand. Fold the constant.
               ConstantInt *CI =
               cast<ConstantInt>(cast<AddOperator>(Op)->getOperand(1));
               TmpOffset += CI->getSExtValue() * S;

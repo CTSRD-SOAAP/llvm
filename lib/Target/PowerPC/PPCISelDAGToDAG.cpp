@@ -876,8 +876,10 @@ SDNode *PPCDAGToDAGISel::SelectSETCC(SDNode *N) {
 // target-specific node if it hasn't already been changed.
 SDNode *PPCDAGToDAGISel::Select(SDNode *N) {
   SDLoc dl(N);
-  if (N->isMachineOpcode())
+  if (N->isMachineOpcode()) {
+    N->setNodeId(-1);
     return NULL;   // Already selected.
+  }
 
   switch (N->getOpcode()) {
   default: break;
@@ -1120,7 +1122,21 @@ SDNode *PPCDAGToDAGISel::Select(SDNode *N) {
         isMask_64(Imm64)) {
       SDValue Val = N->getOperand(0);
       MB = 64 - CountTrailingOnes_64(Imm64);
-      SDValue Ops[] = { Val, getI32Imm(0), getI32Imm(MB) };
+      SH = 0;
+
+      // If the operand is a logical right shift, we can fold it into this
+      // instruction: rldicl(rldicl(x, 64-n, n), 0, mb) -> rldicl(x, 64-n, mb)
+      // for n <= mb. The right shift is really a left rotate followed by a
+      // mask, and this mask is a more-restrictive sub-mask of the mask implied
+      // by the shift.
+      if (Val.getOpcode() == ISD::SRL &&
+          isInt32Immediate(Val.getOperand(1).getNode(), Imm) && Imm <= MB) {
+        assert(Imm < 64 && "Illegal shift amount");
+        Val = Val.getOperand(0);
+        SH = 64 - Imm;
+      }
+
+      SDValue Ops[] = { Val, getI32Imm(SH), getI32Imm(MB) };
       return CurDAG->SelectNodeTo(N, PPC::RLDICL, MVT::i64, Ops, 3);
     }
     // AND X, 0 -> 0, not "rlwinm 32".

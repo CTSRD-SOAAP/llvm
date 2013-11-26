@@ -35,8 +35,6 @@ namespace llvm {
 
       Wrapper,      // Wrapper - A wrapper node for TargetConstantPool,
                     // TargetExternalSymbol, and TargetGlobalAddress.
-      WrapperDYN,   // WrapperDYN - A wrapper node for TargetGlobalAddress in
-                    // DYN mode.
       WrapperPIC,   // WrapperPIC - A wrapper node for TargetGlobalAddress in
                     // PIC mode.
       WrapperJT,    // WrapperJT - A wrapper node for TargetJumpTable
@@ -52,6 +50,7 @@ namespace llvm {
       BR_JT,        // Jumptable branch.
       BR2_JT,       // Jumptable branch (2 level - jumptable entry is a jump).
       RET_FLAG,     // Return with a flag operand.
+      INTRET_FLAG,  // Interrupt return with an LR-offset and a flag operand.
 
       PIC_ADD,      // Add with a PC operand and a PIC label.
 
@@ -223,21 +222,7 @@ namespace llvm {
       VST4_UPD,
       VST2LN_UPD,
       VST3LN_UPD,
-      VST4LN_UPD,
-
-      // 64-bit atomic ops (value split into two registers)
-      ATOMADD64_DAG,
-      ATOMSUB64_DAG,
-      ATOMOR64_DAG,
-      ATOMXOR64_DAG,
-      ATOMAND64_DAG,
-      ATOMNAND64_DAG,
-      ATOMSWAP64_DAG,
-      ATOMCMPXCHG64_DAG,
-      ATOMMIN64_DAG,
-      ATOMUMIN64_DAG,
-      ATOMMAX64_DAG,
-      ATOMUMAX64_DAG
+      VST4LN_UPD
     };
   }
 
@@ -461,6 +446,7 @@ namespace llvm {
                             const ARMSubtarget *ST) const;
     SDValue LowerBUILD_VECTOR(SDValue Op, SelectionDAG &DAG,
                               const ARMSubtarget *ST) const;
+    SDValue LowerFSINCOS(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerDivRem(SDValue Op, SelectionDAG &DAG) const;
 
     /// isFMAFasterThanFMulAndFAdd - Return true if an FMA operation is faster
@@ -574,6 +560,8 @@ namespace llvm {
                                                unsigned Size,
                                                bool signExtend,
                                                ARMCC::CondCodes Cond) const;
+    MachineBasicBlock *EmitAtomicLoad64(MachineInstr *MI,
+                                        MachineBasicBlock *BB) const;
 
     void SetupEntryBlockForSjLj(MachineInstr *MI,
                                 MachineBasicBlock *MBB,

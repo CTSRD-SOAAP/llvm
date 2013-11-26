@@ -118,7 +118,7 @@ LayoutAlignElem::operator==(const LayoutAlignElem &rhs) const {
 }
 
 const LayoutAlignElem
-DataLayout::InvalidAlignmentElem = LayoutAlignElem::get(INVALID_ALIGN, 0, 0, 0);
+DataLayout::InvalidAlignmentElem = { INVALID_ALIGN, 0, 0, 0 };
 
 //===----------------------------------------------------------------------===//
 // PointerAlignElem, PointerAlign support
@@ -145,7 +145,7 @@ PointerAlignElem::operator==(const PointerAlignElem &rhs) const {
 }
 
 const PointerAlignElem
-DataLayout::InvalidPointerElem = PointerAlignElem::get(~0U, 0U, 0U, 0U);
+DataLayout::InvalidPointerElem = { 0U, 0U, 0U, ~0U };
 
 //===----------------------------------------------------------------------===//
 //                       DataLayout Class Implementation
@@ -627,6 +627,13 @@ Type *DataLayout::getSmallestLegalIntType(LLVMContext &C, unsigned Width) const 
     if (Width <= LegalIntWidths[i])
       return Type::getIntNTy(C, LegalIntWidths[i]);
   return 0;
+}
+
+unsigned DataLayout::getLargestLegalIntTypeSize() const {
+  unsigned MaxWidth = 0;
+  for (unsigned i = 0, e = (unsigned)LegalIntWidths.size(); i != e; ++i)
+    MaxWidth = std::max<unsigned>(MaxWidth, LegalIntWidths[i]);
+  return MaxWidth;
 }
 
 uint64_t DataLayout::getIndexedOffset(Type *ptrTy,

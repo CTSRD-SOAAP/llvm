@@ -11,6 +11,12 @@
 // If the function or variable is not in the list of external names given to
 // the pass it is marked as internal.
 //
+// This transformation would not be legal in a regular compilation, but it gets
+// extra information from the linker about what is safe.
+//
+// For example: Internalizing a function with external linkage. Only if we are
+// told it is only used from within this module, it is safe to do it.
+//
 //===----------------------------------------------------------------------===//
 
 #define DEBUG_TYPE "internalize"
@@ -23,6 +29,7 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Transforms/Utils/GlobalStatus.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 #include <fstream>
 #include <set>
@@ -56,7 +63,7 @@ namespace {
 
     virtual void getAnalysisUsage(AnalysisUsage &AU) const {
       AU.setPreservesCFG();
-      AU.addPreserved<CallGraph>();
+      AU.addPreserved<CallGraphWrapperPass>();
     }
   };
 } // end anonymous namespace
@@ -120,7 +127,8 @@ static bool shouldInternalize(const GlobalValue &GV,
 }
 
 bool InternalizePass::runOnModule(Module &M) {
-  CallGraph *CG = getAnalysisIfAvailable<CallGraph>();
+  CallGraphWrapperPass *CGPass = getAnalysisIfAvailable<CallGraphWrapperPass>();
+  CallGraph *CG = CGPass ? &CGPass->getCallGraph() : 0;
   CallGraphNode *ExternalNode = CG ? CG->getExternalCallingNode() : 0;
   bool Changed = false;
 

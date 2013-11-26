@@ -22,6 +22,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Utils/Cloning.h"
+#include <cctype>
 using namespace llvm;
 
 //===----------------------------------------------------------------------===//
@@ -1260,6 +1261,13 @@ bool ModuleLinker::run() {
     // Skip if not linking from source.
     if (DoNotLinkFromSource.count(SF)) continue;
     
+    Function *DF = cast<Function>(ValueMap[SF]);
+    if (SF->hasPrefixData()) {
+      // Link in the prefix data.
+      DF->setPrefixData(MapValue(
+          SF->getPrefixData(), ValueMap, RF_None, &TypeMap, &ValMaterializer));
+    }
+
     // Skip if no body (function is external) or materialize.
     if (SF->isDeclaration()) {
       if (!SF->isMaterializable())
@@ -1268,7 +1276,7 @@ bool ModuleLinker::run() {
         return true;
     }
     
-    linkFunctionBody(cast<Function>(ValueMap[SF]), SF);
+    linkFunctionBody(DF, SF);
     SF->Dematerialize();
   }
 
@@ -1296,6 +1304,14 @@ bool ModuleLinker::run() {
         continue;
 
       Function *DF = cast<Function>(ValueMap[SF]);
+      if (SF->hasPrefixData()) {
+        // Link in the prefix data.
+        DF->setPrefixData(MapValue(SF->getPrefixData(),
+                                   ValueMap,
+                                   RF_None,
+                                   &TypeMap,
+                                   &ValMaterializer));
+      }
 
       // Materialize if necessary.
       if (SF->isDeclaration()) {
@@ -1334,6 +1350,11 @@ Linker::Linker(Module *M) : Composite(M) {
 }
 
 Linker::~Linker() {
+}
+
+void Linker::deleteModule() {
+  delete Composite;
+  Composite = NULL;
 }
 
 bool Linker::linkInModule(Module *Src, unsigned Mode, std::string *ErrorMsg) {

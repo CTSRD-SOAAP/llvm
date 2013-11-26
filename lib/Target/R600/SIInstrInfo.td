@@ -21,6 +21,25 @@ def SIload_constant : SDNode<"AMDGPUISD::LOAD_CONSTANT",
                       [SDNPMayLoad, SDNPMemOperand]
 >;
 
+def SItbuffer_store : SDNode<"AMDGPUISD::TBUFFER_STORE_FORMAT",
+  SDTypeProfile<0, 13,
+    [SDTCisVT<0, i128>,   // rsrc(SGPR)
+     SDTCisVT<1, iAny>,   // vdata(VGPR)
+     SDTCisVT<2, i32>,    // num_channels(imm)
+     SDTCisVT<3, i32>,    // vaddr(VGPR)
+     SDTCisVT<4, i32>,    // soffset(SGPR)
+     SDTCisVT<5, i32>,    // inst_offset(imm)
+     SDTCisVT<6, i32>,    // dfmt(imm)
+     SDTCisVT<7, i32>,    // nfmt(imm)
+     SDTCisVT<8, i32>,    // offen(imm)
+     SDTCisVT<9, i32>,    // idxen(imm)
+     SDTCisVT<10, i32>,   // glc(imm)
+     SDTCisVT<11, i32>,   // slc(imm)
+     SDTCisVT<12, i32>    // tfe(imm)
+    ]>,
+  [SDNPMayStore, SDNPMemOperand, SDNPHasChain]
+>;
+
 def SIload_input : SDNode<"AMDGPUISD::LOAD_INPUT",
   SDTypeProfile<1, 3, [SDTCisVT<0, v4f32>, SDTCisVT<1, i128>, SDTCisVT<2, i16>,
                        SDTCisVT<3, i32>]>
@@ -65,6 +84,14 @@ def IMM8bitDWORD : ImmLeaf <
   }]>
 >;
 
+def as_i1imm : SDNodeXForm<imm, [{
+  return CurDAG->getTargetConstant(N->getZExtValue(), MVT::i1);
+}]>;
+
+def as_i8imm : SDNodeXForm<imm, [{
+  return CurDAG->getTargetConstant(N->getZExtValue(), MVT::i8);
+}]>;
+
 def as_i16imm : SDNodeXForm<imm, [{
   return CurDAG->getTargetConstant(N->getSExtValue(), MVT::i16);
 }]>;
@@ -93,6 +120,10 @@ class SGPRImm <dag frag> : PatLeaf<frag, [{
   }
   return false;
 }]>;
+
+def FRAMEri64 : Operand<iPTR> {
+  let MIOperandInfo = (ops SReg_32:$ptr, i32imm:$index);
+}
 
 //===----------------------------------------------------------------------===//
 // SI assembler operands
@@ -142,6 +173,11 @@ class SOP2_32 <bits<7> op, string opName, list<dag> pattern> : SOP2 <
 
 class SOP2_64 <bits<7> op, string opName, list<dag> pattern> : SOP2 <
   op, (outs SReg_64:$dst), (ins SSrc_64:$src0, SSrc_64:$src1),
+  opName#" $dst, $src0, $src1", pattern
+>;
+
+class SOP2_SHIFT_64 <bits<7> op, string opName, list<dag> pattern> : SOP2 <
+  op, (outs SReg_64:$dst), (ins SSrc_64:$src0, SSrc_32:$src1),
   opName#" $dst, $src0, $src1", pattern
 >;
 
@@ -445,10 +481,16 @@ class MTBUF_Load_Helper <bits<3> op, string asm, RegisterClass regClass> : MTBUF
   let mayStore = 0;
 }
 
+class MIMG_Mask <string op, int channels> {
+  string Op = op;
+  int Channels = channels;
+}
+
 class MIMG_NoSampler_Helper <bits<7> op, string asm,
+                             RegisterClass dst_rc,
                              RegisterClass src_rc> : MIMG <
   op,
-  (outs VReg_128:$vdata),
+  (outs dst_rc:$vdata),
   (ins i32imm:$dmask, i1imm:$unorm, i1imm:$glc, i1imm:$da, i1imm:$r128,
        i1imm:$tfe, i1imm:$lwe, i1imm:$slc, src_rc:$vaddr,
        SReg_256:$srsrc),
@@ -461,16 +503,29 @@ class MIMG_NoSampler_Helper <bits<7> op, string asm,
   let hasPostISelHook = 1;
 }
 
+multiclass MIMG_NoSampler_Src_Helper <bits<7> op, string asm,
+                                      RegisterClass dst_rc,
+                                      int channels> {
+  def _V1 : MIMG_NoSampler_Helper <op, asm, dst_rc, VReg_32>,
+            MIMG_Mask<asm#"_V1", channels>;
+  def _V2 : MIMG_NoSampler_Helper <op, asm, dst_rc, VReg_64>,
+            MIMG_Mask<asm#"_V2", channels>;
+  def _V4 : MIMG_NoSampler_Helper <op, asm, dst_rc, VReg_128>,
+            MIMG_Mask<asm#"_V4", channels>;
+}
+
 multiclass MIMG_NoSampler <bits<7> op, string asm> {
-  def _V1 : MIMG_NoSampler_Helper <op, asm, VReg_32>;
-  def _V2 : MIMG_NoSampler_Helper <op, asm, VReg_64>;
-  def _V4 : MIMG_NoSampler_Helper <op, asm, VReg_128>;
+  defm _V1 : MIMG_NoSampler_Src_Helper <op, asm, VReg_32, 1>;
+  defm _V2 : MIMG_NoSampler_Src_Helper <op, asm, VReg_64, 2>;
+  defm _V3 : MIMG_NoSampler_Src_Helper <op, asm, VReg_96, 3>;
+  defm _V4 : MIMG_NoSampler_Src_Helper <op, asm, VReg_128, 4>;
 }
 
 class MIMG_Sampler_Helper <bits<7> op, string asm,
+                           RegisterClass dst_rc,
                            RegisterClass src_rc> : MIMG <
   op,
-  (outs VReg_128:$vdata),
+  (outs dst_rc:$vdata),
   (ins i32imm:$dmask, i1imm:$unorm, i1imm:$glc, i1imm:$da, i1imm:$r128,
        i1imm:$tfe, i1imm:$lwe, i1imm:$slc, src_rc:$vaddr,
        SReg_256:$srsrc, SReg_128:$ssamp),
@@ -482,12 +537,26 @@ class MIMG_Sampler_Helper <bits<7> op, string asm,
   let hasPostISelHook = 1;
 }
 
+multiclass MIMG_Sampler_Src_Helper <bits<7> op, string asm,
+                                    RegisterClass dst_rc,
+                                    int channels> {
+  def _V1 : MIMG_Sampler_Helper <op, asm, dst_rc, VReg_32>,
+            MIMG_Mask<asm#"_V1", channels>;
+  def _V2 : MIMG_Sampler_Helper <op, asm, dst_rc, VReg_64>,
+            MIMG_Mask<asm#"_V2", channels>;
+  def _V4 : MIMG_Sampler_Helper <op, asm, dst_rc, VReg_128>,
+            MIMG_Mask<asm#"_V4", channels>;
+  def _V8 : MIMG_Sampler_Helper <op, asm, dst_rc, VReg_256>,
+            MIMG_Mask<asm#"_V8", channels>;
+  def _V16 : MIMG_Sampler_Helper <op, asm, dst_rc, VReg_512>,
+            MIMG_Mask<asm#"_V16", channels>;
+}
+
 multiclass MIMG_Sampler <bits<7> op, string asm> {
-  def _V1 : MIMG_Sampler_Helper <op, asm, VReg_32>;
-  def _V2 : MIMG_Sampler_Helper <op, asm, VReg_64>;
-  def _V4 : MIMG_Sampler_Helper <op, asm, VReg_128>;
-  def _V8 : MIMG_Sampler_Helper <op, asm, VReg_256>;
-  def _V16 : MIMG_Sampler_Helper <op, asm, VReg_512>;
+  defm _V1 : MIMG_Sampler_Src_Helper<op, asm, VReg_32, 1>;
+  defm _V2 : MIMG_Sampler_Src_Helper<op, asm, VReg_64, 2>;
+  defm _V3 : MIMG_Sampler_Src_Helper<op, asm, VReg_96, 3>;
+  defm _V4 : MIMG_Sampler_Src_Helper<op, asm, VReg_128, 4>;
 }
 
 //===----------------------------------------------------------------------===//
@@ -510,6 +579,14 @@ def getCommuteRev : InstrMapping {
   let ColFields = ["IsOrig"];
   let KeyCol = ["1"];
   let ValueCols = [["0"]];
+}
+
+def getMaskedMIMGOp : InstrMapping {
+  let FilterClass = "MIMG_Mask";
+  let RowFields = ["Op"];
+  let ColFields = ["Channels"];
+  let KeyCol = ["4"];
+  let ValueCols = [["1"], ["2"], ["3"] ];
 }
 
 // Maps an commuted opcode to its original version

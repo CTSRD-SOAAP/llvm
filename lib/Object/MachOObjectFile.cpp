@@ -591,32 +591,6 @@ error_code MachOObjectFile::getSymbolType(DataRefImpl Symb,
   return object_error::success;
 }
 
-error_code MachOObjectFile::getSymbolNMTypeChar(DataRefImpl Symb,
-                                                char &Res) const {
-  nlist_base Entry = getSymbolTableEntryBase(this, Symb);
-  uint8_t Type = Entry.n_type;
-  uint16_t Flags = Entry.n_desc;
-
-  char Char;
-  switch (Type & MachO::N_TYPE) {
-    case MachO::N_UNDF:
-      Char = 'u';
-      break;
-    case MachO::N_ABS:
-    case MachO::N_SECT:
-      Char = 's';
-      break;
-    default:
-      Char = '?';
-      break;
-  }
-
-  if (Flags & (MachO::N_EXT | MachO::N_PEXT))
-    Char = toupper(static_cast<unsigned char>(Char));
-  Res = Char;
-  return object_error::success;
-}
-
 error_code MachOObjectFile::getSymbolFlags(DataRefImpl DRI,
                                            uint32_t &Result) const {
   nlist_base Entry = getSymbolTableEntryBase(this, DRI);
@@ -630,7 +604,7 @@ error_code MachOObjectFile::getSymbolFlags(DataRefImpl DRI,
   if ((MachOType & MachO::N_TYPE) == MachO::N_UNDF)
     Result |= SymbolRef::SF_Undefined;
 
-  if (MachOFlags & MachO::N_STAB)
+  if (MachOType & MachO::N_STAB)
     Result |= SymbolRef::SF_FormatSpecific;
 
   if (MachOType & MachO::N_EXT) {
@@ -823,7 +797,7 @@ MachOObjectFile::sectionContainsSymbol(DataRefImpl Sec, DataRefImpl Symb,
   return object_error::success;
 }
 
-relocation_iterator MachOObjectFile::getSectionRelBegin(DataRefImpl Sec) const {
+relocation_iterator MachOObjectFile::section_rel_begin(DataRefImpl Sec) const {
   uint32_t Offset;
   if (is64Bit()) {
     MachO::section_64 Sect = getSection64(Sec);
@@ -839,7 +813,7 @@ relocation_iterator MachOObjectFile::getSectionRelBegin(DataRefImpl Sec) const {
 }
 
 relocation_iterator
-MachOObjectFile::getSectionRelEnd(DataRefImpl Sec) const {
+MachOObjectFile::section_rel_end(DataRefImpl Sec) const {
   uint32_t Offset;
   uint32_t Num;
   if (is64Bit()) {
@@ -1331,16 +1305,16 @@ StringRef MachOObjectFile::getLoadName() const {
   report_fatal_error("get_load_name() unimplemented in MachOObjectFile");
 }
 
-relocation_iterator MachOObjectFile::getSectionRelBegin(unsigned Index) const {
+relocation_iterator MachOObjectFile::section_rel_begin(unsigned Index) const {
   DataRefImpl DRI;
   DRI.d.a = Index;
-  return getSectionRelBegin(DRI);
+  return section_rel_begin(DRI);
 }
 
-relocation_iterator MachOObjectFile::getSectionRelEnd(unsigned Index) const {
+relocation_iterator MachOObjectFile::section_rel_end(unsigned Index) const {
   DataRefImpl DRI;
   DRI.d.a = Index;
-  return getSectionRelEnd(DRI);
+  return section_rel_end(DRI);
 }
 
 dice_iterator MachOObjectFile::begin_dices() const {

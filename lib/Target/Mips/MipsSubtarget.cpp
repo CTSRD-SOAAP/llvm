@@ -53,6 +53,12 @@ Mips16HardFloat("mips16-hard-float", cl::NotHidden,
                 cl::desc("MIPS: mips16 hard float enable."),
                 cl::init(false));
 
+static cl::opt<bool>
+Mips16ConstantIslands(
+  "mips16-constant-islands", cl::Hidden,
+  cl::desc("MIPS: mips16 constant islands enable. experimental feature"),
+  cl::init(false));
+
 void MipsSubtarget::anchor() { }
 
 MipsSubtarget::MipsSubtarget(const std::string &TT, const std::string &CPU,
@@ -75,6 +81,16 @@ MipsSubtarget::MipsSubtarget(const std::string &TT, const std::string &CPU,
   // Parse features string.
   ParseSubtargetFeatures(CPUName, FS);
 
+  if (InMips16Mode && !TM->Options.UseSoftFloat) {
+    // Hard float for mips16 means essentially to compile as soft float
+    // but to use a runtime library for soft float that is written with
+    // native mips32 floating point instructions (those runtime routines
+    // run in mips32 hard float mode).
+    TM->Options.UseSoftFloat = true;
+    TM->Options.FloatABIType = FloatABI::Soft;
+    InMips16HardFloat = true;
+  }
+
   PreviousInMips16Mode = InMips16Mode;
 
   // Initialize scheduling itinerary for the specified CPU.
@@ -88,6 +104,11 @@ MipsSubtarget::MipsSubtarget(const std::string &TT, const std::string &CPU,
   assert(((!hasMips64() && (isABI_O32() || isABI_EABI())) ||
           (hasMips64() && (isABI_N32() || isABI_N64()))) &&
          "Invalid  Arch & ABI pair.");
+
+  if (hasMSA() && !isFP64bit())
+    report_fatal_error("MSA requires a 64-bit FPU register file (FR=1 mode). "
+                       "See -mattr=+fp64.",
+                       false);
 
   // Is the target system Linux ?
   if (TT.find("linux") == std::string::npos)
@@ -157,4 +178,9 @@ void MipsSubtarget::resetSubtarget(MachineFunction *MF) {
 
 bool MipsSubtarget::mipsSEUsesSoftFloat() const {
   return TM->Options.UseSoftFloat && !InMips16HardFloat;
+}
+
+bool MipsSubtarget::useConstantIslands() {
+  DEBUG(dbgs() << "use constant islands " << Mips16ConstantIslands << "\n");
+  return Mips16ConstantIslands;
 }

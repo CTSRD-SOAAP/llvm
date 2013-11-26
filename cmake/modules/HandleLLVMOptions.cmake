@@ -8,6 +8,8 @@ include(CheckCXXCompilerFlag)
 
 if( CMAKE_COMPILER_IS_GNUCXX )
   set(LLVM_COMPILER_IS_GCC_COMPATIBLE ON)
+elseif( MSVC )
+  set(LLVM_COMPILER_IS_GCC_COMPATIBLE OFF)
 elseif( "${CMAKE_CXX_COMPILER_ID}" MATCHES "Clang" )
   set(LLVM_COMPILER_IS_GCC_COMPATIBLE ON)
 endif()
@@ -22,8 +24,13 @@ if( LLVM_ENABLE_ASSERTIONS )
   if( NOT uppercase_CMAKE_BUILD_TYPE STREQUAL "DEBUG" )
     add_definitions( -UNDEBUG )
     # Also remove /D NDEBUG to avoid MSVC warnings about conflicting defines.
-    string (REGEX REPLACE "(^| )[/-]D *NDEBUG($| )" " "
+    set(REGEXP_NDEBUG "(^| )[/-]D *NDEBUG($| )")
+    string (REGEX REPLACE "${REGEXP_NDEBUG}" " "
       CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}")
+    string (REGEX REPLACE "${REGEXP_NDEBUG}" " "
+      CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO}")
+    string (REGEX REPLACE "${REGEXP_NDEBUG}" " "
+      CMAKE_CXX_FLAGS_MINSIZEREL "${CMAKE_CXX_FLAGS_MINSIZEREL}")
   endif()
 else()
   if( NOT uppercase_CMAKE_BUILD_TYPE STREQUAL "RELEASE" )
@@ -151,6 +158,15 @@ endif()
 if( MSVC )
   include(ChooseMSVCCRT)
 
+  if( NOT (${CMAKE_VERSION} VERSION_LESS 2.8.11) )
+    # set stack reserved size to ~10MB
+    # CMake previously automatically set this value for MSVC builds, but the
+    # behavior was changed in CMake 2.8.11 (Issue 12437) to use the MSVC default
+    # value (1 MB) which is not enough for us in tasks such as parsing recursive
+    # C++ templates in Clang.
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /STACK:10000000")
+  endif()
+
   if( MSVC10 )
     # MSVC 10 will complain about headers in the STL not being exported, but
     # will not complain in MSVC 11.
@@ -230,6 +246,10 @@ elseif( LLVM_COMPILER_IS_GCC_COMPATIBLE )
   if (LLVM_ENABLE_WERROR)
     add_llvm_definitions( -Werror )
   endif (LLVM_ENABLE_WERROR)
+  if (LLVM_ENABLE_CXX11)
+    check_cxx_compiler_flag("-std=c++11" CXX_SUPPORTS_CXX11)
+    append_if(CXX_SUPPORTS_CXX11 "-std=c++11" CMAKE_CXX_FLAGS)
+  endif (LLVM_ENABLE_CXX11)
 endif( MSVC )
 
 macro(append_common_sanitizer_flags)
