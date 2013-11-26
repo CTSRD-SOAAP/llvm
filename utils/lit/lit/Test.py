@@ -125,7 +125,6 @@ class TestSuite:
     def getExecPath(self, components):
         return os.path.join(self.exec_root, *components)
 
-
 class Test:
     """Test - Information on a single test instance."""
 
@@ -154,19 +153,7 @@ class Test:
                 self.result.code = XPASS
             elif self.result.code == FAIL:
                 self.result.code = XFAIL
-
-    def getJUnitXML(self):
-        xml = "<testcase classname='" + ".".join(self.path_in_suite)
-        xml += "' name='" + '/'.join(self.path_in_suite) + "'"
-        if self.result.code.isFailure:
-          xml += ">\n\t<failure >\n"
-	  xml += escape(self.result.output)
-	  xml += "\n\t</failure>"
-          xml += "\n</testcase>"
-        else:
-          xml += "/>"
-        return xml
-
+        
     def getFullName(self):
         return self.suite.config.name + ' :: ' + '/'.join(self.path_in_suite)
 
