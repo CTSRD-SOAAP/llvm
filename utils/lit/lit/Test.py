@@ -1,4 +1,5 @@
 import os
+from xml.sax.saxutils import escape
 
 # Test result codes.
 
@@ -125,16 +126,6 @@ class TestSuite:
     def getExecPath(self, components):
         return os.path.join(self.exec_root, *components)
 
-    def getJUnitXML(self):
-        xml = "<testcase classname='" + ".".join(self.path_in_suite)
-        xml += "' name='" + '/'.join(self.path_in_suite) + "'"
-        if self.result.isFailure:
-          xml += ">\n\t<failure >\n" + escape(self.output) + "\n\t</failure>"
-          xml += "\n</testcase>"
-        else:
-          xml += "/>"
-        return xml
-
 class Test:
     """Test - Information on a single test instance."""
 
@@ -198,3 +189,14 @@ class Test:
                 return True
 
         return False
+    
+    def getJUnitXML(self):
+        xml = "<testcase classname='" + ".".join(self.path_in_suite)
+        xml += "' name='" + '/'.join(self.path_in_suite) + "'"
+        if self.result.code.isFailure:
+          xml += ">\n\t<failure >\n" + escape(self.output) + "\n\t</failure>"
+          xml += "\n</testcase>"
+        else:
+          xml += "/>"
+        return xml
+
