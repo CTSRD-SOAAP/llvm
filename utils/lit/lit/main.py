@@ -383,7 +383,7 @@ def main(builtinParameters = {}):
         if opts.xmlFile:
             # Collect the tests, indexed by test suite
             bySuite = {}
-            for t in tests:
+            for t in run.tests:
                 suite = t.suite.config.name
                 if suite not in bySuite:
                     bySuite[suite] = {
