@@ -391,7 +391,7 @@ def main(builtinParameters = {}):
                                        'failures' : 0,
                                        'tests'    : [] }
                 bySuite[suite]['tests'].append(t)
-                if t.result.isFailure:
+                if t.result.code.isFailure:
                     bySuite[suite]['failures'] += 1
                 else:
                    bySuite[suite]['passes'] += 1
