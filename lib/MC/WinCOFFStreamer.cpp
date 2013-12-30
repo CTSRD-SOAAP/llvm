@@ -61,6 +61,7 @@ public:
   virtual void EmitCOFFSymbolStorageClass(int StorageClass);
   virtual void EmitCOFFSymbolType(int Type);
   virtual void EndCOFFSymbolDef();
+  virtual void EmitCOFFSectionIndex(MCSymbol const *Symbol);
   virtual void EmitCOFFSecRel32(MCSymbol const *Symbol);
   virtual void EmitELFSize(MCSymbol *Symbol, const MCExpr *Value);
   virtual void EmitCommonSymbol(MCSymbol *Symbol, uint64_t Size,
@@ -190,7 +191,7 @@ bool WinCOFFStreamer::EmitSymbolAttribute(MCSymbol *Symbol,
   assert(Symbol && "Symbol must be non-null!");
   assert((Symbol->isInSection()
          ? Symbol->getSection().getVariant() == MCSection::SV_COFF
-         : true) && "Got non COFF section in the COFF backend!");
+         : true) && "Got non-COFF section in the COFF backend!");
   switch (Attribute) {
   case MCSA_WeakReference:
   case MCSA_Weak: {
@@ -218,7 +219,7 @@ void WinCOFFStreamer::EmitSymbolDesc(MCSymbol *Symbol, unsigned DescValue) {
 void WinCOFFStreamer::BeginCOFFSymbolDef(MCSymbol const *Symbol) {
   assert((Symbol->isInSection()
          ? Symbol->getSection().getVariant() == MCSection::SV_COFF
-         : true) && "Got non COFF section in the COFF backend!");
+         : true) && "Got non-COFF section in the COFF backend!");
   assert(CurSymbol == NULL && "EndCOFFSymbolDef must be called between calls "
                               "to BeginCOFFSymbolDef!");
   CurSymbol = Symbol;
@@ -249,14 +250,19 @@ void WinCOFFStreamer::EndCOFFSymbolDef() {
   CurSymbol = NULL;
 }
 
-void WinCOFFStreamer::EmitCOFFSecRel32(MCSymbol const *Symbol)
-{
+void WinCOFFStreamer::EmitCOFFSectionIndex(MCSymbol const *Symbol) {
   MCDataFragment *DF = getOrCreateDataFragment();
+  DF->getFixups().push_back(MCFixup::Create(
+      DF->getContents().size(), MCSymbolRefExpr::Create(Symbol, getContext()),
+      FK_SecRel_2));
+  DF->getContents().resize(DF->getContents().size() + 4, 0);
+}
 
-  DF->getFixups().push_back(
-      MCFixup::Create(DF->getContents().size(),
-                      MCSymbolRefExpr::Create (Symbol, getContext ()),
-                      FK_SecRel_4));
+void WinCOFFStreamer::EmitCOFFSecRel32(MCSymbol const *Symbol) {
+  MCDataFragment *DF = getOrCreateDataFragment();
+  DF->getFixups().push_back(MCFixup::Create(
+      DF->getContents().size(), MCSymbolRefExpr::Create(Symbol, getContext()),
+      FK_SecRel_4));
   DF->getContents().resize(DF->getContents().size() + 4, 0);
 }
 
@@ -268,7 +274,7 @@ void WinCOFFStreamer::EmitCommonSymbol(MCSymbol *Symbol, uint64_t Size,
                                        unsigned ByteAlignment) {
   assert((Symbol->isInSection()
          ? Symbol->getSection().getVariant() == MCSection::SV_COFF
-         : true) && "Got non COFF section in the COFF backend!");
+         : true) && "Got non-COFF section in the COFF backend!");
   AddCommonSymbol(Symbol, Size, ByteAlignment, true);
 }
 
@@ -276,7 +282,7 @@ void WinCOFFStreamer::EmitLocalCommonSymbol(MCSymbol *Symbol, uint64_t Size,
                                             unsigned ByteAlignment) {
   assert((Symbol->isInSection()
          ? Symbol->getSection().getVariant() == MCSection::SV_COFF
-         : true) && "Got non COFF section in the COFF backend!");
+         : true) && "Got non-COFF section in the COFF backend!");
   AddCommonSymbol(Symbol, Size, ByteAlignment, false);
 }
 
@@ -309,6 +315,7 @@ void WinCOFFStreamer::EmitWin64EHHandlerData() {
 }
 
 void WinCOFFStreamer::FinishImpl() {
+  EmitFrames(NULL, true);
   EmitW64Tables();
   MCObjectStreamer::FinishImpl();
 }

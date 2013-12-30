@@ -300,6 +300,8 @@ def tBKPT : T1I<(outs), (ins imm0_255:$val), NoItinerary, "bkpt\t$val",
   bits<8> val;
   let Inst{7-0} = val;
 }
+// default immediate for breakpoint mnemonic
+def : InstAlias<"bkpt", (tBKPT 0)>, Requires<[IsThumb]>;
 
 def tHLT : T1I<(outs), (ins imm0_63:$val), NoItinerary, "hlt\t$val",
                 []>, T1Encoding<0b101110>, Requires<[IsThumb, HasV8]> {
@@ -1308,6 +1310,19 @@ def : T1Pat<(subc   tGPR:$lhs, tGPR:$rhs),
 
 // ConstantPool
 def : T1Pat<(ARMWrapper  tconstpool  :$dst), (tLEApcrel tconstpool  :$dst)>;
+
+// GlobalAddress
+def tLDRLIT_ga_pcrel : PseudoInst<(outs GPR:$dst), (ins i32imm:$addr),
+                                  IIC_iLoadiALU,
+                                  [(set GPR:$dst,
+                                        (ARMWrapperPIC tglobaladdr:$addr))]>,
+                       Requires<[IsThumb, DontUseMovt]>;
+
+def tLDRLIT_ga_abs : PseudoInst<(outs GPR:$dst), (ins i32imm:$src), IIC_iLoad_i,
+                                [(set GPR:$dst,
+                                      (ARMWrapper tglobaladdr:$src))]>,
+                     Requires<[IsThumb, DontUseMovt]>;
+
 
 // JumpTable
 def : T1Pat<(ARMWrapperJT tjumptable:$dst, imm:$id),

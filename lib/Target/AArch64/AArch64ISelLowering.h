@@ -113,9 +113,6 @@ namespace AArch64ISD {
     // get selected.
     WrapperSmall,
 
-    // Vector bitwise select
-    NEON_BSL,
-
     // Vector move immediate
     NEON_MOVIMM,
 
@@ -309,6 +306,8 @@ public:
   SDValue LowerGlobalAddressELFLarge(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerGlobalAddressELF(SDValue Op, SelectionDAG &DAG) const;
 
+  SDValue LowerConstantPool(SDValue Op, SelectionDAG &DAG) const;
+
   SDValue LowerTLSDescCall(SDValue SymAddr, SDValue DescAddr, SDLoc DL,
                            SelectionDAG &DAG) const;
   SDValue LowerGlobalTLSAddress(SDValue Op, SelectionDAG &DAG) const;
@@ -342,6 +341,10 @@ public:
 
   virtual bool getTgtMemIntrinsic(IntrinsicInfo &Info, const CallInst &I,
                                   unsigned Intrinsic) const LLVM_OVERRIDE;
+
+protected:
+  std::pair<const TargetRegisterClass*, uint8_t>
+  findRepresentativeClass(MVT VT) const;
 
 private:
   const InstrItineraryData *Itins;

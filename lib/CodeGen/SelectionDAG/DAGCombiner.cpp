@@ -4970,7 +4970,8 @@ SDValue DAGCombiner::visitZERO_EXTEND(SDNode *N) {
   }
 
   if (N0.getOpcode() == ISD::SETCC) {
-    if (!LegalOperations && VT.isVector()) {
+    if (!LegalOperations && VT.isVector() &&
+        N0.getValueType().getVectorElementType() == MVT::i1) {
       // zext(setcc) -> (and (vsetcc), (1, 1, ...) for vectors.
       // Only do this before legalize for now.
       EVT N0VT = N0.getOperand(0).getValueType();
@@ -5511,6 +5512,29 @@ SDValue DAGCombiner::visitSIGN_EXTEND_INREG(SDNode *N) {
                          BSwap, N1);
   }
 
+  // Fold a sext_inreg of a build_vector of ConstantSDNodes or undefs
+  // into a build_vector.
+  if (ISD::isBuildVectorOfConstantSDNodes(N0.getNode())) {
+    SmallVector<SDValue, 8> Elts;
+    unsigned NumElts = N0->getNumOperands();
+    unsigned ShAmt = VTBits - EVTBits;
+
+    for (unsigned i = 0; i != NumElts; ++i) {
+      SDValue Op = N0->getOperand(i);
+      if (Op->getOpcode() == ISD::UNDEF) {
+        Elts.push_back(Op);
+        continue;
+      }
+
+      ConstantSDNode *CurrentND = cast<ConstantSDNode>(Op);
+      const APInt &C = CurrentND->getAPIntValue();
+      Elts.push_back(DAG.getConstant(C.shl(ShAmt).ashr(ShAmt),
+                                     Op.getValueType()));
+    }
+
+    return DAG.getNode(ISD::BUILD_VECTOR, SDLoc(N), VT, &Elts[0], NumElts);
+  }
+
   return SDValue();
 }
 
@@ -5632,6 +5656,20 @@ SDValue DAGCombiner::visitTRUNCATE(SDNode *N) {
     SDValue Reduced = ReduceLoadWidth(N);
     if (Reduced.getNode())
       return Reduced;
+    // Handle the case where the load remains an extending load even
+    // after truncation.
+    if (N0.hasOneUse() && ISD::isUNINDEXEDLoad(N0.getNode())) {
+      LoadSDNode *LN0 = cast<LoadSDNode>(N0);
+      if (!LN0->isVolatile() &&
+          LN0->getMemoryVT().getStoreSizeInBits() < VT.getSizeInBits()) {
+        SDValue NewLoad = DAG.getExtLoad(LN0->getExtensionType(), SDLoc(LN0),
+                                         VT, LN0->getChain(), LN0->getBasePtr(),
+                                         LN0->getMemoryVT(),
+                                         LN0->getMemOperand());
+        DAG.ReplaceAllUsesOfValueWith(N0.getValue(1), NewLoad.getValue(1));
+        return NewLoad;
+      }
+    }
   }
   // fold (trunc (concat ... x ...)) -> (concat ..., (trunc x), ...)),
   // where ... are all 'undef'.
@@ -8120,7 +8158,7 @@ bool DAGCombiner::SliceUpLoad(SDNode *N) {
 
     // The width of the type must be a power of 2 and greater than 8-bits.
     // Otherwise the load cannot be represented in LLVM IR.
-    // Moreover, if we shifted with a non 8-bits multiple, the slice
+    // Moreover, if we shifted with a non-8-bits multiple, the slice
     // will be accross several bytes. We do not support that.
     unsigned Width = User->getValueSizeInBits(0);
     if (Width < 8 || !isPowerOf2_32(Width) || (Shift & 0x7))
@@ -8762,7 +8800,7 @@ bool DAGCombiner::MergeConsecutiveStores(StoreSDNode* St) {
       } else if (ConstantFPSDNode *C = dyn_cast<ConstantFPSDNode>(StoredVal)) {
         NonZero |= !C->getConstantFPValue()->isNullValue();
       } else {
-        // Non constant.
+        // Non-constant.
         break;
       }
 
@@ -9859,7 +9897,7 @@ SDValue DAGCombiner::visitCONCAT_VECTORS(SDNode *N) {
   if (N->getNumOperands() == 2 &&
       N->getOperand(1)->getOpcode() == ISD::UNDEF) {
     SDValue In = N->getOperand(0);
-    assert(In->getValueType(0).isVector() && "Must concat vectors");
+    assert(In.getValueType().isVector() && "Must concat vectors");
 
     // Transform: concat_vectors(scalar, undef) -> scalar_to_vector(sclr).
     if (In->getOpcode() == ISD::BITCAST &&

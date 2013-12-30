@@ -213,17 +213,8 @@ void ARMAsmPrinter::printOperand(const MachineInstr *MI, int OpNum,
       O << "(PLT)";
     break;
   }
-  case MachineOperand::MO_ExternalSymbol: {
-    O << *GetExternalSymbolSymbol(MO.getSymbolName());
-    if (TF == ARMII::MO_PLT)
-      O << "(PLT)";
-    break;
-  }
   case MachineOperand::MO_ConstantPoolIndex:
     O << *GetCPISymbol(MO.getIndex());
-    break;
-  case MachineOperand::MO_JumpTableIndex:
-    O << *GetJTISymbol(MO.getIndex());
     break;
   }
 }
@@ -497,6 +488,19 @@ void ARMAsmPrinter::EmitStartOfAsmFile(Module &M) {
                                    SectionKind::getText());
       OutStreamer.SwitchSection(StaticInitSect);
     }
+
+    // Compiling with debug info should not affect the code
+    // generation!  Since some of the data sections are first switched
+    // to only in ASMPrinter::doFinalization(), the debug info
+    // sections would come before the data sections in the object
+    // file.  This is problematic, since PC-relative loads have to use
+    // different instruction sequences in order to reach global data
+    // in the same object file.
+    OutStreamer.SwitchSection(getObjFileLowering().getCStringSection());
+    OutStreamer.SwitchSection(getObjFileLowering().getDataSection());
+    OutStreamer.SwitchSection(getObjFileLowering().getDataCommonSection());
+    OutStreamer.SwitchSection(getObjFileLowering().getDataBSSSection());
+    OutStreamer.SwitchSection(getObjFileLowering().getNonLazySymbolPointerSection());
   }
 
   // Use unified assembler syntax.
@@ -618,7 +622,8 @@ void ARMAsmPrinter::emitAttributes() {
 
   std::string CPUString = Subtarget->getCPUString();
 
-  if (CPUString != "generic")
+  // FIXME: remove krait check when GNU tools support krait cpu
+  if (CPUString != "generic" && CPUString != "krait")
     ATS.emitTextAttribute(ARMBuildAttrs::CPU_name, CPUString);
 
   ATS.emitAttribute(ARMBuildAttrs::CPU_arch,
@@ -765,11 +770,11 @@ static MCSymbolRefExpr::VariantKind
 getModifierVariantKind(ARMCP::ARMCPModifier Modifier) {
   switch (Modifier) {
   case ARMCP::no_modifier: return MCSymbolRefExpr::VK_None;
-  case ARMCP::TLSGD:       return MCSymbolRefExpr::VK_ARM_TLSGD;
-  case ARMCP::TPOFF:       return MCSymbolRefExpr::VK_ARM_TPOFF;
-  case ARMCP::GOTTPOFF:    return MCSymbolRefExpr::VK_ARM_GOTTPOFF;
-  case ARMCP::GOT:         return MCSymbolRefExpr::VK_ARM_GOT;
-  case ARMCP::GOTOFF:      return MCSymbolRefExpr::VK_ARM_GOTOFF;
+  case ARMCP::TLSGD:       return MCSymbolRefExpr::VK_TLSGD;
+  case ARMCP::TPOFF:       return MCSymbolRefExpr::VK_TPOFF;
+  case ARMCP::GOTTPOFF:    return MCSymbolRefExpr::VK_GOTTPOFF;
+  case ARMCP::GOT:         return MCSymbolRefExpr::VK_GOT;
+  case ARMCP::GOTOFF:      return MCSymbolRefExpr::VK_GOTOFF;
   }
   llvm_unreachable("Invalid ARMCPModifier!");
 }
@@ -783,7 +788,7 @@ MCSymbol *ARMAsmPrinter::GetARMGVSymbol(const GlobalValue *GV,
     return getSymbol(GV);
 
   // FIXME: Remove this when Darwin transition to @GOT like syntax.
-  MCSymbol *MCSym = GetSymbolWithGlobalValueBase(GV, "$non_lazy_ptr");
+  MCSymbol *MCSym = getSymbolWithGlobalValueBase(GV, "$non_lazy_ptr");
   MachineModuleInfoMachO &MMIMachO =
     MMI->getObjFileInfo<MachineModuleInfoMachO>();
   MachineModuleInfoImpl::StubValueTy &StubSym =
