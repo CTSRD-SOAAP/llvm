@@ -21,6 +21,10 @@
 # define __has_feature(x) 0
 #endif
 
+#ifndef __has_extension
+# define __has_extension(x) 0
+#endif
+
 #ifndef __has_attribute
 # define __has_attribute(x) 0
 #endif
@@ -103,7 +107,7 @@
 /// \brief Does this compiler support variadic templates.
 ///
 /// Implies LLVM_HAS_RVALUE_REFERENCES and the existence of std::forward.
-#if __has_feature(cxx_variadic_templates)
+#if __has_feature(cxx_variadic_templates) || LLVM_MSC_PREREQ(1800)
 # define LLVM_HAS_VARIADIC_TEMPLATES 1
 #else
 # define LLVM_HAS_VARIADIC_TEMPLATES 0
@@ -147,7 +151,8 @@
 
 /// LLVM_FINAL - Expands to 'final' if the compiler supports it.
 /// Use to mark classes or virtual methods as final.
-#if __has_feature(cxx_override_control) || LLVM_MSC_PREREQ(1700)
+#if __has_feature(cxx_override_control) || \
+    defined(__GXX_EXPERIMENTAL_CXX0X__) || LLVM_MSC_PREREQ(1700)
 #define LLVM_FINAL final
 #else
 #define LLVM_FINAL
@@ -155,7 +160,8 @@
 
 /// LLVM_OVERRIDE - Expands to 'override' if the compiler supports it.
 /// Use to mark virtual methods as overriding a base class method.
-#if __has_feature(cxx_override_control) || LLVM_MSC_PREREQ(1700)
+#if __has_feature(cxx_override_control) || \
+    defined(__GXX_EXPERIMENTAL_CXX0X__) || LLVM_MSC_PREREQ(1700)
 #define LLVM_OVERRIDE override
 #else
 #define LLVM_OVERRIDE
@@ -389,10 +395,13 @@
 
 /// \macro LLVM_STATIC_ASSERT
 /// \brief Expands to C/C++'s static_assert on compilers which support it.
-#if __has_feature(cxx_static_assert) || LLVM_MSC_PREREQ(1600)
+#if __has_feature(cxx_static_assert) || \
+    defined(__GXX_EXPERIMENTAL_CXX0X__) || LLVM_MSC_PREREQ(1600)
 # define LLVM_STATIC_ASSERT(expr, msg) static_assert(expr, msg)
 #elif __has_feature(c_static_assert)
 # define LLVM_STATIC_ASSERT(expr, msg) _Static_assert(expr, msg)
+#elif __has_extension(c_static_assert)
+# define LLVM_STATIC_ASSERT(expr, msg) LLVM_EXTENSION _Static_assert(expr, msg)
 #else
 # define LLVM_STATIC_ASSERT(expr, msg)
 #endif
@@ -423,6 +432,15 @@
 #define LLVM_HAS_INITIALIZER_LISTS 1
 #else
 #define LLVM_HAS_INITIALIZER_LISTS 0
+#endif
+
+/// \brief Mark debug helper function definitions like dump() that should not be
+/// stripped from debug builds.
+// FIXME: Move this to a private config.h as it's not usable in public headers.
+#if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
+#define LLVM_DUMP_METHOD LLVM_ATTRIBUTE_NOINLINE LLVM_ATTRIBUTE_USED
+#else
+#define LLVM_DUMP_METHOD LLVM_ATTRIBUTE_NOINLINE
 #endif
 
 #endif

@@ -70,6 +70,7 @@ MachineModuleInfoMachO &X86MCInstLower::getMachOMMI() const {
 /// operand to an MCSymbol.
 MCSymbol *X86MCInstLower::
 GetSymbolFromOperand(const MachineOperand &MO) const {
+  const DataLayout *DL = TM.getDataLayout();
   assert((MO.isGlobal() || MO.isSymbol() || MO.isMBB()) && "Isn't a symbol reference");
 
   SmallString<128> Name;
@@ -91,7 +92,7 @@ GetSymbolFromOperand(const MachineOperand &MO) const {
   }
 
   if (!Suffix.empty())
-    Name += MAI.getPrivateGlobalPrefix();
+    Name += DL->getPrivateGlobalPrefix();
 
   unsigned PrefixLen = Name.size();
 
@@ -231,13 +232,6 @@ MCOperand X86MCInstLower::LowerSymbolOperand(const MachineOperand &MO,
   return MCOperand::CreateExpr(Expr);
 }
 
-
-/// LowerUnaryToTwoAddr - R = setb   -> R = sbb R, R
-static void LowerUnaryToTwoAddr(MCInst &OutMI, unsigned NewOpc) {
-  OutMI.setOpcode(NewOpc);
-  OutMI.addOperand(OutMI.getOperand(0));
-  OutMI.addOperand(OutMI.getOperand(0));
-}
 
 /// \brief Simplify FOO $imm, %{al,ax,eax,rax} to FOO $imm, for instruction with
 /// a short fixed-register form.
@@ -395,7 +389,6 @@ ReSimplify:
     assert(OutMI.getOperand(1+X86::AddrSegmentReg).getReg() == 0 &&
            "LEA has segment specified!");
     break;
-  case X86::MOV32r0:      LowerUnaryToTwoAddr(OutMI, X86::XOR32rr); break;
 
   case X86::MOV32ri64:
     OutMI.setOpcode(X86::MOV32ri);

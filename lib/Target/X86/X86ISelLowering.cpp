@@ -39,7 +39,6 @@
 #include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Intrinsics.h"
-#include "llvm/IR/LLVMContext.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCExpr.h"
@@ -1363,6 +1362,7 @@ void X86TargetLowering::resetOperationActions() {
     setOperationAction(ISD::TRUNCATE,           MVT::v8i32, Custom);
     setOperationAction(ISD::TRUNCATE,           MVT::v8i1, Custom);
     setOperationAction(ISD::TRUNCATE,           MVT::v16i1, Custom);
+    setOperationAction(ISD::TRUNCATE,           MVT::v16i16, Custom);
     setOperationAction(ISD::ZERO_EXTEND,        MVT::v16i32, Custom);
     setOperationAction(ISD::ZERO_EXTEND,        MVT::v8i64, Custom);
     setOperationAction(ISD::SIGN_EXTEND,        MVT::v16i32, Custom);
@@ -11462,14 +11462,10 @@ static SDValue LowerINTRINSIC_WO_CHAIN(SDValue Op, SelectionDAG &DAG) {
   case Intrinsic::x86_sse2_max_pd:
   case Intrinsic::x86_avx_max_ps_256:
   case Intrinsic::x86_avx_max_pd_256:
-  case Intrinsic::x86_avx512_max_ps_512:
-  case Intrinsic::x86_avx512_max_pd_512:
   case Intrinsic::x86_sse_min_ps:
   case Intrinsic::x86_sse2_min_pd:
   case Intrinsic::x86_avx_min_ps_256:
-  case Intrinsic::x86_avx_min_pd_256:
-  case Intrinsic::x86_avx512_min_ps_512:
-  case Intrinsic::x86_avx512_min_pd_512:  {
+  case Intrinsic::x86_avx_min_pd_256: {
     unsigned Opcode;
     switch (IntNo) {
     default: llvm_unreachable("Impossible intrinsic");  // Can't reach here.
@@ -11477,16 +11473,12 @@ static SDValue LowerINTRINSIC_WO_CHAIN(SDValue Op, SelectionDAG &DAG) {
     case Intrinsic::x86_sse2_max_pd:
     case Intrinsic::x86_avx_max_ps_256:
     case Intrinsic::x86_avx_max_pd_256:
-    case Intrinsic::x86_avx512_max_ps_512:
-    case Intrinsic::x86_avx512_max_pd_512:
       Opcode = X86ISD::FMAX;
       break;
     case Intrinsic::x86_sse_min_ps:
     case Intrinsic::x86_sse2_min_pd:
     case Intrinsic::x86_avx_min_ps_256:
     case Intrinsic::x86_avx_min_pd_256:
-    case Intrinsic::x86_avx512_min_ps_512:
-    case Intrinsic::x86_avx512_min_pd_512:
       Opcode = X86ISD::FMIN;
       break;
     }
@@ -12179,6 +12171,9 @@ SDValue X86TargetLowering::LowerRETURNADDR(SDValue Op,
                                            SelectionDAG &DAG) const {
   MachineFrameInfo *MFI = DAG.getMachineFunction().getFrameInfo();
   MFI->setReturnAddressIsTaken(true);
+
+  if (verifyReturnAddressArgumentIsConstant(Op, DAG))
+    return SDValue();
 
   unsigned Depth = cast<ConstantSDNode>(Op.getOperand(0))->getZExtValue();
   SDLoc dl(Op);

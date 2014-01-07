@@ -1472,9 +1472,29 @@ SparcTargetLowering::SparcTargetLowering(TargetMachine &TM)
     setOperationAction(ISD::DYNAMIC_STACKALLOC, MVT::i64, Custom);
   }
 
-  // FIXME: There are instructions available for ATOMIC_FENCE
-  // on SparcV8 and later.
-  setOperationAction(ISD::ATOMIC_FENCE, MVT::Other, Expand);
+  // ATOMICs.
+  // FIXME: We insert fences for each atomics and generate sub-optimal code
+  // for PSO/TSO. Also, implement other atomicrmw operations.
+
+  setInsertFencesForAtomic(true);
+
+  setOperationAction(ISD::ATOMIC_SWAP, MVT::i32, Legal);
+  setOperationAction(ISD::ATOMIC_CMP_SWAP, MVT::i32,
+                     (Subtarget->isV9() ? Legal: Expand));
+
+
+  setOperationAction(ISD::ATOMIC_FENCE, MVT::Other, Legal);
+
+  // Custom Lower Atomic LOAD/STORE
+  setOperationAction(ISD::ATOMIC_LOAD, MVT::i32, Custom);
+  setOperationAction(ISD::ATOMIC_STORE, MVT::i32, Custom);
+
+  if (Subtarget->is64Bit()) {
+    setOperationAction(ISD::ATOMIC_CMP_SWAP, MVT::i64, Legal);
+    setOperationAction(ISD::ATOMIC_SWAP, MVT::i64, Expand);
+    setOperationAction(ISD::ATOMIC_LOAD, MVT::i64, Custom);
+    setOperationAction(ISD::ATOMIC_STORE, MVT::i64, Custom);
+  }
 
   if (!Subtarget->isV9()) {
     // SparcV8 does not have FNEGD and FABSD.
@@ -1525,6 +1545,9 @@ SparcTargetLowering::SparcTargetLowering(TargetMachine &TM)
     setOperationAction(ISD::SMUL_LOHI, MVT::i64, Expand);
     setOperationAction(ISD::MULHU,     MVT::i64, Expand);
     setOperationAction(ISD::MULHS,     MVT::i64, Expand);
+
+    setOperationAction(ISD::UMULO,     MVT::i64, Custom);
+    setOperationAction(ISD::SMULO,     MVT::i64, Custom);
   }
 
   // VASTART needs to be custom lowered to use the VarArgsFrameIndex.
@@ -2392,42 +2415,63 @@ static SDValue getFLUSHW(SDValue Op, SelectionDAG &DAG) {
   return Chain;
 }
 
-static SDValue LowerFRAMEADDR(SDValue Op, SelectionDAG &DAG) {
+static SDValue getFRAMEADDR(uint64_t depth, SDValue Op, SelectionDAG &DAG,
+                            const SparcSubtarget *Subtarget) {
   MachineFrameInfo *MFI = DAG.getMachineFunction().getFrameInfo();
   MFI->setFrameAddressIsTaken(true);
 
   EVT VT = Op.getValueType();
   SDLoc dl(Op);
   unsigned FrameReg = SP::I6;
-
-  uint64_t depth = Op.getConstantOperandVal(0);
+  unsigned stackBias = Subtarget->getStackPointerBias();
 
   SDValue FrameAddr;
-  if (depth == 0)
-    FrameAddr = DAG.getCopyFromReg(DAG.getEntryNode(), dl, FrameReg, VT);
-  else {
-    // flush first to make sure the windowed registers' values are in stack
-    SDValue Chain = getFLUSHW(Op, DAG);
-    FrameAddr = DAG.getCopyFromReg(Chain, dl, FrameReg, VT);
 
-    for (uint64_t i = 0; i != depth; ++i) {
-      SDValue Ptr = DAG.getNode(ISD::ADD,
-                                dl, MVT::i32,
-                                FrameAddr, DAG.getIntPtrConstant(56));
-      FrameAddr = DAG.getLoad(MVT::i32, dl,
-                              Chain,
-                              Ptr,
-                              MachinePointerInfo(), false, false, false, 0);
-    }
+  if (depth == 0) {
+    FrameAddr = DAG.getCopyFromReg(DAG.getEntryNode(), dl, FrameReg, VT);
+    if (Subtarget->is64Bit())
+      FrameAddr = DAG.getNode(ISD::ADD, dl, VT, FrameAddr,
+                              DAG.getIntPtrConstant(stackBias));
+    return FrameAddr;
   }
+
+  // flush first to make sure the windowed registers' values are in stack
+  SDValue Chain = getFLUSHW(Op, DAG);
+  FrameAddr = DAG.getCopyFromReg(Chain, dl, FrameReg, VT);
+
+  unsigned Offset = (Subtarget->is64Bit()) ? (stackBias + 112) : 56;
+
+  while (depth--) {
+    SDValue Ptr = DAG.getNode(ISD::ADD, dl, VT, FrameAddr,
+                              DAG.getIntPtrConstant(Offset));
+    FrameAddr = DAG.getLoad(VT, dl, Chain, Ptr, MachinePointerInfo(),
+                            false, false, false, 0);
+  }
+  if (Subtarget->is64Bit())
+    FrameAddr = DAG.getNode(ISD::ADD, dl, VT, FrameAddr,
+                            DAG.getIntPtrConstant(stackBias));
   return FrameAddr;
 }
 
+
+static SDValue LowerFRAMEADDR(SDValue Op, SelectionDAG &DAG,
+                              const SparcSubtarget *Subtarget) {
+
+  uint64_t depth = Op.getConstantOperandVal(0);
+
+  return getFRAMEADDR(depth, Op, DAG, Subtarget);
+
+}
+
 static SDValue LowerRETURNADDR(SDValue Op, SelectionDAG &DAG,
-                               const SparcTargetLowering &TLI) {
+                               const SparcTargetLowering &TLI,
+                               const SparcSubtarget *Subtarget) {
   MachineFunction &MF = DAG.getMachineFunction();
   MachineFrameInfo *MFI = MF.getFrameInfo();
   MFI->setReturnAddressIsTaken(true);
+
+  if (TLI.verifyReturnAddressArgumentIsConstant(Op, DAG))
+    return SDValue();
 
   EVT VT = Op.getValueType();
   SDLoc dl(Op);
@@ -2438,25 +2482,20 @@ static SDValue LowerRETURNADDR(SDValue Op, SelectionDAG &DAG,
     unsigned RetReg = MF.addLiveIn(SP::I7,
                                    TLI.getRegClassFor(TLI.getPointerTy()));
     RetAddr = DAG.getCopyFromReg(DAG.getEntryNode(), dl, RetReg, VT);
-  } else {
-    // Need frame address to find return address of the caller.
-    MFI->setFrameAddressIsTaken(true);
-
-    // flush first to make sure the windowed registers' values are in stack
-    SDValue Chain = getFLUSHW(Op, DAG);
-    RetAddr = DAG.getCopyFromReg(Chain, dl, SP::I6, VT);
-
-    for (uint64_t i = 0; i != depth; ++i) {
-      SDValue Ptr = DAG.getNode(ISD::ADD,
-                                dl, MVT::i32,
-                                RetAddr,
-                                DAG.getIntPtrConstant((i == depth-1)?60:56));
-      RetAddr = DAG.getLoad(MVT::i32, dl,
-                            Chain,
-                            Ptr,
-                            MachinePointerInfo(), false, false, false, 0);
-    }
+    return RetAddr;
   }
+
+  // Need frame address to find return address of the caller.
+  SDValue FrameAddr = getFRAMEADDR(depth - 1, Op, DAG, Subtarget);
+
+  unsigned Offset = (Subtarget->is64Bit()) ? 120 : 60;
+  SDValue Ptr = DAG.getNode(ISD::ADD,
+                            dl, VT,
+                            FrameAddr,
+                            DAG.getIntPtrConstant(Offset));
+  RetAddr = DAG.getLoad(VT, dl, DAG.getEntryNode(), Ptr,
+                        MachinePointerInfo(), false, false, false, 0);
+
   return RetAddr;
 }
 
@@ -2673,6 +2712,63 @@ static SDValue LowerADDC_ADDE_SUBC_SUBE(SDValue Op, SelectionDAG &DAG) {
   return DAG.getMergeValues(Ops, 2, dl);
 }
 
+// Custom lower UMULO/SMULO for SPARC. This code is similar to ExpandNode()
+// in LegalizeDAG.cpp except the order of arguments to the library function.
+static SDValue LowerUMULO_SMULO(SDValue Op, SelectionDAG &DAG,
+                                const SparcTargetLowering &TLI)
+{
+  unsigned opcode = Op.getOpcode();
+  assert((opcode == ISD::UMULO || opcode == ISD::SMULO) && "Invalid Opcode.");
+
+  bool isSigned = (opcode == ISD::SMULO);
+  EVT VT = MVT::i64;
+  EVT WideVT = MVT::i128;
+  SDLoc dl(Op);
+  SDValue LHS = Op.getOperand(0);
+
+  if (LHS.getValueType() != VT)
+    return Op;
+
+  SDValue ShiftAmt = DAG.getConstant(63, VT);
+
+  SDValue RHS = Op.getOperand(1);
+  SDValue HiLHS = DAG.getNode(ISD::SRA, dl, VT, LHS, ShiftAmt);
+  SDValue HiRHS = DAG.getNode(ISD::SRA, dl, MVT::i64, RHS, ShiftAmt);
+  SDValue Args[] = { HiLHS, LHS, HiRHS, RHS };
+
+  SDValue MulResult = TLI.makeLibCall(DAG,
+                                      RTLIB::MUL_I128, WideVT,
+                                      Args, 4, isSigned, dl).first;
+  SDValue BottomHalf = DAG.getNode(ISD::EXTRACT_ELEMENT, dl, VT,
+                                   MulResult, DAG.getIntPtrConstant(0));
+  SDValue TopHalf = DAG.getNode(ISD::EXTRACT_ELEMENT, dl, VT,
+                                MulResult, DAG.getIntPtrConstant(1));
+  if (isSigned) {
+    SDValue Tmp1 = DAG.getNode(ISD::SRA, dl, VT, BottomHalf, ShiftAmt);
+    TopHalf = DAG.getSetCC(dl, MVT::i32, TopHalf, Tmp1, ISD::SETNE);
+  } else {
+    TopHalf = DAG.getSetCC(dl, MVT::i32, TopHalf, DAG.getConstant(0, VT),
+                           ISD::SETNE);
+  }
+  // MulResult is a node with an illegal type. Because such things are not
+  // generally permitted during this phase of legalization, delete the
+  // node. The above EXTRACT_ELEMENT nodes should have been folded.
+  DAG.DeleteNode(MulResult.getNode());
+
+  SDValue Ops[2] = { BottomHalf, TopHalf } ;
+  return DAG.getMergeValues(Ops, 2, dl);
+}
+
+static SDValue LowerATOMIC_LOAD_STORE(SDValue Op, SelectionDAG &DAG) {
+  // Monotonic load/stores are legal.
+  if (cast<AtomicSDNode>(Op)->getOrdering() <= Monotonic)
+    return Op;
+
+  // Otherwise, expand with a fence.
+  return SDValue();
+}
+
+
 SDValue SparcTargetLowering::
 LowerOperation(SDValue Op, SelectionDAG &DAG) const {
 
@@ -2683,8 +2779,10 @@ LowerOperation(SDValue Op, SelectionDAG &DAG) const {
   switch (Op.getOpcode()) {
   default: llvm_unreachable("Should not custom lower this!");
 
-  case ISD::RETURNADDR:         return LowerRETURNADDR(Op, DAG, *this);
-  case ISD::FRAMEADDR:          return LowerFRAMEADDR(Op, DAG);
+  case ISD::RETURNADDR:         return LowerRETURNADDR(Op, DAG, *this,
+                                                       Subtarget);
+  case ISD::FRAMEADDR:          return LowerFRAMEADDR(Op, DAG,
+                                                      Subtarget);
   case ISD::GlobalTLSAddress:   return LowerGlobalTLSAddress(Op, DAG);
   case ISD::GlobalAddress:      return LowerGlobalAddress(Op, DAG);
   case ISD::BlockAddress:       return LowerBlockAddress(Op, DAG);
@@ -2726,6 +2824,10 @@ LowerOperation(SDValue Op, SelectionDAG &DAG) const {
   case ISD::ADDE:
   case ISD::SUBC:
   case ISD::SUBE:               return LowerADDC_ADDE_SUBC_SUBE(Op, DAG);
+  case ISD::UMULO:
+  case ISD::SMULO:              return LowerUMULO_SMULO(Op, DAG, *this);
+  case ISD::ATOMIC_LOAD:
+  case ISD::ATOMIC_STORE:       return LowerATOMIC_LOAD_STORE(Op, DAG);
   }
 }
 
