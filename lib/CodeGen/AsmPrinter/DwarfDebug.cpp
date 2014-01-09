@@ -2817,9 +2817,8 @@ void DwarfDebug::emitDebugARanges() {
     unsigned TupleSize = PtrSize * 2;
 
     // 7.20 in the Dwarf specs requires the table to be aligned to a tuple.
-    unsigned Padding = 0;
-    while (((sizeof(int32_t) + ContentSize + Padding) % TupleSize) != 0)
-      Padding++;
+    unsigned Padding =
+        OffsetToAlignment(sizeof(int32_t) + ContentSize, TupleSize);
 
     ContentSize += Padding;
     ContentSize += (List.size() + 1) * TupleSize;
@@ -2836,8 +2835,7 @@ void DwarfDebug::emitDebugARanges() {
     Asm->OutStreamer.AddComment("Segment Size (in bytes)");
     Asm->EmitInt8(0);
 
-    for (unsigned n = 0; n < Padding; n++)
-      Asm->EmitInt8(0xff);
+    Asm->OutStreamer.EmitFill(Padding, 0xff);
 
     for (unsigned n = 0; n < List.size(); n++) {
       const ArangeSpan &Span = List[n];
@@ -2932,6 +2930,27 @@ void DwarfDebug::emitDebugRanges() {
 
 // DWARF5 Experimental Separate Dwarf emitters.
 
+void DwarfDebug::initSkeletonUnit(const DwarfUnit *U, DIE *Die,
+                                  DwarfUnit *NewU) {
+  NewU->addLocalString(Die, dwarf::DW_AT_GNU_dwo_name,
+                       U->getCUNode().getSplitDebugFilename());
+
+  // Relocate to the beginning of the addr_base section, else 0 for the
+  // beginning of the one for this compile unit.
+  if (Asm->MAI->doesDwarfUseRelocationsAcrossSections())
+    NewU->addSectionLabel(Die, dwarf::DW_AT_GNU_addr_base,
+                           DwarfAddrSectionSym);
+  else
+    NewU->addSectionOffset(Die, dwarf::DW_AT_GNU_addr_base, 0);
+
+  if (!CompilationDir.empty())
+    NewU->addLocalString(Die, dwarf::DW_AT_comp_dir, CompilationDir);
+
+  addGnuPubAttributes(NewU, Die);
+
+  SkeletonHolder.addUnit(NewU);
+}
+
 // This DIE has the following attributes: DW_AT_comp_dir, DW_AT_stmt_list,
 // DW_AT_low_pc, DW_AT_high_pc, DW_AT_ranges, DW_AT_dwo_name, DW_AT_dwo_id,
 // DW_AT_ranges_base, DW_AT_addr_base.
@@ -2940,20 +2959,9 @@ DwarfCompileUnit *DwarfDebug::constructSkeletonCU(const DwarfCompileUnit *CU) {
 
   DIE *Die = new DIE(dwarf::DW_TAG_compile_unit);
   DwarfCompileUnit *NewCU = new DwarfCompileUnit(
-      CU->getUniqueID(), Die, CU->getNode(), Asm, this, &SkeletonHolder);
+      CU->getUniqueID(), Die, CU->getCUNode(), Asm, this, &SkeletonHolder);
   NewCU->initSection(Asm->getObjFileLowering().getDwarfInfoSection(),
                      DwarfInfoSectionSym);
-
-  NewCU->addLocalString(Die, dwarf::DW_AT_GNU_dwo_name,
-                        CU->getNode().getSplitDebugFilename());
-
-  // Relocate to the beginning of the addr_base section, else 0 for the
-  // beginning of the one for this compile unit.
-  if (Asm->MAI->doesDwarfUseRelocationsAcrossSections())
-    NewCU->addSectionLabel(Die, dwarf::DW_AT_GNU_addr_base,
-                           DwarfAddrSectionSym);
-  else
-    NewCU->addSectionOffset(Die, dwarf::DW_AT_GNU_addr_base, 0);
 
   // DW_AT_stmt_list is a offset of line number information for this
   // compile unit in debug_line section.
@@ -2963,14 +2971,24 @@ DwarfCompileUnit *DwarfDebug::constructSkeletonCU(const DwarfCompileUnit *CU) {
   else
     NewCU->addSectionOffset(Die, dwarf::DW_AT_stmt_list, 0);
 
-  if (!CompilationDir.empty())
-    NewCU->addLocalString(Die, dwarf::DW_AT_comp_dir, CompilationDir);
-
-  addGnuPubAttributes(NewCU, Die);
-
-  SkeletonHolder.addUnit(NewCU);
+  initSkeletonUnit(CU, Die, NewCU);
 
   return NewCU;
+}
+
+// This DIE has the following attributes: DW_AT_comp_dir, DW_AT_dwo_name,
+// DW_AT_addr_base.
+DwarfTypeUnit *DwarfDebug::constructSkeletonTU(const DwarfTypeUnit *TU) {
+
+  DIE *Die = new DIE(dwarf::DW_TAG_type_unit);
+  DwarfTypeUnit *NewTU = new DwarfTypeUnit(
+      TU->getUniqueID(), Die, TU->getCUNode(), Asm, this, &SkeletonHolder);
+  NewTU->setTypeSignature(TU->getTypeSignature());
+  NewTU->initSection(
+      Asm->getObjFileLowering().getDwarfTypesSection(TU->getTypeSignature()));
+
+  initSkeletonUnit(TU, Die, NewTU);
+  return NewTU;
 }
 
 // Emit the .debug_info.dwo section for separated dwarf. This contains the
@@ -3001,21 +3019,19 @@ void DwarfDebug::emitDebugStrDWO() {
                          OffSec, StrSym);
 }
 
-void DwarfDebug::addDwarfTypeUnitType(uint16_t Language, StringRef Identifier,
-                                      DIE *RefDie, DICompositeType CTy) {
+void DwarfDebug::addDwarfTypeUnitType(DICompileUnit CUNode,
+                                      StringRef Identifier, DIE *RefDie,
+                                      DICompositeType CTy) {
   const DwarfTypeUnit *&TU = DwarfTypeUnits[CTy];
   if (!TU) {
     DIE *UnitDie = new DIE(dwarf::DW_TAG_type_unit);
-    DwarfTypeUnit *NewTU =
-        new DwarfTypeUnit(InfoHolder.getUnits().size(), UnitDie, Language, Asm,
-                          this, &InfoHolder);
+    DwarfTypeUnit *NewTU = new DwarfTypeUnit(
+        InfoHolder.getUnits().size(), UnitDie, CUNode, Asm, this, &InfoHolder);
     TU = NewTU;
     InfoHolder.addUnit(NewTU);
 
     NewTU->addUInt(UnitDie, dwarf::DW_AT_language, dwarf::DW_FORM_data2,
-                   Language);
-
-    DIE *Die = NewTU->createTypeDIE(CTy);
+                   CUNode.getLanguage());
 
     MD5 Hash;
     Hash.update(Identifier);
@@ -3026,7 +3042,10 @@ void DwarfDebug::addDwarfTypeUnitType(uint16_t Language, StringRef Identifier,
     Hash.final(Result);
     uint64_t Signature = *reinterpret_cast<support::ulittle64_t *>(Result + 8);
     NewTU->setTypeSignature(Signature);
-    NewTU->setType(Die);
+    if (useSplitDwarf())
+      NewTU->setSkeleton(constructSkeletonTU(NewTU));
+
+    NewTU->setType(NewTU->createTypeDIE(CTy));
 
     NewTU->initSection(
         useSplitDwarf()

@@ -13,9 +13,8 @@
 
 #define DEBUG_TYPE "asm-printer"
 #include "SparcInstPrinter.h"
-
-#include "Sparc.h"
 #include "MCTargetDesc/SparcBaseInfo.h"
+#include "Sparc.h"
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCSymbol.h"
@@ -83,6 +82,17 @@ void SparcInstPrinter::printCCOperand(const MCInst *MI, int opNum,
                                      raw_ostream &O)
 {
   int CC = (int)MI->getOperand(opNum).getImm();
+  switch (MI->getOpcode()) {
+  default: break;
+  case SP::FBCOND:
+  case SP::MOVFCCrr:
+  case SP::MOVFCCri:
+  case SP::FMOVS_FCC:
+  case SP::FMOVD_FCC:
+  case SP::FMOVQ_FCC:  // Make sure CC is a fp conditional flag.
+    CC = (CC < 16) ? (CC + 16) : CC;
+    break;
+  }
   O << SPARCCondCodeToString((SPCC::CondCodes)CC);
 }
 

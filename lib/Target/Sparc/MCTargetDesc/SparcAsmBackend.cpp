@@ -8,8 +8,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/MC/MCAsmBackend.h"
-#include "MCTargetDesc/SparcMCTargetDesc.h"
 #include "MCTargetDesc/SparcFixupKinds.h"
+#include "MCTargetDesc/SparcMCTargetDesc.h"
 #include "llvm/MC/MCELFObjectWriter.h"
 #include "llvm/MC/MCFixupKindInfo.h"
 #include "llvm/MC/MCObjectWriter.h"
@@ -31,7 +31,7 @@ static unsigned adjustFixupValue(unsigned Kind, uint64_t Value) {
   case Sparc::fixup_sparc_br22:
     return (Value >> 2) & 0x3fffff;
   case Sparc::fixup_sparc_br19:
-    return (Value >> 2) & 0x1ffff;
+    return (Value >> 2) & 0x7ffff;
   case Sparc::fixup_sparc_hi22:
     return (Value >> 10) & 0x3fffff;
   case Sparc::fixup_sparc_lo10:

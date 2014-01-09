@@ -1,4 +1,4 @@
-//===-- llvm/Target/Mangler.h - Self-contained name mangler -----*- C++ -*-===//
+//===-- llvm/IR/Mangler.h - Self-contained name mangler ---------*- C++ -*-===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -20,7 +20,6 @@ namespace llvm {
 
 class DataLayout;
 class GlobalValue;
-class MCContext;
 template <typename T> class SmallVectorImpl;
 class Twine;
 

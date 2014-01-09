@@ -22,7 +22,6 @@
 #include "llvm/Analysis/DominatorInternals.h"
 #include "llvm/Analysis/Dominators.h"
 #include "llvm/Analysis/InstructionSimplify.h"
-#include "llvm/Assembly/Writer.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/DerivedTypes.h"
@@ -845,7 +844,7 @@ void ExtAddrMode::print(raw_ostream &OS) const {
   if (BaseGV) {
     OS << (NeedPlus ? " + " : "")
        << "GV:";
-    WriteAsOperand(OS, BaseGV, /*PrintType=*/false);
+    BaseGV->printAsOperand(OS, /*PrintType=*/false);
     NeedPlus = true;
   }
 
@@ -855,13 +854,13 @@ void ExtAddrMode::print(raw_ostream &OS) const {
   if (BaseReg) {
     OS << (NeedPlus ? " + " : "")
        << "Base:";
-    WriteAsOperand(OS, BaseReg, /*PrintType=*/false);
+    BaseReg->printAsOperand(OS, /*PrintType=*/false);
     NeedPlus = true;
   }
   if (Scale) {
     OS << (NeedPlus ? " + " : "")
        << Scale << "*";
-    WriteAsOperand(OS, ScaledReg, /*PrintType=*/false);
+    ScaledReg->printAsOperand(OS, /*PrintType=*/false);
   }
 
   OS << ']';

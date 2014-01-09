@@ -11,13 +11,12 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "llvm/Target/Mangler.h"
+#include "llvm/IR/Mangler.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
-#include "llvm/MC/MCContext.h"
 #include "llvm/Support/raw_ostream.h"
 using namespace llvm;
 

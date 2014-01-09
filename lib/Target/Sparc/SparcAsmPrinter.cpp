@@ -14,16 +14,17 @@
 
 #define DEBUG_TYPE "asm-printer"
 #include "Sparc.h"
-#include "SparcInstrInfo.h"
-#include "SparcTargetMachine.h"
-#include "SparcTargetStreamer.h"
 #include "InstPrinter/SparcInstPrinter.h"
 #include "MCTargetDesc/SparcBaseInfo.h"
 #include "MCTargetDesc/SparcMCExpr.h"
+#include "SparcInstrInfo.h"
+#include "SparcTargetMachine.h"
+#include "SparcTargetStreamer.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/CodeGen/AsmPrinter.h"
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
+#include "llvm/IR/Mangler.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCInst.h"
@@ -31,7 +32,6 @@
 #include "llvm/MC/MCSymbol.h"
 #include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Target/Mangler.h"
 using namespace llvm;
 
 namespace {

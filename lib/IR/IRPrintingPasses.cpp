@@ -1,4 +1,4 @@
-//===--- IR/PrintModulePass.cpp - Module/Function Printer -----------------===//
+//===--- IRPrintingPasses.cpp - Module and Function printing passes -------===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -11,7 +11,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "llvm/Assembly/PrintModulePass.h"
+#include "llvm/IR/PrintModulePass.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Pass.h"

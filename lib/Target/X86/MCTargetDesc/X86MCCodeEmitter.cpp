@@ -57,6 +57,24 @@ public:
     return (STI.getFeatureBits() & X86::Mode16Bit) != 0;
   }
 
+  /// Is16BitMemOperand - Return true if the specified instruction has
+  /// a 16-bit memory operand. Op specifies the operand # of the memoperand.
+  bool Is16BitMemOperand(const MCInst &MI, unsigned Op) const {
+    const MCOperand &BaseReg  = MI.getOperand(Op+X86::AddrBaseReg);
+    const MCOperand &IndexReg = MI.getOperand(Op+X86::AddrIndexReg);
+    const MCOperand &Disp     = MI.getOperand(Op+X86::AddrDisp);
+
+    if (is16BitMode() && BaseReg.getReg() == 0 &&
+        Disp.isImm() && Disp.getImm() < 0x10000)
+      return true;
+    if ((BaseReg.getReg() != 0 &&
+         X86MCRegisterClasses[X86::GR16RegClassID].contains(BaseReg.getReg())) ||
+        (IndexReg.getReg() != 0 &&
+         X86MCRegisterClasses[X86::GR16RegClassID].contains(IndexReg.getReg())))
+      return true;
+    return false;
+  }
+
   unsigned GetX86RegNum(const MCOperand &MO) const {
     return Ctx.getRegisterInfo()->getEncodingValue(MO.getReg()) & 0x7;
   }
@@ -249,20 +267,6 @@ static bool Is64BitMemOperand(const MCInst &MI, unsigned Op) {
   return false;
 }
 #endif
-
-/// Is16BitMemOperand - Return true if the specified instruction has
-/// a 16-bit memory operand. Op specifies the operand # of the memoperand.
-static bool Is16BitMemOperand(const MCInst &MI, unsigned Op) {
-  const MCOperand &BaseReg  = MI.getOperand(Op+X86::AddrBaseReg);
-  const MCOperand &IndexReg = MI.getOperand(Op+X86::AddrIndexReg);
-
-  if ((BaseReg.getReg() != 0 &&
-       X86MCRegisterClasses[X86::GR16RegClassID].contains(BaseReg.getReg())) ||
-      (IndexReg.getReg() != 0 &&
-       X86MCRegisterClasses[X86::GR16RegClassID].contains(IndexReg.getReg())))
-    return true;
-  return false;
-}
 
 /// StartsWithGlobalOffsetTable - Check if this expression starts with
 ///  _GLOBAL_OFFSET_TABLE_ and if it is of the form
@@ -1161,7 +1165,16 @@ void X86MCCodeEmitter::EmitOpcodePrefix(uint64_t TSFlags, unsigned &CurByte,
 
   // Emit the address size opcode prefix as needed.
   bool need_address_override;
-  if (TSFlags & X86II::AdSize) {
+  // The AdSize prefix is only for 32-bit and 64-bit modes. Hm, perhaps we
+  // should introduce an AdSize16 bit instead of having seven special cases?
+  if ((!is16BitMode() && TSFlags & X86II::AdSize) ||
+      (is16BitMode() && (MI.getOpcode() == X86::JECXZ_32 ||
+                         MI.getOpcode() == X86::MOV8o8a ||
+                         MI.getOpcode() == X86::MOV16o16a ||
+                         MI.getOpcode() == X86::MOV32o32a ||
+                         MI.getOpcode() == X86::MOV8ao8 ||
+                         MI.getOpcode() == X86::MOV16ao16 ||
+                         MI.getOpcode() == X86::MOV32ao32))) {
     need_address_override = true;
   } else if (MemOperand == -1) {
     need_address_override = false;
