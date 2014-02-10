@@ -86,6 +86,8 @@ struct TestModulePass {
     return PreservedAnalyses::none();
   }
 
+  static StringRef name() { return "TestModulePass"; }
+
   int &RunCount;
 };
 
@@ -93,6 +95,8 @@ struct TestPreservingModulePass {
   PreservedAnalyses run(Module *M) {
     return PreservedAnalyses::all();
   }
+
+  static StringRef name() { return "TestPreservingModulePass"; }
 };
 
 struct TestMinPreservingModulePass {
@@ -105,6 +109,8 @@ struct TestMinPreservingModulePass {
     PA.preserve<FunctionAnalysisManagerModuleProxy>();
     return PA;
   }
+
+  static StringRef name() { return "TestMinPreservingModulePass"; }
 };
 
 struct TestFunctionPass {
@@ -120,23 +126,25 @@ struct TestFunctionPass {
 
     const ModuleAnalysisManager &MAM =
         AM->getResult<ModuleAnalysisManagerFunctionProxy>(F).getManager();
-    if (const TestModuleAnalysis::Result *TMA =
+    if (TestModuleAnalysis::Result *TMA =
             MAM.getCachedResult<TestModuleAnalysis>(F->getParent()))
       AnalyzedFunctionCount += TMA->FunctionCount;
 
     if (OnlyUseCachedResults) {
       // Hack to force the use of the cached interface.
-      if (const TestFunctionAnalysis::Result *AR =
+      if (TestFunctionAnalysis::Result *AR =
               AM->getCachedResult<TestFunctionAnalysis>(F))
         AnalyzedInstrCount += AR->InstructionCount;
     } else {
       // Typical path just runs the analysis as needed.
-      const TestFunctionAnalysis::Result &AR = AM->getResult<TestFunctionAnalysis>(F);
+      TestFunctionAnalysis::Result &AR = AM->getResult<TestFunctionAnalysis>(F);
       AnalyzedInstrCount += AR.InstructionCount;
     }
 
     return PreservedAnalyses::all();
   }
+
+  static StringRef name() { return "TestFunctionPass"; }
 
   int &RunCount;
   int &AnalyzedInstrCount;
@@ -153,6 +161,8 @@ struct TestInvalidationFunctionPass {
     return F->getName() == Name ? PreservedAnalyses::none()
                                 : PreservedAnalyses::all();
   }
+
+  static StringRef name() { return "TestInvalidationFunctionPass"; }
 
   StringRef Name;
 };

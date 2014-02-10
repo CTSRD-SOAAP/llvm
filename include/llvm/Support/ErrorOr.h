@@ -70,11 +70,10 @@ public:
 /// It is used like the following.
 /// \code
 ///   ErrorOr<Buffer> getBuffer();
-///   void handleError(error_code ec);
 ///
 ///   auto buffer = getBuffer();
-///   if (!buffer)
-///     handleError(buffer);
+///   if (error_code ec = buffer.getError())
+///     return ec;
 ///   buffer->write("adena");
 /// \endcode
 ///
@@ -170,12 +169,9 @@ public:
       getStorage()->~storage_type();
   }
 
-  typedef void (*unspecified_bool_type)();
-  static void unspecified_bool_true() {}
-
   /// \brief Return false if there is an error.
-  operator unspecified_bool_type() const {
-    return HasError ? 0 : unspecified_bool_true;
+  LLVM_EXPLICIT operator bool() const {
+    return !HasError;
   }
 
   reference get() { return *getStorage(); }

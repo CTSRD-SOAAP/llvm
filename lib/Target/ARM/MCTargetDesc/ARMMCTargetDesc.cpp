@@ -126,9 +126,9 @@ std::string ARM_MC::ParseARMTriple(StringRef TT, StringRef CPU) {
           ARMArchFeature = "+v7";
       } else if (Len >= Idx+2 && TT[Idx+1] == 's') {
         if (NoCPU)
-          // v7s: FeatureNEON, FeatureDB, FeatureDSPThumb2, FeatureT2XtPk
+          // v7s: FeatureNEON, FeatureDB, FeatureDSPThumb2, FeatureHasRAS
           //      Swift
-          ARMArchFeature = "+v7,+swift,+neon,+db,+t2dsp,+t2xtpk";
+          ARMArchFeature = "+v7,+swift,+neon,+db,+t2dsp,+ras";
         else
           // Use CPU to figure out the exact features.
           ARMArchFeature = "+v7";
@@ -212,10 +212,16 @@ static MCRegisterInfo *createARMMCRegisterInfo(StringRef Triple) {
 static MCAsmInfo *createARMMCAsmInfo(const MCRegisterInfo &MRI, StringRef TT) {
   Triple TheTriple(TT);
 
+  MCAsmInfo *MAI;
   if (TheTriple.isOSBinFormatMachO())
-    return new ARMMCAsmInfoDarwin();
+    MAI = new ARMMCAsmInfoDarwin();
+  else
+    MAI = new ARMELFMCAsmInfo();
 
-  return new ARMELFMCAsmInfo();
+  unsigned Reg = MRI.getDwarfRegNum(ARM::SP, true);
+  MAI->addInitialFrameState(MCCFIInstruction::createDefCfa(0, Reg, 0));
+
+  return MAI;
 }
 
 static MCCodeGenInfo *createARMMCCodeGenInfo(StringRef TT, Reloc::Model RM,
@@ -236,12 +242,16 @@ static MCStreamer *createMCStreamer(const Target &T, StringRef TT,
                                     MCContext &Ctx, MCAsmBackend &MAB,
                                     raw_ostream &OS,
                                     MCCodeEmitter *Emitter,
+                                    const MCSubtargetInfo &STI,
                                     bool RelaxAll,
                                     bool NoExecStack) {
   Triple TheTriple(TT);
 
-  if (TheTriple.isOSBinFormatMachO())
-    return createMachOStreamer(Ctx, MAB, OS, Emitter, false);
+  if (TheTriple.isOSBinFormatMachO()) {
+    MCStreamer *S = createMachOStreamer(Ctx, MAB, OS, Emitter, false);
+    new ARMTargetStreamer(*S);
+    return S;
+  }
 
   if (TheTriple.isOSWindows()) {
     llvm_unreachable("ARM does not support Windows COFF format");
