@@ -7,23 +7,40 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "llvm/IR/PassManager.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/IR/PassManager.h"
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/Debug.h"
 
 using namespace llvm;
 
+static cl::opt<bool>
+DebugPM("debug-pass-manager", cl::Hidden,
+        cl::desc("Print pass management debugging information"));
+
 PreservedAnalyses ModulePassManager::run(Module *M, ModuleAnalysisManager *AM) {
   PreservedAnalyses PA = PreservedAnalyses::all();
+
+  if (DebugPM)
+    dbgs() << "Starting module pass manager run.\n";
+
   for (unsigned Idx = 0, Size = Passes.size(); Idx != Size; ++Idx) {
+    if (DebugPM)
+      dbgs() << "Running module pass: " << Passes[Idx]->name() << "\n";
+
     PreservedAnalyses PassPA = Passes[Idx]->run(M, AM);
     if (AM)
       AM->invalidate(M, PassPA);
     PA.intersect(llvm_move(PassPA));
   }
+
+  if (DebugPM)
+    dbgs() << "Finished module pass manager run.\n";
+
   return PA;
 }
 
-const ModuleAnalysisManager::ResultConceptT &
+ModuleAnalysisManager::ResultConceptT &
 ModuleAnalysisManager::getResultImpl(void *PassID, Module *M) {
   ModuleAnalysisResultMapT::iterator RI;
   bool Inserted;
@@ -38,7 +55,7 @@ ModuleAnalysisManager::getResultImpl(void *PassID, Module *M) {
   return *RI->second;
 }
 
-const ModuleAnalysisManager::ResultConceptT *
+ModuleAnalysisManager::ResultConceptT *
 ModuleAnalysisManager::getCachedResultImpl(void *PassID, Module *M) const {
   ModuleAnalysisResultMapT::const_iterator RI = ModuleAnalysisResults.find(PassID);
   return RI == ModuleAnalysisResults.end() ? 0 : &*RI->second;
@@ -61,12 +78,23 @@ void ModuleAnalysisManager::invalidateImpl(Module *M,
 
 PreservedAnalyses FunctionPassManager::run(Function *F, FunctionAnalysisManager *AM) {
   PreservedAnalyses PA = PreservedAnalyses::all();
+
+  if (DebugPM)
+    dbgs() << "Starting function pass manager run.\n";
+
   for (unsigned Idx = 0, Size = Passes.size(); Idx != Size; ++Idx) {
+    if (DebugPM)
+      dbgs() << "Running function pass: " << Passes[Idx]->name() << "\n";
+
     PreservedAnalyses PassPA = Passes[Idx]->run(F, AM);
     if (AM)
       AM->invalidate(F, PassPA);
     PA.intersect(llvm_move(PassPA));
   }
+
+  if (DebugPM)
+    dbgs() << "Finished function pass manager run.\n";
+
   return PA;
 }
 
@@ -83,7 +111,7 @@ void FunctionAnalysisManager::clear() {
   FunctionAnalysisResultLists.clear();
 }
 
-const FunctionAnalysisManager::ResultConceptT &
+FunctionAnalysisManager::ResultConceptT &
 FunctionAnalysisManager::getResultImpl(void *PassID, Function *F) {
   FunctionAnalysisResultMapT::iterator RI;
   bool Inserted;
@@ -101,7 +129,7 @@ FunctionAnalysisManager::getResultImpl(void *PassID, Function *F) {
   return *RI->second->second;
 }
 
-const FunctionAnalysisManager::ResultConceptT *
+FunctionAnalysisManager::ResultConceptT *
 FunctionAnalysisManager::getCachedResultImpl(void *PassID, Function *F) const {
   FunctionAnalysisResultMapT::const_iterator RI =
       FunctionAnalysisResults.find(std::make_pair(PassID, F));
