@@ -13,7 +13,6 @@
 
 #include "X86TargetMachine.h"
 #include "X86.h"
-#include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/Passes.h"
 #include "llvm/PassManager.h"
 #include "llvm/Support/CommandLine.h"
@@ -158,11 +157,11 @@ public:
     return *getX86TargetMachine().getSubtargetImpl();
   }
 
-  virtual bool addInstSelector();
-  virtual bool addILPOpts();
-  virtual bool addPreRegAlloc();
-  virtual bool addPostRegAlloc();
-  virtual bool addPreEmitPass();
+  bool addInstSelector() override;
+  bool addILPOpts() override;
+  bool addPreRegAlloc() override;
+  bool addPostRegAlloc() override;
+  bool addPreEmitPass() override;
 };
 } // namespace
 
