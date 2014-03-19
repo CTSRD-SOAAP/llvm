@@ -168,8 +168,6 @@ def HasMips64r2  :    Predicate<"Subtarget.hasMips64r2()">,
                       AssemblerPredicate<"FeatureMips64r2">;
 def IsN64       :     Predicate<"Subtarget.isABI_N64()">,
                       AssemblerPredicate<"FeatureN64">;
-def NotN64      :     Predicate<"!Subtarget.isABI_N64()">,
-                      AssemblerPredicate<"!FeatureN64">;
 def InMips16Mode :    Predicate<"Subtarget.inMips16Mode()">,
                       AssemblerPredicate<"FeatureMips16">;
 def RelocStatic :     Predicate<"TM.getRelocationModel() == Reloc::Static">,
@@ -249,6 +247,8 @@ def calltarget  : Operand<iPTR> {
   let EncoderMethod = "getJumpTargetOpValue";
 }
 
+def simm10 : Operand<i32>;
+
 def simm16      : Operand<i32> {
   let DecoderMethod= "DecodeSimm16";
 }
@@ -316,6 +316,7 @@ def mem : mem_generic;
 
 // MSA specific address operand
 def mem_msa : mem_generic {
+  let MIOperandInfo = (ops ptr_rc, simm10);
   let EncoderMethod = "getMSAMemEncoding";
 }
 
@@ -407,6 +408,8 @@ def addrRegReg :
 
 def addrDefault :
   ComplexPattern<iPTR, 2, "selectAddrDefault", [frameindex]>;
+
+def addrimm10 : ComplexPattern<iPTR, 2, "selectIntAddrMSA", [frameindex]>;
 
 //===----------------------------------------------------------------------===//
 // Instructions specific format
@@ -1040,6 +1043,7 @@ def B       : UncondBranch<BEQ>;
 
 def JAL  : MMRel, JumpLink<"jal", calltarget>, FJ<3>;
 def JALR : MMRel, JumpLinkReg<"jalr", GPR32Opnd>, JALR_FM;
+def JALX  : JumpLink<"jalx", calltarget>, FJ<0x1D>;
 def JALRPseudo : JumpLinkRegPseudo<GPR32Opnd, JALR, RA>;
 def BGEZAL : MMRel, BGEZAL_FT<"bgezal", brtarget, GPR32Opnd>, BGEZAL_FM<0x11>;
 def BLTZAL : MMRel, BGEZAL_FT<"bltzal", brtarget, GPR32Opnd>, BGEZAL_FM<0x10>;
