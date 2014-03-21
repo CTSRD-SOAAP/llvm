@@ -1,4 +1,3 @@
-; XFAIL: *
 ; RUN: llc %s -o %t -filetype=obj
 ; RUN: llvm-dwarfdump -debug-dump=line %t | FileCheck %s
 

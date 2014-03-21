@@ -1,4 +1,3 @@
-; XFAIL: *
 ; RUN: llc -enable-dwarf-directory -mtriple x86_64-apple-darwin10.0.0  < %s | FileCheck %s
 
 ; Radar 8884898

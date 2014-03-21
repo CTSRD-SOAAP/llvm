@@ -1,4 +1,3 @@
-; XFAIL: *
 ; RUN: llc -O0 %s -mtriple=x86_64-apple-darwin -filetype=obj -o %t
 ; RUN: llvm-dwarfdump %t | FileCheck %s
 ; RUN: llc -O0 %s -mtriple=x86_64-apple-darwin -filetype=obj -o %t -dwarf-version=3
