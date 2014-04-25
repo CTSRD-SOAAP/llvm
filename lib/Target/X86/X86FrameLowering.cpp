@@ -182,7 +182,7 @@ void emitSPUpdate(MachineBasicBlock &MBB, MachineBasicBlock::iterator &MBBI,
       }
     }
 
-    MachineInstr *MI = NULL;
+    MachineInstr *MI = nullptr;
 
     if (UseLEA) {
       MI =  addRegOffset(BuildMI(MBB, MBBI, DL, TII.get(Opc), StackPtr),
@@ -204,7 +204,7 @@ void emitSPUpdate(MachineBasicBlock &MBB, MachineBasicBlock::iterator &MBBI,
 /// mergeSPUpdatesUp - Merge two stack-manipulating instructions upper iterator.
 static
 void mergeSPUpdatesUp(MachineBasicBlock &MBB, MachineBasicBlock::iterator &MBBI,
-                      unsigned StackPtr, uint64_t *NumBytes = NULL) {
+                      unsigned StackPtr, uint64_t *NumBytes = nullptr) {
   if (MBBI == MBB.begin()) return;
 
   MachineBasicBlock::iterator PI = std::prev(MBBI);
@@ -229,7 +229,7 @@ void mergeSPUpdatesUp(MachineBasicBlock &MBB, MachineBasicBlock::iterator &MBBI,
 static
 void mergeSPUpdatesDown(MachineBasicBlock &MBB,
                         MachineBasicBlock::iterator &MBBI,
-                        unsigned StackPtr, uint64_t *NumBytes = NULL) {
+                        unsigned StackPtr, uint64_t *NumBytes = nullptr) {
   // FIXME:  THIS ISN'T RUN!!!
   return;
 
@@ -269,7 +269,8 @@ static int mergeSPUpdates(MachineBasicBlock &MBB,
     return 0;
 
   MachineBasicBlock::iterator PI = doMergeWithPrevious ? std::prev(MBBI) : MBBI;
-  MachineBasicBlock::iterator NI = doMergeWithPrevious ? 0 : std::next(MBBI);
+  MachineBasicBlock::iterator NI = doMergeWithPrevious ? nullptr
+                                                       : std::next(MBBI);
   unsigned Opc = PI->getOpcode();
   int Offset = 0;
 
@@ -366,7 +367,8 @@ void X86FrameLowering::emitCalleeSavedFrameMoves(
 
     unsigned DwarfReg = MRI->getDwarfRegNum(Reg, true);
     unsigned CFIIndex =
-        MMI.addFrameInst(MCCFIInstruction::createOffset(0, DwarfReg, Offset));
+        MMI.addFrameInst(MCCFIInstruction::createOffset(nullptr, DwarfReg,
+                                                        Offset));
     BuildMI(MBB, MBBI, DL, TII.get(X86::CFI_INSTRUCTION)).addCFIIndex(CFIIndex);
   }
 }
@@ -446,7 +448,7 @@ void X86FrameLowering::emitPrologue(MachineFunction &MF) const {
       !MFI->adjustsStack() &&                           // No calls.
       !IsWin64 &&                                       // Win64 has no Red Zone
       !usesTheStack(MF) &&                              // Don't push and pop.
-      !MF.getTarget().Options.EnableSegmentedStacks) {  // Regular stack
+      !MF.shouldSplitStack()) {                         // Regular stack
     uint64_t MinSize = X86FI->getCalleeSavedFrameSize();
     if (HasFP) MinSize += SlotSize;
     StackSize = std::max(MinSize, StackSize > 128 ? StackSize - 128 : 0);
@@ -511,14 +513,15 @@ void X86FrameLowering::emitPrologue(MachineFunction &MF) const {
       // Define the current CFA rule to use the provided offset.
       assert(StackSize);
       unsigned CFIIndex = MMI.addFrameInst(
-          MCCFIInstruction::createDefCfaOffset(0, 2 * stackGrowth));
+          MCCFIInstruction::createDefCfaOffset(nullptr, 2 * stackGrowth));
       BuildMI(MBB, MBBI, DL, TII.get(X86::CFI_INSTRUCTION))
           .addCFIIndex(CFIIndex);
 
       // Change the rule for the FramePtr to be an "offset" rule.
       unsigned DwarfFramePtr = RegInfo->getDwarfRegNum(FramePtr, true);
       CFIIndex = MMI.addFrameInst(
-          MCCFIInstruction::createOffset(0, DwarfFramePtr, 2 * stackGrowth));
+          MCCFIInstruction::createOffset(nullptr,
+                                         DwarfFramePtr, 2 * stackGrowth));
       BuildMI(MBB, MBBI, DL, TII.get(X86::CFI_INSTRUCTION))
           .addCFIIndex(CFIIndex);
     }
@@ -534,7 +537,7 @@ void X86FrameLowering::emitPrologue(MachineFunction &MF) const {
       // Define the current CFA to use the EBP/RBP register.
       unsigned DwarfFramePtr = RegInfo->getDwarfRegNum(FramePtr, true);
       unsigned CFIIndex = MMI.addFrameInst(
-          MCCFIInstruction::createDefCfaRegister(0, DwarfFramePtr));
+          MCCFIInstruction::createDefCfaRegister(nullptr, DwarfFramePtr));
       BuildMI(MBB, MBBI, DL, TII.get(X86::CFI_INSTRUCTION))
           .addCFIIndex(CFIIndex);
     }
@@ -698,7 +701,8 @@ void X86FrameLowering::emitPrologue(MachineFunction &MF) const {
       // Define the current CFA rule to use the provided offset.
       assert(StackSize);
       unsigned CFIIndex = MMI.addFrameInst(
-          MCCFIInstruction::createDefCfaOffset(0, -StackSize + stackGrowth));
+          MCCFIInstruction::createDefCfaOffset(nullptr,
+                                               -StackSize + stackGrowth));
 
       BuildMI(MBB, MBBI, DL, TII.get(X86::CFI_INSTRUCTION))
           .addCFIIndex(CFIIndex);
@@ -1167,7 +1171,7 @@ X86FrameLowering::adjustForSegmentedStacks(MachineFunction &MF) const {
   if (MF.getFunction()->isVarArg())
     report_fatal_error("Segmented stacks do not support vararg functions.");
   if (!STI.isTargetLinux() && !STI.isTargetDarwin() &&
-      !STI.isTargetWin32() && !STI.isTargetFreeBSD())
+      !STI.isTargetWin32() && !STI.isTargetWin64() && !STI.isTargetFreeBSD())
     report_fatal_error("Segmented stacks not supported on this platform.");
 
   MachineBasicBlock *allocMBB = MF.CreateMachineBasicBlock();
@@ -1211,6 +1215,9 @@ X86FrameLowering::adjustForSegmentedStacks(MachineFunction &MF) const {
     } else if (STI.isTargetDarwin()) {
       TlsReg = X86::GS;
       TlsOffset = 0x60 + 90*8; // See pthread_machdep.h. Steal TLS slot 90.
+    } else if (STI.isTargetWin64()) {
+      TlsReg = X86::GS;
+      TlsOffset = 0x28; // pvArbitrary, reserved for application use
     } else if (STI.isTargetFreeBSD()) {
       TlsReg = X86::FS;
       TlsOffset = 0x18;
@@ -1248,7 +1255,7 @@ X86FrameLowering::adjustForSegmentedStacks(MachineFunction &MF) const {
       BuildMI(checkMBB, DL, TII.get(X86::LEA32r), ScratchReg).addReg(X86::ESP)
         .addImm(1).addReg(0).addImm(-StackSize).addReg(0);
 
-    if (STI.isTargetLinux() || STI.isTargetWin32()) {
+    if (STI.isTargetLinux() || STI.isTargetWin32() || STI.isTargetWin64()) {
       BuildMI(checkMBB, DL, TII.get(X86::CMP32rm)).addReg(ScratchReg)
         .addReg(0).addImm(0).addReg(0).addImm(TlsOffset).addReg(TlsReg);
     } else if (STI.isTargetDarwin()) {
@@ -1511,7 +1518,7 @@ eliminateCallFramePseudoInstr(MachineFunction &MF, MachineBasicBlock &MBB,
     unsigned StackAlign = TM.getFrameLowering()->getStackAlignment();
     Amount = (Amount + StackAlign - 1) / StackAlign * StackAlign;
 
-    MachineInstr *New = 0;
+    MachineInstr *New = nullptr;
     if (Opcode == TII.getCallFrameSetupOpcode()) {
       New = BuildMI(MF, DL, TII.get(getSUBriOpcode(IsLP64, Amount)),
                     StackPtr)

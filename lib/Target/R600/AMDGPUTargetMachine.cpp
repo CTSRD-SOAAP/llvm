@@ -42,7 +42,7 @@ extern "C" void LLVMInitializeR600Target() {
 }
 
 static ScheduleDAGInstrs *createR600MachineScheduler(MachineSchedContext *C) {
-  return new ScheduleDAGMILive(C, new R600SchedStrategy());
+  return new ScheduleDAGMILive(C, make_unique<R600SchedStrategy>());
 }
 
 static MachineSchedRegistry
@@ -108,7 +108,7 @@ public:
     const AMDGPUSubtarget &ST = TM->getSubtarget<AMDGPUSubtarget>();
     if (ST.getGeneration() <= AMDGPUSubtarget::NORTHERN_ISLANDS)
       return createR600MachineScheduler(C);
-    return 0;
+    return nullptr;
   }
 
   virtual bool addPreISel();
@@ -165,6 +165,9 @@ bool AMDGPUPassConfig::addPreRegAlloc() {
     addPass(createR600VectorRegMerger(*TM));
   } else {
     addPass(createSIFixSGPRCopiesPass(*TM));
+    // SIFixSGPRCopies can generate a lot of duplicate instructions,
+    // so we need to run MachineCSE afterwards.
+    addPass(&MachineCSEID);
   }
   return false;
 }

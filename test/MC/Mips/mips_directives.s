@@ -9,9 +9,14 @@ $BB0_2:
     .frame    $sp,0,$ra
     .mask     0x00000000,0
     .fmask    0x00000000,0
+
+# CHECK: .set noreorder
 # CHECK:   b 1332               # encoding: [0x10,0x00,0x01,0x4d]
+# CHECK-NOT: nop
 # CHECK:   j 1328               # encoding: [0x08,0x00,0x01,0x4c]
+# CHECK-NOT: nop
 # CHECK:   jal 1328             # encoding: [0x0c,0x00,0x01,0x4c]
+# CHECK-NOT: nop
 
     .set    noreorder
      b 1332
@@ -59,6 +64,16 @@ $BB0_4:
     ldxc1   $f0, $zero($5)
     luxc1   $f0, $6($5)
     lwxc1   $f6, $2($5)
+
+# CHECK: .set mips64
+# CHECK: dadd $3, $3, $3
+    .set mips64
+    dadd   $3, $3, $3                  # encoding: [0x00,0x62,0x18,0x2c]
+
+# CHECK: .set mips64r2
+# CHECK: drotr $9, $6, 30              # encoding: [0x00,0x26,0x4f,0xba]
+    .set mips64r2
+    drotr   $9, $6, 30
 
 # CHECK:   .set dsp
 # CHECK:   lbux    $7, $10($11)         # encoding: [0x7d,0x6a,0x39,0x8a]

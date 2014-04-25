@@ -37,10 +37,7 @@ public:
   };
 
 protected:
-
-  enum MipsArchEnum {
-    Mips32, Mips32r2, Mips64, Mips64r2
-  };
+  enum MipsArchEnum { Mips32, Mips32r2, Mips4, Mips64, Mips64r2 };
 
   // Mips architecture version
   MipsArchEnum MipsArchVersion;
@@ -59,11 +56,17 @@ protected:
   // IsFP64bit - The target processor has 64-bit floating point registers.
   bool IsFP64bit;
 
+  // IsNan2008 - IEEE 754-2008 NaN encoding.
+  bool IsNaN2008bit;
+
   // IsFP64bit - General-purpose registers are 64 bits wide
   bool IsGP64bit;
 
   // HasVFPU - Processor has a vector floating point unit.
   bool HasVFPU;
+
+  // CPU supports cnMIPS (Cavium Networks Octeon CPU).
+  bool HasCnMips;
 
   // isLinux - Target system is Linux. Is false we consider ELFOS for now.
   bool IsLinux;
@@ -154,8 +157,11 @@ public:
   bool hasMips64() const { return MipsArchVersion >= Mips64; }
   bool hasMips64r2() const { return MipsArchVersion == Mips64r2; }
 
+  bool hasCnMips() const { return HasCnMips; }
+
   bool isLittle() const { return IsLittle; }
   bool isFP64bit() const { return IsFP64bit; }
+  bool isNaN2008() const { return IsNaN2008bit; }
   bool isNotFP64bit() const { return !IsFP64bit; }
   bool isGP64bit() const { return IsGP64bit; }
   bool isGP32bit() const { return !IsGP64bit; }
@@ -211,10 +217,9 @@ public:
   bool isTargetNaCl() const { return TargetTriple.isOSNaCl(); }
   bool isNotTargetNaCl() const { return !TargetTriple.isOSNaCl(); }
 
-// for now constant islands are on for the whole compilation unit but we only
-// really use them if in addition we are in mips16 mode
-//
-static bool useConstantIslands();
+  // for now constant islands are on for the whole compilation unit but we only
+  // really use them if in addition we are in mips16 mode
+  static bool useConstantIslands();
 
   unsigned stackAlignment() const { return hasMips64() ? 16 : 8; }
 

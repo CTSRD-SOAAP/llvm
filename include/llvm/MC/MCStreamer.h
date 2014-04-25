@@ -19,6 +19,7 @@
 #include "llvm/MC/MCAssembler.h"
 #include "llvm/MC/MCDirectives.h"
 #include "llvm/MC/MCDwarf.h"
+#include "llvm/MC/MCLinkerOptimizationHint.h"
 #include "llvm/MC/MCWin64EH.h"
 #include "llvm/Support/DataTypes.h"
 #include <string>
@@ -79,6 +80,8 @@ public:
 
   // Allow a target to add behavior to the EmitLabel of MCStreamer.
   virtual void emitLabel(MCSymbol *Symbol);
+  // Allow a target to add behavior to the emitAssignment of MCStreamer.
+  virtual void emitAssignment(MCSymbol *Symbol, const MCExpr *Value);
 
   virtual void finish();
 };
@@ -329,7 +332,8 @@ public:
   /// @p Section.  This is required to update CurSection.
   ///
   /// This corresponds to assembler directives like .section, .text, etc.
-  void SwitchSection(const MCSection *Section, const MCExpr *Subsection = 0) {
+  void SwitchSection(const MCSection *Section,
+                     const MCExpr *Subsection = nullptr) {
     assert(Section && "Cannot switch to a null section!");
     MCSectionSubPair curSection = SectionStack.back().first;
     SectionStack.back().second = curSection;
@@ -343,7 +347,7 @@ public:
   /// emitted to @p Section.  This is required to update CurSection. This
   /// version does not call ChangeSection.
   void SwitchSectionNoChange(const MCSection *Section,
-                             const MCExpr *Subsection = 0) {
+                             const MCExpr *Subsection = nullptr) {
     assert(Section && "Cannot switch to a null section!");
     MCSectionSubPair curSection = SectionStack.back().first;
     SectionStack.back().second = curSection;
@@ -395,7 +399,7 @@ public:
   virtual void EmitThumbFunc(MCSymbol *Func) = 0;
 
   /// getOrCreateSymbolData - Get symbol data for given symbol.
-  virtual MCSymbolData &getOrCreateSymbolData(MCSymbol *Symbol);
+  virtual MCSymbolData &getOrCreateSymbolData(const MCSymbol *Symbol);
 
   /// EmitAssignment - Emit an assignment of @p Value to @p Symbol.
   ///
@@ -408,7 +412,7 @@ public:
   ///
   /// @param Symbol - The symbol being assigned to.
   /// @param Value - The value for the symbol.
-  virtual void EmitAssignment(MCSymbol *Symbol, const MCExpr *Value) = 0;
+  virtual void EmitAssignment(MCSymbol *Symbol, const MCExpr *Value);
 
   /// EmitWeakReference - Emit an weak reference from @p Alias to @p Symbol.
   ///
@@ -464,6 +468,10 @@ public:
   ///
   virtual void EmitELFSize(MCSymbol *Symbol, const MCExpr *Value) = 0;
 
+  /// \brief Emit a Linker Optimization Hint (LOH) directive.
+  /// \param Args - Arguments of the LOH.
+  virtual void EmitLOHDirective(MCLOHType Kind, const MCLOHArgs &Args) {}
+
   /// EmitCommonSymbol - Emit a common symbol.
   ///
   /// @param Symbol - The common symbol to emit.
@@ -488,8 +496,9 @@ public:
   /// @param Size - The size of the zerofill symbol.
   /// @param ByteAlignment - The alignment of the zerofill symbol if
   /// non-zero. This must be a power of 2 on some targets.
-  virtual void EmitZerofill(const MCSection *Section, MCSymbol *Symbol = 0,
-                            uint64_t Size = 0, unsigned ByteAlignment = 0) = 0;
+  virtual void EmitZerofill(const MCSection *Section,
+                            MCSymbol *Symbol = nullptr, uint64_t Size = 0,
+                            unsigned ByteAlignment = 0) = 0;
 
   /// EmitTBSSSymbol - Emit a thread local bss (.tbss) symbol.
   ///
@@ -520,9 +529,12 @@ public:
   /// @param Value - The value to emit.
   /// @param Size - The size of the integer (in bytes) to emit. This must
   /// match a native machine width.
-  virtual void EmitValueImpl(const MCExpr *Value, unsigned Size) = 0;
+  /// @param Loc - The location of the expression for error reporting.
+  virtual void EmitValueImpl(const MCExpr *Value, unsigned Size,
+                             const SMLoc &Loc = SMLoc()) = 0;
 
-  void EmitValue(const MCExpr *Value, unsigned Size);
+  void EmitValue(const MCExpr *Value, unsigned Size,
+                 const SMLoc &Loc = SMLoc());
 
   /// EmitIntValue - Special case of EmitValue that avoids the client having
   /// to pass in a MCExpr for constant integers.
@@ -651,6 +663,8 @@ public:
   virtual void EmitDwarfAdvanceFrameAddr(const MCSymbol *LastLabel,
                                          const MCSymbol *Label) {}
 
+  virtual MCSymbol *getDwarfLineTableSymbol(unsigned CUID);
+
   void EmitDwarfSetLineAddr(int64_t LineDelta, const MCSymbol *Label,
                             int PointerSize);
 
@@ -756,7 +770,8 @@ MCStreamer *createAsmStreamer(MCContext &Ctx, formatted_raw_ostream &OS,
 /// Takes ownership of \p TAB and \p CE.
 MCStreamer *createMachOStreamer(MCContext &Ctx, MCAsmBackend &TAB,
                                 raw_ostream &OS, MCCodeEmitter *CE,
-                                bool RelaxAll = false);
+                                bool RelaxAll = false,
+                                bool LabelSections = false);
 
 /// createWinCOFFStreamer - Create a machine code streamer which will
 /// generate Microsoft COFF format object files.

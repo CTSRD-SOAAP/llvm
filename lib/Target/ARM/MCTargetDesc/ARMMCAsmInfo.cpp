@@ -13,13 +13,19 @@
 
 #include "ARMMCAsmInfo.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/ADT/Triple.h"
 
 using namespace llvm;
 
 void ARMMCAsmInfoDarwin::anchor() { }
 
-ARMMCAsmInfoDarwin::ARMMCAsmInfoDarwin() {
-  Data64bitsDirective = 0;
+ARMMCAsmInfoDarwin::ARMMCAsmInfoDarwin(StringRef TT) {
+  Triple TheTriple(TT);
+  if ((TheTriple.getArch() == Triple::armeb) ||
+      (TheTriple.getArch() == Triple::thumbeb))
+    IsLittleEndian = false;
+
+  Data64bitsDirective = nullptr;
   CommentString = "@";
   Code16Directive = ".code\t16";
   Code32Directive = ".code\t32";
@@ -35,11 +41,16 @@ ARMMCAsmInfoDarwin::ARMMCAsmInfoDarwin() {
 
 void ARMELFMCAsmInfo::anchor() { }
 
-ARMELFMCAsmInfo::ARMELFMCAsmInfo() {
+ARMELFMCAsmInfo::ARMELFMCAsmInfo(StringRef TT) {
+  Triple TheTriple(TT);
+  if ((TheTriple.getArch() == Triple::armeb) ||
+      (TheTriple.getArch() == Triple::thumbeb))
+    IsLittleEndian = false;
+
   // ".comm align is in bytes but .align is pow-2."
   AlignmentIsInBytes = false;
 
-  Data64bitsDirective = 0;
+  Data64bitsDirective = nullptr;
   CommentString = "@";
   Code16Directive = ".code\t16";
   Code32Directive = ".code\t32";
@@ -65,3 +76,31 @@ void ARMELFMCAsmInfo::setUseIntegratedAssembler(bool Value) {
     DwarfRegNumForCFI = true;
   }
 }
+
+void ARMCOFFMCAsmInfoMicrosoft::anchor() { }
+
+ARMCOFFMCAsmInfoMicrosoft::ARMCOFFMCAsmInfoMicrosoft() {
+  AlignmentIsInBytes = false;
+
+  PrivateGlobalPrefix = "$M";
+}
+
+void ARMCOFFMCAsmInfoGNU::anchor() { }
+
+ARMCOFFMCAsmInfoGNU::ARMCOFFMCAsmInfoGNU() {
+  AlignmentIsInBytes = false;
+
+  CommentString = "@";
+  Code16Directive = ".code\t16";
+  Code32Directive = ".code\t32";
+  PrivateGlobalPrefix = ".L";
+
+  HasLEB128 = true;
+  SupportsDebugInformation = true;
+  ExceptionsType = ExceptionHandling::None;
+  UseParensForSymbolVariant = true;
+
+  UseIntegratedAssembler = false;
+  DwarfRegNumForCFI = true;
+}
+

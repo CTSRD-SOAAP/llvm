@@ -15,7 +15,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#define DEBUG_TYPE "gvn"
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DepthFirstIterator.h"
@@ -49,6 +48,8 @@
 #include <vector>
 using namespace llvm;
 using namespace PatternMatch;
+
+#define DEBUG_TYPE "gvn"
 
 STATISTIC(NumGVNInstr,  "Number of instructions deleted");
 STATISTIC(NumGVNLoad,   "Number of loads deleted");
@@ -111,11 +112,10 @@ namespace {
     uint32_t nextValueNumber;
 
     Expression create_expression(Instruction* I);
-    Expression create_intrinsic_expression(CallInst *C, uint32_t opcode,
-                                           bool IsCommutative);
     Expression create_cmp_expression(unsigned Opcode,
                                      CmpInst::Predicate Predicate,
                                      Value *LHS, Value *RHS);
+    Expression create_extractvalue_expression(ExtractValueInst* EI);
     uint32_t lookup_or_add_call(CallInst* C);
   public:
     ValueTable() : nextValueNumber(1) { }
@@ -189,33 +189,6 @@ Expression ValueTable::create_expression(Instruction *I) {
     for (InsertValueInst::idx_iterator II = E->idx_begin(), IE = E->idx_end();
          II != IE; ++II)
       e.varargs.push_back(*II);
-  } else if (ExtractValueInst *EVI = dyn_cast<ExtractValueInst>(I)) {
-    for (ExtractValueInst::idx_iterator II = EVI->idx_begin(),
-         IE = EVI->idx_end(); II != IE; ++II)
-      e.varargs.push_back(*II);
-  }
-
-  return e;
-}
-
-Expression ValueTable::create_intrinsic_expression(CallInst *C, uint32_t opcode,
-                                                   bool IsCommutative) {
-  Expression e;
-  e.opcode = opcode;
-  StructType *ST = cast<StructType>(C->getType());
-  assert(ST);
-  e.type = *ST->element_begin();
-
-  for (unsigned i = 0, ei = C->getNumArgOperands(); i < ei; ++i)
-    e.varargs.push_back(lookup_or_add(C->getArgOperand(i)));
-  if (IsCommutative) {
-    // Ensure that commutative instructions that only differ by a permutation
-    // of their operands get the same value number by sorting the operand value
-    // numbers.  Since all commutative instructions have two operands it is more
-    // efficient to sort by hand rather than using, say, std::sort.
-    assert(C->getNumArgOperands() == 2 && "Unsupported commutative instruction!");
-    if (e.varargs[0] > e.varargs[1])
-      std::swap(e.varargs[0], e.varargs[1]);
   }
 
   return e;
@@ -237,6 +210,58 @@ Expression ValueTable::create_cmp_expression(unsigned Opcode,
     Predicate = CmpInst::getSwappedPredicate(Predicate);
   }
   e.opcode = (Opcode << 8) | Predicate;
+  return e;
+}
+
+Expression ValueTable::create_extractvalue_expression(ExtractValueInst *EI) {
+  assert(EI != 0 && "Not an ExtractValueInst?");
+  Expression e;
+  e.type = EI->getType();
+  e.opcode = 0;
+
+  IntrinsicInst *I = dyn_cast<IntrinsicInst>(EI->getAggregateOperand());
+  if (I != nullptr && EI->getNumIndices() == 1 && *EI->idx_begin() == 0 ) {
+    // EI might be an extract from one of our recognised intrinsics. If it
+    // is we'll synthesize a semantically equivalent expression instead on
+    // an extract value expression.
+    switch (I->getIntrinsicID()) {
+      case Intrinsic::sadd_with_overflow:
+      case Intrinsic::uadd_with_overflow:
+        e.opcode = Instruction::Add;
+        break;
+      case Intrinsic::ssub_with_overflow:
+      case Intrinsic::usub_with_overflow:
+        e.opcode = Instruction::Sub;
+        break;
+      case Intrinsic::smul_with_overflow:
+      case Intrinsic::umul_with_overflow:
+        e.opcode = Instruction::Mul;
+        break;
+      default:
+        break;
+    }
+
+    if (e.opcode != 0) {
+      // Intrinsic recognized. Grab its args to finish building the expression.
+      assert(I->getNumArgOperands() == 2 &&
+             "Expect two args for recognised intrinsics.");
+      e.varargs.push_back(lookup_or_add(I->getArgOperand(0)));
+      e.varargs.push_back(lookup_or_add(I->getArgOperand(1)));
+      return e;
+    }
+  }
+
+  // Not a recognised intrinsic. Fall back to producing an extract value
+  // expression.
+  e.opcode = EI->getOpcode();
+  for (Instruction::op_iterator OI = EI->op_begin(), OE = EI->op_end();
+       OI != OE; ++OI)
+    e.varargs.push_back(lookup_or_add(*OI));
+
+  for (ExtractValueInst::idx_iterator II = EI->idx_begin(), IE = EI->idx_end();
+         II != IE; ++II)
+    e.varargs.push_back(*II);
+
   return e;
 }
 
@@ -303,7 +328,7 @@ uint32_t ValueTable::lookup_or_add_call(CallInst *C) {
     const MemoryDependenceAnalysis::NonLocalDepInfo &deps =
       MD->getNonLocalCallDependency(CallSite(C));
     // FIXME: Move the checking logic to MemDep!
-    CallInst* cdep = 0;
+    CallInst* cdep = nullptr;
 
     // Check to see if we have a single dominating call instruction that is
     // identical to C.
@@ -314,8 +339,8 @@ uint32_t ValueTable::lookup_or_add_call(CallInst *C) {
 
       // We don't handle non-definitions.  If we already have a call, reject
       // instruction dependencies.
-      if (!I->getResult().isDef() || cdep != 0) {
-        cdep = 0;
+      if (!I->getResult().isDef() || cdep != nullptr) {
+        cdep = nullptr;
         break;
       }
 
@@ -326,7 +351,7 @@ uint32_t ValueTable::lookup_or_add_call(CallInst *C) {
         continue;
       }
 
-      cdep = 0;
+      cdep = nullptr;
       break;
     }
 
@@ -373,29 +398,8 @@ uint32_t ValueTable::lookup_or_add(Value *V) {
   Instruction* I = cast<Instruction>(V);
   Expression exp;
   switch (I->getOpcode()) {
-    case Instruction::Call: {
-      CallInst *C = cast<CallInst>(I);
-      if (IntrinsicInst *II = dyn_cast<IntrinsicInst>(C)) {
-        switch (II->getIntrinsicID()) {
-          case Intrinsic::sadd_with_overflow:
-          case Intrinsic::uadd_with_overflow:
-            exp = create_intrinsic_expression(C, Instruction::Add, true);
-            break;
-          case Intrinsic::ssub_with_overflow:
-          case Intrinsic::usub_with_overflow:
-            exp = create_intrinsic_expression(C, Instruction::Sub, false);
-            break;
-          case Intrinsic::smul_with_overflow:
-          case Intrinsic::umul_with_overflow:
-            exp = create_intrinsic_expression(C, Instruction::Mul, true);
-            break;
-          default:
-            return lookup_or_add_call(C);
-        }
-      } else {
-        return lookup_or_add_call(C);
-      }
-    } break;
+    case Instruction::Call:
+      return lookup_or_add_call(cast<CallInst>(I));
     case Instruction::Add:
     case Instruction::FAdd:
     case Instruction::Sub:
@@ -434,8 +438,10 @@ uint32_t ValueTable::lookup_or_add(Value *V) {
     case Instruction::ShuffleVector:
     case Instruction::InsertValue:
     case Instruction::GetElementPtr:
-    case Instruction::ExtractValue:
       exp = create_expression(I);
+      break;
+    case Instruction::ExtractValue:
+      exp = create_extractvalue_expression(cast<ExtractValueInst>(I));
       break;
     default:
       valueNumbering[V] = nextValueNumber;
@@ -546,7 +552,7 @@ namespace {
     static AvailableValueInBlock getUndef(BasicBlock *BB) {
       AvailableValueInBlock Res;
       Res.BB = BB;
-      Res.Val.setPointer(0);
+      Res.Val.setPointer(nullptr);
       Res.Val.setInt(UndefVal);
       Res.Offset = 0;
       return Res;
@@ -606,7 +612,7 @@ namespace {
   public:
     static char ID; // Pass identification, replacement for typeid
     explicit GVN(bool noloads = false)
-        : FunctionPass(ID), NoLoads(noloads), MD(0) {
+        : FunctionPass(ID), NoLoads(noloads), MD(nullptr) {
       initializeGVNPass(*PassRegistry::getPassRegistry());
     }
 
@@ -644,7 +650,7 @@ namespace {
     /// removeFromLeaderTable - Scan the list of values corresponding to a given
     /// value number, and remove the given instruction if encountered.
     void removeFromLeaderTable(uint32_t N, Instruction *I, BasicBlock *BB) {
-      LeaderTableEntry* Prev = 0;
+      LeaderTableEntry* Prev = nullptr;
       LeaderTableEntry* Curr = &LeaderTable[N];
 
       while (Curr->Val != I || Curr->BB != BB) {
@@ -656,8 +662,8 @@ namespace {
         Prev->Next = Curr->Next;
       } else {
         if (!Curr->Next) {
-          Curr->Val = 0;
-          Curr->BB = 0;
+          Curr->Val = nullptr;
+          Curr->BB = nullptr;
         } else {
           LeaderTableEntry* Next = Curr->Next;
           Curr->Val = Next->Val;
@@ -850,7 +856,7 @@ static Value *CoerceAvailableValueToLoadType(Value *StoredVal,
                                              Instruction *InsertPt,
                                              const DataLayout &DL) {
   if (!CanCoerceMustAliasedValueToLoad(StoredVal, LoadedTy, DL))
-    return 0;
+    return nullptr;
 
   // If this is already the right type, just return it.
   Type *StoredValTy = StoredVal->getType();
@@ -1055,7 +1061,7 @@ static int AnalyzeLoadFromClobberingMemInst(Type *LoadTy, Value *LoadPtr,
                                             const DataLayout &DL) {
   // If the mem operation is a non-constant size, we can't handle it.
   ConstantInt *SizeCst = dyn_cast<ConstantInt>(MI->getLength());
-  if (SizeCst == 0) return -1;
+  if (!SizeCst) return -1;
   uint64_t MemSizeInBits = SizeCst->getZExtValue()*8;
 
   // If this is memset, we just need to see if the offset is valid in the size
@@ -1070,10 +1076,10 @@ static int AnalyzeLoadFromClobberingMemInst(Type *LoadTy, Value *LoadPtr,
   MemTransferInst *MTI = cast<MemTransferInst>(MI);
 
   Constant *Src = dyn_cast<Constant>(MTI->getSource());
-  if (Src == 0) return -1;
+  if (!Src) return -1;
 
   GlobalVariable *GV = dyn_cast<GlobalVariable>(GetUnderlyingObject(Src, &DL));
-  if (GV == 0 || !GV->isConstant()) return -1;
+  if (!GV || !GV->isConstant()) return -1;
 
   // See if the access is within the bounds of the transfer.
   int Offset = AnalyzeLoadFromClobberingWrite(LoadTy, LoadPtr,
@@ -1464,8 +1470,8 @@ void GVN::AnalyzeLoadAvailability(LoadInst *LI, LoadDepVect &Deps,
       if (S->getValueOperand()->getType() != LI->getType()) {
         // If the stored value is larger or equal to the loaded value, we can
         // reuse it.
-        if (DL == 0 || !CanCoerceMustAliasedValueToLoad(S->getValueOperand(),
-                                                        LI->getType(), *DL)) {
+        if (!DL || !CanCoerceMustAliasedValueToLoad(S->getValueOperand(),
+                                                    LI->getType(), *DL)) {
           UnavailableBlocks.push_back(DepBB);
           continue;
         }
@@ -1481,7 +1487,7 @@ void GVN::AnalyzeLoadAvailability(LoadInst *LI, LoadDepVect &Deps,
       if (LD->getType() != LI->getType()) {
         // If the stored value is larger or equal to the loaded value, we can
         // reuse it.
-        if (DL == 0 || !CanCoerceMustAliasedValueToLoad(LD, LI->getType(),*DL)){
+        if (!DL || !CanCoerceMustAliasedValueToLoad(LD, LI->getType(),*DL)) {
           UnavailableBlocks.push_back(DepBB);
           continue;
         }
@@ -1548,7 +1554,7 @@ bool GVN::PerformLoadPRE(LoadInst *LI, AvailValInBlkVect &ValuesPerBlock,
     if (IsValueFullyAvailableInBlock(Pred, FullyAvailableBlocks, 0)) {
       continue;
     }
-    PredLoads[Pred] = 0;
+    PredLoads[Pred] = nullptr;
 
     if (Pred->getTerminator()->getNumSuccessors() != 1) {
       if (isa<IndirectBrInst>(Pred->getTerminator())) {
@@ -1586,7 +1592,7 @@ bool GVN::PerformLoadPRE(LoadInst *LI, AvailValInBlkVect &ValuesPerBlock,
     BasicBlock *OrigPred = *I;
     BasicBlock *NewPred = splitCriticalEdges(OrigPred, LoadBB);
     PredLoads.erase(OrigPred);
-    PredLoads[NewPred] = 0;
+    PredLoads[NewPred] = nullptr;
     DEBUG(dbgs() << "Split critical edge " << OrigPred->getName() << "->"
                  << LoadBB->getName() << '\n');
   }
@@ -1605,13 +1611,13 @@ bool GVN::PerformLoadPRE(LoadInst *LI, AvailValInBlkVect &ValuesPerBlock,
     // the load on the pred (?!?), so we can insert code to materialize the
     // pointer if it is not available.
     PHITransAddr Address(LI->getPointerOperand(), DL);
-    Value *LoadPtr = 0;
+    Value *LoadPtr = nullptr;
     LoadPtr = Address.PHITranslateWithInsertion(LoadBB, UnavailablePred,
                                                 *DT, NewInsts);
 
     // If we couldn't find or insert a computation of this phi translated value,
     // we fail PRE.
-    if (LoadPtr == 0) {
+    if (!LoadPtr) {
       DEBUG(dbgs() << "COULDN'T INSERT PHI TRANSLATED VALUE OF: "
             << *LI->getPointerOperand() << "\n");
       CanDoPRE = false;
@@ -1771,7 +1777,7 @@ static void patchReplacementInstruction(Instruction *I, Value *Repl) {
       MDNode *ReplMD = Metadata[i].second;
       switch(Kind) {
       default:
-        ReplInst->setMetadata(Kind, NULL); // Remove unknown metadata
+        ReplInst->setMetadata(Kind, nullptr); // Remove unknown metadata
         break;
       case LLVMContext::MD_dbg:
         llvm_unreachable("getAllMetadataOtherThanDebugLoc returned a MD_dbg");
@@ -1827,7 +1833,7 @@ bool GVN::processLoad(LoadInst *L) {
     // a common base + constant offset, and if the previous store (or memset)
     // completely covers this load.  This sort of thing can happen in bitfield
     // access code.
-    Value *AvailVal = 0;
+    Value *AvailVal = nullptr;
     if (StoreInst *DepSI = dyn_cast<StoreInst>(Dep.getInst())) {
       int Offset = AnalyzeLoadFromClobberingStore(L->getType(),
                                                   L->getPointerOperand(),
@@ -1915,7 +1921,7 @@ bool GVN::processLoad(LoadInst *L) {
       if (DL) {
         StoredVal = CoerceAvailableValueToLoadType(StoredVal, L->getType(),
                                                    L, *DL);
-        if (StoredVal == 0)
+        if (!StoredVal)
           return false;
 
         DEBUG(dbgs() << "GVN COERCED STORE:\n" << *DepSI << '\n' << *StoredVal
@@ -1944,7 +1950,7 @@ bool GVN::processLoad(LoadInst *L) {
       if (DL) {
         AvailableVal = CoerceAvailableValueToLoadType(DepLI, L->getType(),
                                                       L, *DL);
-        if (AvailableVal == 0)
+        if (!AvailableVal)
           return false;
 
         DEBUG(dbgs() << "GVN COERCED LOAD:\n" << *DepLI << "\n" << *AvailableVal
@@ -1994,9 +2000,9 @@ bool GVN::processLoad(LoadInst *L) {
 // a few comparisons of DFS numbers.
 Value *GVN::findLeader(const BasicBlock *BB, uint32_t num) {
   LeaderTableEntry Vals = LeaderTable[num];
-  if (!Vals.Val) return 0;
+  if (!Vals.Val) return nullptr;
 
-  Value *Val = 0;
+  Value *Val = nullptr;
   if (DT->dominates(Vals.BB, BB)) {
     Val = Vals.Val;
     if (isa<Constant>(Val)) return Val;
@@ -2047,7 +2053,7 @@ static bool isOnlyReachableViaThisEdge(const BasicBlockEdge &E,
   const BasicBlock *Src = E.getStart();
   assert((!Pred || Pred == Src) && "No edge between these basic blocks!");
   (void)Src;
-  return Pred != 0;
+  return Pred != nullptr;
 }
 
 /// propagateEquality - The given values are known to be equal in every block
@@ -2184,54 +2190,6 @@ bool GVN::propagateEquality(Value *LHS, Value *RHS,
   return Changed;
 }
 
-static bool normalOpAfterIntrinsic(Instruction *I, Value *Repl)
-{
-  switch (I->getOpcode()) {
-    case Instruction::Add:
-      if (IntrinsicInst *II = dyn_cast<IntrinsicInst>(Repl))
-          return II->getIntrinsicID() == Intrinsic::sadd_with_overflow
-              || II->getIntrinsicID() == Intrinsic::uadd_with_overflow;
-      return false;
-    case Instruction::Sub:
-      if (IntrinsicInst *II = dyn_cast<IntrinsicInst>(Repl))
-          return II->getIntrinsicID() == Intrinsic::ssub_with_overflow
-              || II->getIntrinsicID() == Intrinsic::usub_with_overflow;
-      return false;
-    case Instruction::Mul:
-      if (IntrinsicInst *II = dyn_cast<IntrinsicInst>(Repl))
-          return II->getIntrinsicID() == Intrinsic::smul_with_overflow
-              || II->getIntrinsicID() == Intrinsic::umul_with_overflow;
-      return false;
-    default:
-      return false;
-  }
-}
-
-static bool intrinsicAterNormalOp(Instruction *I, Value *Repl)
-{
-  IntrinsicInst *II = dyn_cast<IntrinsicInst>(I);
-  if (!II)
-    return false;
-
-  Instruction *RI = dyn_cast<Instruction>(Repl);
-  if (!RI)
-    return false;
-
-  switch (RI->getOpcode()) {
-    case Instruction::Add:
-      return II->getIntrinsicID() == Intrinsic::sadd_with_overflow
-          || II->getIntrinsicID() == Intrinsic::uadd_with_overflow;
-    case Instruction::Sub:
-      return II->getIntrinsicID() == Intrinsic::ssub_with_overflow
-          || II->getIntrinsicID() == Intrinsic::usub_with_overflow;
-    case Instruction::Mul:
-      return II->getIntrinsicID() == Intrinsic::smul_with_overflow
-          || II->getIntrinsicID() == Intrinsic::umul_with_overflow;
-    default:
-      return false;
-  }
-}
-
 /// processInstruction - When calculating availability, handle an instruction
 /// by inserting it into the appropriate sets
 bool GVN::processInstruction(Instruction *I) {
@@ -2339,31 +2297,10 @@ bool GVN::processInstruction(Instruction *I) {
   // Perform fast-path value-number based elimination of values inherited from
   // dominators.
   Value *repl = findLeader(I->getParent(), Num);
-  if (repl == 0) {
+  if (!repl) {
     // Failure, just remember this instance for future use.
     addToLeaderTable(Num, I, I->getParent());
     return false;
-  }
-
-  if (normalOpAfterIntrinsic(I, repl)) {
-    // An intrinsic followed by a normal operation (e.g. sadd_with_overflow
-    // followed by a sadd): replace the second instruction with an extract.
-    IntrinsicInst *II = cast<IntrinsicInst>(repl);
-    assert(II);
-    repl = ExtractValueInst::Create(II, 0, I->getName() + ".repl", I);
-  } else if (intrinsicAterNormalOp(I, repl)) {
-    // A normal operation followed by an intrinsic (e.g. sadd followed by a
-    // sadd_with_overflow).
-    // Clone the intrinsic, and insert it before the replacing instruction. Then
-    // replace the (current) instruction with the cloned one. In a subsequent
-    // run, the original replacement (the non-intrinsic) will be be replaced by
-    // the new intrinsic.
-    Instruction *RI = dyn_cast<Instruction>(repl);
-    assert(RI);
-    Instruction *newIntrinsic = I->clone();
-    newIntrinsic->setName(I->getName() + ".repl");
-    newIntrinsic->insertBefore(RI);
-    repl = newIntrinsic;
   }
 
   // Remove it!
@@ -2383,7 +2320,7 @@ bool GVN::runOnFunction(Function& F) {
     MD = &getAnalysis<MemoryDependenceAnalysis>();
   DT = &getAnalysis<DominatorTreeWrapperPass>().getDomTree();
   DataLayoutPass *DLP = getAnalysisIfAvailable<DataLayoutPass>();
-  DL = DLP ? &DLP->getDataLayout() : 0;
+  DL = DLP ? &DLP->getDataLayout() : nullptr;
   TLI = &getAnalysis<TargetLibraryInfo>();
   VN.setAliasAnalysis(&getAnalysis<AliasAnalysis>());
   VN.setMemDep(MD);
@@ -2485,10 +2422,7 @@ bool GVN::processBlock(BasicBlock *BB) {
 bool GVN::performPRE(Function &F) {
   bool Changed = false;
   SmallVector<std::pair<Value*, BasicBlock*>, 8> predMap;
-  for (df_iterator<BasicBlock*> DI = df_begin(&F.getEntryBlock()),
-       DE = df_end(&F.getEntryBlock()); DI != DE; ++DI) {
-    BasicBlock *CurrentBlock = *DI;
-
+  for (BasicBlock *CurrentBlock : depth_first(&F.getEntryBlock())) {
     // Nothing to PRE in the entry block.
     if (CurrentBlock == &F.getEntryBlock()) continue;
 
@@ -2528,7 +2462,7 @@ bool GVN::performPRE(Function &F) {
       // more complicated to get right.
       unsigned NumWith = 0;
       unsigned NumWithout = 0;
-      BasicBlock *PREPred = 0;
+      BasicBlock *PREPred = nullptr;
       predMap.clear();
 
       for (pred_iterator PI = pred_begin(CurrentBlock),
@@ -2546,12 +2480,10 @@ bool GVN::performPRE(Function &F) {
         }
 
         Value* predV = findLeader(P, ValNo);
-        if (predV == 0) {
-          predMap.push_back(std::make_pair(static_cast<Value *>(0), P));
+        if (!predV) {
+          predMap.push_back(std::make_pair(static_cast<Value *>(nullptr), P));
           PREPred = P;
           ++NumWithout;
-        } else if (predV->getType() != CurInst->getType()) {
-          continue;
         } else if (predV == CurInst) {
           /* CurInst dominates this predecessor. */
           NumWithout = 2;
@@ -2703,9 +2635,8 @@ bool GVN::iterateOnFunction(Function &F) {
   //
   std::vector<BasicBlock *> BBVect;
   BBVect.reserve(256);
-  for (df_iterator<DomTreeNode*> DI = df_begin(DT->getRootNode()),
-       DE = df_end(DT->getRootNode()); DI != DE; ++DI)
-    BBVect.push_back(DI->getBlock());
+  for (DomTreeNode *x : depth_first(DT->getRootNode()))
+    BBVect.push_back(x->getBlock());
 
   for (std::vector<BasicBlock *>::iterator I = BBVect.begin(), E = BBVect.end();
        I != E; I++)

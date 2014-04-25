@@ -22,6 +22,8 @@
 using namespace llvm;
 using namespace PatternMatch;
 
+#define DEBUG_TYPE "instcombine"
+
 STATISTIC(NumSimplified, "Number of library calls simplified");
 
 /// getPromotedType - Return the specified type promoted as it would be to pass
@@ -70,7 +72,7 @@ Instruction *InstCombiner::SimplifyMemTransfer(MemIntrinsic *MI) {
   // If MemCpyInst length is 1/2/4/8 bytes then replace memcpy with
   // load/store.
   ConstantInt *MemOpLength = dyn_cast<ConstantInt>(MI->getArgOperand(2));
-  if (MemOpLength == 0) return 0;
+  if (!MemOpLength) return nullptr;
 
   // Source and destination pointer types are always "i8*" for intrinsic.  See
   // if the size is something we can handle with a single primitive load/store.
@@ -80,7 +82,7 @@ Instruction *InstCombiner::SimplifyMemTransfer(MemIntrinsic *MI) {
   assert(Size && "0-sized memory transferring should be removed already.");
 
   if (Size > 8 || (Size&(Size-1)))
-    return 0;  // If not 1/2/4/8 bytes, exit.
+    return nullptr;  // If not 1/2/4/8 bytes, exit.
 
   // Use an integer load+store unless we can find something better.
   unsigned SrcAddrSp =
@@ -99,7 +101,7 @@ Instruction *InstCombiner::SimplifyMemTransfer(MemIntrinsic *MI) {
   // dest address will be promotable.  See if we can find a better type than the
   // integer datatype.
   Value *StrippedDest = MI->getArgOperand(0)->stripPointerCasts();
-  MDNode *CopyMD = 0;
+  MDNode *CopyMD = nullptr;
   if (StrippedDest != MI->getArgOperand(0)) {
     Type *SrcETy = cast<PointerType>(StrippedDest->getType())
                                     ->getElementType();
@@ -163,7 +165,7 @@ Instruction *InstCombiner::SimplifyMemSet(MemSetInst *MI) {
   ConstantInt *LenC = dyn_cast<ConstantInt>(MI->getLength());
   ConstantInt *FillC = dyn_cast<ConstantInt>(MI->getValue());
   if (!LenC || !FillC || !FillC->getType()->isIntegerTy(8))
-    return 0;
+    return nullptr;
   uint64_t Len = LenC->getLimitedValue();
   Alignment = MI->getAlignment();
   assert(Len && "0-sized memory setting should be removed already.");
@@ -191,7 +193,7 @@ Instruction *InstCombiner::SimplifyMemSet(MemSetInst *MI) {
     return MI;
   }
 
-  return 0;
+  return nullptr;
 }
 
 /// visitCallInst - CallInst simplification.  This mostly only handles folding
@@ -233,7 +235,7 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
 
     // No other transformations apply to volatile transfers.
     if (MI->isVolatile())
-      return 0;
+      return nullptr;
 
     // If we have a memmove and the source operation is a constant global,
     // then the source and dest pointers can't alias, so we can change this
@@ -276,11 +278,11 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
     uint64_t Size;
     if (getObjectSize(II->getArgOperand(0), Size, DL, TLI))
       return ReplaceInstUsesWith(CI, ConstantInt::get(CI.getType(), Size));
-    return 0;
+    return nullptr;
   }
   case Intrinsic::bswap: {
     Value *IIOperand = II->getArgOperand(0);
-    Value *X = 0;
+    Value *X = nullptr;
 
     // bswap(bswap(x)) -> x
     if (match(IIOperand, m_BSwap(m_Value(X))))
@@ -554,6 +556,47 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
     break;
   }
 
+  // Constant fold <A x Bi> << Ci.
+  // FIXME: We don't handle _dq because it's a shift of an i128, but is
+  // represented in the IR as <2 x i64>. A per element shift is wrong.
+  case Intrinsic::x86_sse2_psll_d:
+  case Intrinsic::x86_sse2_psll_q:
+  case Intrinsic::x86_sse2_psll_w:
+  case Intrinsic::x86_sse2_pslli_d:
+  case Intrinsic::x86_sse2_pslli_q:
+  case Intrinsic::x86_sse2_pslli_w:
+  case Intrinsic::x86_avx2_psll_d:
+  case Intrinsic::x86_avx2_psll_q:
+  case Intrinsic::x86_avx2_psll_w:
+  case Intrinsic::x86_avx2_pslli_d:
+  case Intrinsic::x86_avx2_pslli_q:
+  case Intrinsic::x86_avx2_pslli_w: {
+    // Simplify if count is constant. To 0 if > BitWidth, otherwise to shl.
+    auto CDV = dyn_cast<ConstantDataVector>(II->getArgOperand(1));
+    auto CInt = dyn_cast<ConstantInt>(II->getArgOperand(1));
+    if (!CDV && !CInt)
+      break;
+    ConstantInt *Count;
+    if (CDV)
+      Count = cast<ConstantInt>(CDV->getElementAsConstant(0));
+    else
+      Count = CInt;
+
+    auto Vec = II->getArgOperand(0);
+    auto VT = cast<VectorType>(Vec->getType());
+    if (Count->getZExtValue() >
+        VT->getElementType()->getPrimitiveSizeInBits() - 1)
+      return ReplaceInstUsesWith(
+          CI, ConstantAggregateZero::get(Vec->getType()));
+    else {
+      unsigned VWidth = VT->getNumElements();
+      // Get a constant vector of the same type as the first operand.
+      auto VTCI = ConstantInt::get(VT->getElementType(), Count->getZExtValue());
+      return BinaryOperator::CreateShl(
+          Vec, Builder->CreateVectorSplat(VWidth, VTCI));
+    }
+    break;
+  }
 
   case Intrinsic::x86_sse41_pmovsxbw:
   case Intrinsic::x86_sse41_pmovsxwd:
@@ -576,6 +619,88 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
     break;
   }
 
+  case Intrinsic::x86_sse4a_insertqi: {
+    // insertqi x, y, 64, 0 can just copy y's lower bits and leave the top
+    // ones undef
+    // TODO: eventually we should lower this intrinsic to IR
+    if (auto CIWidth = dyn_cast<ConstantInt>(II->getArgOperand(2))) {
+      if (auto CIStart = dyn_cast<ConstantInt>(II->getArgOperand(3))) {
+        if (CIWidth->equalsInt(64) && CIStart->isZero()) {
+          Value *Vec = II->getArgOperand(1);
+          Value *Undef = UndefValue::get(Vec->getType());
+          const uint32_t Mask[] = { 0, 2 };
+          return ReplaceInstUsesWith(
+              CI,
+              Builder->CreateShuffleVector(
+                  Vec, Undef, ConstantDataVector::get(
+                                  II->getContext(), ArrayRef<uint32_t>(Mask))));
+
+        } else if (auto Source =
+                       dyn_cast<IntrinsicInst>(II->getArgOperand(0))) {
+          if (Source->hasOneUse() &&
+              Source->getArgOperand(1) == II->getArgOperand(1)) {
+            // If the source of the insert has only one use and it's another
+            // insert (and they're both inserting from the same vector), try to
+            // bundle both together.
+            auto CISourceWidth =
+                dyn_cast<ConstantInt>(Source->getArgOperand(2));
+            auto CISourceStart =
+                dyn_cast<ConstantInt>(Source->getArgOperand(3));
+            if (CISourceStart && CISourceWidth) {
+              unsigned Start = CIStart->getZExtValue();
+              unsigned Width = CIWidth->getZExtValue();
+              unsigned End = Start + Width;
+              unsigned SourceStart = CISourceStart->getZExtValue();
+              unsigned SourceWidth = CISourceWidth->getZExtValue();
+              unsigned SourceEnd = SourceStart + SourceWidth;
+              unsigned NewStart, NewWidth;
+              bool ShouldReplace = false;
+              if (Start <= SourceStart && SourceStart <= End) {
+                NewStart = Start;
+                NewWidth = std::max(End, SourceEnd) - NewStart;
+                ShouldReplace = true;
+              } else if (SourceStart <= Start && Start <= SourceEnd) {
+                NewStart = SourceStart;
+                NewWidth = std::max(SourceEnd, End) - NewStart;
+                ShouldReplace = true;
+              }
+
+              if (ShouldReplace) {
+                Constant *ConstantWidth = ConstantInt::get(
+                    II->getArgOperand(2)->getType(), NewWidth, false);
+                Constant *ConstantStart = ConstantInt::get(
+                    II->getArgOperand(3)->getType(), NewStart, false);
+                Value *Args[4] = { Source->getArgOperand(0),
+                                   II->getArgOperand(1), ConstantWidth,
+                                   ConstantStart };
+                Module *M = CI.getParent()->getParent()->getParent();
+                Value *F =
+                    Intrinsic::getDeclaration(M, Intrinsic::x86_sse4a_insertqi);
+                return ReplaceInstUsesWith(CI, Builder->CreateCall(F, Args));
+              }
+            }
+          }
+        }
+      }
+    }
+    break;
+  }
+
+  case Intrinsic::x86_avx_vpermilvar_ps:
+  case Intrinsic::x86_avx_vpermilvar_ps_256:
+  case Intrinsic::x86_avx_vpermilvar_pd:
+  case Intrinsic::x86_avx_vpermilvar_pd_256: {
+    // Convert vpermil* to shufflevector if the mask is constant.
+    Value *V = II->getArgOperand(1);
+    if (auto C = dyn_cast<ConstantDataVector>(V)) {
+      auto V1 = II->getArgOperand(0);
+      auto V2 = UndefValue::get(V1->getType());
+      auto Shuffle = Builder->CreateShuffleVector(V1, V2, C);
+      return ReplaceInstUsesWith(CI, Shuffle);
+    }
+    break;
+  }
+
   case Intrinsic::ppc_altivec_vperm:
     // Turn vperm(V1,V2,mask) -> shuffle(V1,V2,mask) if mask is a constant.
     if (Constant *Mask = dyn_cast<Constant>(II->getArgOperand(2))) {
@@ -586,8 +711,7 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
       bool AllEltsOk = true;
       for (unsigned i = 0; i != 16; ++i) {
         Constant *Elt = Mask->getAggregateElement(i);
-        if (Elt == 0 ||
-            !(isa<ConstantInt>(Elt) || isa<UndefValue>(Elt))) {
+        if (!Elt || !(isa<ConstantInt>(Elt) || isa<UndefValue>(Elt))) {
           AllEltsOk = false;
           break;
         }
@@ -612,7 +736,7 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
             cast<ConstantInt>(Mask->getAggregateElement(i))->getZExtValue();
           Idx &= 31;  // Match the hardware behavior.
 
-          if (ExtractedElts[Idx] == 0) {
+          if (!ExtractedElts[Idx]) {
             ExtractedElts[Idx] =
               Builder->CreateExtractElement(Idx < 16 ? Op0 : Op1,
                                             Builder->getInt32(Idx&15));
@@ -654,7 +778,9 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
   }
 
   case Intrinsic::arm_neon_vmulls:
-  case Intrinsic::arm_neon_vmullu: {
+  case Intrinsic::arm_neon_vmullu:
+  case Intrinsic::arm64_neon_smull:
+  case Intrinsic::arm64_neon_umull: {
     Value *Arg0 = II->getArgOperand(0);
     Value *Arg1 = II->getArgOperand(1);
 
@@ -664,7 +790,8 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
     }
 
     // Check for constant LHS & RHS - in this case we just simplify.
-    bool Zext = (II->getIntrinsicID() == Intrinsic::arm_neon_vmullu);
+    bool Zext = (II->getIntrinsicID() == Intrinsic::arm_neon_vmullu ||
+                 II->getIntrinsicID() == Intrinsic::arm64_neon_umull);
     VectorType *NewVT = cast<VectorType>(II->getType());
     if (Constant *CV0 = dyn_cast<Constant>(Arg0)) {
       if (Constant *CV1 = dyn_cast<Constant>(Arg1)) {
@@ -773,14 +900,14 @@ static bool isSafeToEliminateVarargsCast(const CallSite CS,
 // mempcpy_chk, memmove_chk, memset_chk, strcpy_chk, stpcpy_chk, strncpy_chk,
 // strcat_chk and strncat_chk.
 Instruction *InstCombiner::tryOptimizeCall(CallInst *CI, const DataLayout *DL) {
-  if (CI->getCalledFunction() == 0) return 0;
+  if (!CI->getCalledFunction()) return nullptr;
 
   if (Value *With = Simplifier->optimizeCall(CI)) {
     ++NumSimplified;
     return CI->use_empty() ? CI : ReplaceInstUsesWith(*CI, With);
   }
 
-  return 0;
+  return nullptr;
 }
 
 static IntrinsicInst *FindInitTrampolineFromAlloca(Value *TrampMem) {
@@ -789,35 +916,35 @@ static IntrinsicInst *FindInitTrampolineFromAlloca(Value *TrampMem) {
   Value *Underlying = TrampMem->stripPointerCasts();
   if (Underlying != TrampMem &&
       (!Underlying->hasOneUse() || Underlying->user_back() != TrampMem))
-    return 0;
+    return nullptr;
   if (!isa<AllocaInst>(Underlying))
-    return 0;
+    return nullptr;
 
-  IntrinsicInst *InitTrampoline = 0;
+  IntrinsicInst *InitTrampoline = nullptr;
   for (User *U : TrampMem->users()) {
     IntrinsicInst *II = dyn_cast<IntrinsicInst>(U);
     if (!II)
-      return 0;
+      return nullptr;
     if (II->getIntrinsicID() == Intrinsic::init_trampoline) {
       if (InitTrampoline)
         // More than one init_trampoline writes to this value.  Give up.
-        return 0;
+        return nullptr;
       InitTrampoline = II;
       continue;
     }
     if (II->getIntrinsicID() == Intrinsic::adjust_trampoline)
       // Allow any number of calls to adjust.trampoline.
       continue;
-    return 0;
+    return nullptr;
   }
 
   // No call to init.trampoline found.
   if (!InitTrampoline)
-    return 0;
+    return nullptr;
 
   // Check that the alloca is being used in the expected way.
   if (InitTrampoline->getOperand(0) != TrampMem)
-    return 0;
+    return nullptr;
 
   return InitTrampoline;
 }
@@ -834,9 +961,9 @@ static IntrinsicInst *FindInitTrampolineFromBB(IntrinsicInst *AdjustTramp,
           II->getOperand(0) == TrampMem)
         return II;
     if (Inst->mayWriteToMemory())
-      return 0;
+      return nullptr;
   }
-  return 0;
+  return nullptr;
 }
 
 // Given a call to llvm.adjust.trampoline, find and return the corresponding
@@ -848,7 +975,7 @@ static IntrinsicInst *FindInitTrampoline(Value *Callee) {
   IntrinsicInst *AdjustTramp = dyn_cast<IntrinsicInst>(Callee);
   if (!AdjustTramp ||
       AdjustTramp->getIntrinsicID() != Intrinsic::adjust_trampoline)
-    return 0;
+    return nullptr;
 
   Value *TrampMem = AdjustTramp->getOperand(0);
 
@@ -856,7 +983,7 @@ static IntrinsicInst *FindInitTrampoline(Value *Callee) {
     return IT;
   if (IntrinsicInst *IT = FindInitTrampolineFromBB(AdjustTramp, TrampMem))
     return IT;
-  return 0;
+  return nullptr;
 }
 
 // visitCallSite - Improvements for call and invoke instructions.
@@ -871,7 +998,7 @@ Instruction *InstCombiner::visitCallSite(CallSite CS) {
   // arguments of the call/invoke.
   Value *Callee = CS.getCalledValue();
   if (!isa<Function>(Callee) && transformConstExprCastCall(CS))
-    return 0;
+    return nullptr;
 
   if (Function *CalleeF = dyn_cast<Function>(Callee))
     // If the call and callee calling conventions don't match, this call must
@@ -896,7 +1023,7 @@ Instruction *InstCombiner::visitCallSite(CallSite CS) {
       // change the callee to a null pointer.
       cast<InvokeInst>(OldCall)->setCalledFunction(
                                     Constant::getNullValue(CalleeF->getType()));
-      return 0;
+      return nullptr;
     }
 
   if (isa<ConstantPointerNull>(Callee) || isa<UndefValue>(Callee)) {
@@ -908,7 +1035,7 @@ Instruction *InstCombiner::visitCallSite(CallSite CS) {
 
     if (isa<InvokeInst>(CS.getInstruction())) {
       // Can't remove an invoke because we cannot change the CFG.
-      return 0;
+      return nullptr;
     }
 
     // This instruction is not reachable, just remove it.  We insert a store to
@@ -956,7 +1083,7 @@ Instruction *InstCombiner::visitCallSite(CallSite CS) {
     if (I) return EraseInstFromFunction(*I);
   }
 
-  return Changed ? CS.getInstruction() : 0;
+  return Changed ? CS.getInstruction() : nullptr;
 }
 
 // transformConstExprCastCall - If the callee is a constexpr cast of a function,
@@ -965,7 +1092,7 @@ Instruction *InstCombiner::visitCallSite(CallSite CS) {
 bool InstCombiner::transformConstExprCastCall(CallSite CS) {
   Function *Callee =
     dyn_cast<Function>(CS.getCalledValue()->stripPointerCasts());
-  if (Callee == 0)
+  if (!Callee)
     return false;
   Instruction *Caller = CS.getInstruction();
   const AttributeSet &CallerPAL = CS.getAttributes();
@@ -1041,7 +1168,7 @@ bool InstCombiner::transformConstExprCastCall(CallSite CS) {
         CallerPAL.getParamAttributes(i + 1).hasAttribute(i + 1,
                                                          Attribute::ByVal)) {
       PointerType *ParamPTy = dyn_cast<PointerType>(ParamTy);
-      if (ParamPTy == 0 || !ParamPTy->getElementType()->isSized() || DL == 0)
+      if (!ParamPTy || !ParamPTy->getElementType()->isSized() || !DL)
         return false;
 
       Type *CurElTy = ActTy->getPointerElementType();
@@ -1232,7 +1359,7 @@ InstCombiner::transformCallThroughTrampoline(CallSite CS,
   // If the call already has the 'nest' attribute somewhere then give up -
   // otherwise 'nest' would occur twice after splicing in the chain.
   if (Attrs.hasAttrSomewhere(Attribute::Nest))
-    return 0;
+    return nullptr;
 
   assert(Tramp &&
          "transformCallThroughTrampoline called with incorrect CallSite.");
@@ -1244,7 +1371,7 @@ InstCombiner::transformCallThroughTrampoline(CallSite CS,
   const AttributeSet &NestAttrs = NestF->getAttributes();
   if (!NestAttrs.isEmpty()) {
     unsigned NestIdx = 1;
-    Type *NestTy = 0;
+    Type *NestTy = nullptr;
     AttributeSet NestAttr;
 
     // Look for a parameter marked with the 'nest' attribute.

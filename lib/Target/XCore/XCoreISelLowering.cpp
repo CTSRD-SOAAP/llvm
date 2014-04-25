@@ -11,8 +11,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#define DEBUG_TYPE "xcore-lower"
-
 #include "XCoreISelLowering.h"
 #include "XCore.h"
 #include "XCoreMachineFunctionInfo.h"
@@ -41,6 +39,8 @@
 
 using namespace llvm;
 
+#define DEBUG_TYPE "xcore-lower"
+
 const char *XCoreTargetLowering::
 getTargetNodeName(unsigned Opcode) const
 {
@@ -64,7 +64,7 @@ getTargetNodeName(unsigned Opcode) const
     case XCoreISD::FRAME_TO_ARGS_OFFSET : return "XCoreISD::FRAME_TO_ARGS_OFFSET";
     case XCoreISD::EH_RETURN         : return "XCoreISD::EH_RETURN";
     case XCoreISD::MEMBARRIER        : return "XCoreISD::MEMBARRIER";
-    default                          : return NULL;
+    default                          : return nullptr;
   }
 }
 
@@ -277,7 +277,7 @@ getGlobalAddressWrapper(SDValue GA, const GlobalValue *GV,
   const GlobalValue *UnderlyingGV = GV;
   // If GV is an alias then use the aliasee to determine the wrapper type
   if (const GlobalAlias *GA = dyn_cast<GlobalAlias>(GV))
-    UnderlyingGV = GA->resolveAliasedGlobal();
+    UnderlyingGV = GA->getAliasedGlobal();
   if (const GlobalVariable *GVar = dyn_cast<GlobalVariable>(UnderlyingGV)) {
     if (  ( GVar->isConstant() &&
             UnderlyingGV->isLocalLinkage(GV->getLinkage()) )
@@ -741,7 +741,7 @@ ExpandADDSUB(SDNode *N, SelectionDAG &DAG) const
 
   if (N->getOpcode() == ISD::ADD) {
     SDValue Result = TryExpandADDWithMul(N, DAG);
-    if (Result.getNode() != 0)
+    if (Result.getNode())
       return Result;
   }
 
@@ -1384,7 +1384,7 @@ XCoreTargetLowering::LowerCCCArguments(SDValue Chain,
   // 1b. CopyFromReg vararg registers.
   if (isVarArg) {
     // Argument registers
-    static const uint16_t ArgRegs[] = {
+    static const MCPhysReg ArgRegs[] = {
       XCore::R0, XCore::R1, XCore::R2, XCore::R3
     };
     XCoreFunctionInfo *XFI = MF.getInfo<XCoreFunctionInfo>();

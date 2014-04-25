@@ -12,7 +12,6 @@
 //
 //===---------------------------------------------------------------------===//
 
-#define DEBUG_TYPE "jit"
 #include "Mips.h"
 #include "MCTargetDesc/MipsBaseInfo.h"
 #include "MipsInstrInfo.h"
@@ -41,6 +40,8 @@
 
 using namespace llvm;
 
+#define DEBUG_TYPE "jit"
+
 STATISTIC(NumEmitted, "Number of machine instructions emitted");
 
 namespace {
@@ -65,8 +66,8 @@ class MipsCodeEmitter : public MachineFunctionPass {
 
 public:
   MipsCodeEmitter(TargetMachine &tm, JITCodeEmitter &mce)
-    : MachineFunctionPass(ID), JTI(0), II(0), TD(0),
-      TM(tm), MCE(mce), MCPEs(0), MJTEs(0),
+    : MachineFunctionPass(ID), JTI(nullptr), II(nullptr), TD(nullptr),
+      TM(tm), MCE(mce), MCPEs(nullptr), MJTEs(nullptr),
       IsPIC(TM.getRelocationModel() == Reloc::PIC_) {}
 
   bool runOnMachineFunction(MachineFunction &MF);
@@ -117,9 +118,6 @@ private:
   unsigned getSizeInsEncoding(const MachineInstr &MI, unsigned OpNo) const;
   unsigned getLSAImmEncoding(const MachineInstr &MI, unsigned OpNo) const;
 
-  void emitGlobalAddressUnaligned(const GlobalValue *GV, unsigned Reloc,
-                                  int Offset) const;
-
   /// Expand pseudo instructions with accumulator register operands.
   void expandACCInstr(MachineBasicBlock::instr_iterator MI,
                       MachineBasicBlock &MBB, unsigned Opc) const;
@@ -141,7 +139,7 @@ bool MipsCodeEmitter::runOnMachineFunction(MachineFunction &MF) {
   TD = Target.getDataLayout();
   Subtarget = &TM.getSubtarget<MipsSubtarget> ();
   MCPEs = &MF.getConstantPool()->getConstants();
-  MJTEs = 0;
+  MJTEs = nullptr;
   if (MF.getJumpTableInfo()) MJTEs = &MF.getJumpTableInfo()->getJumpTables();
   JTI->Initialize(MF, IsPIC, Subtarget->isLittle());
   MCE.setModuleInfo(&getAnalysis<MachineModuleInfo> ());
@@ -278,14 +276,6 @@ void MipsCodeEmitter::emitGlobalAddress(const GlobalValue *GV, unsigned Reloc,
   MCE.addRelocation(MachineRelocation::getGV(MCE.getCurrentPCOffset(), Reloc,
                                              const_cast<GlobalValue *>(GV), 0,
                                              MayNeedFarStub));
-}
-
-void MipsCodeEmitter::emitGlobalAddressUnaligned(const GlobalValue *GV,
-                                           unsigned Reloc, int Offset) const {
-  MCE.addRelocation(MachineRelocation::getGV(MCE.getCurrentPCOffset(), Reloc,
-                             const_cast<GlobalValue *>(GV), 0, false));
-  MCE.addRelocation(MachineRelocation::getGV(MCE.getCurrentPCOffset() + Offset,
-                      Reloc, const_cast<GlobalValue *>(GV), 0, false));
 }
 
 void MipsCodeEmitter::
