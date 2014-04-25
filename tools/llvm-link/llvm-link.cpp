@@ -96,17 +96,13 @@ int main(int argc, char **argv) {
     error_code ec; // output parameter to store error codes
     std::string dir = InputFilenames[0];
     InputFilenames.clear();
-    int fileCount = 0;
     for (directory_iterator I = directory_iterator(dir, ec), E; I != E; I.increment(ec)) {
       if (ec != ec.success()) {
         errs() << "Error iterating directory: " << ec.message() << "\n";
         return -1;
       }
       InputFilenames.push_back(I->path());
-      fileCount++;
-      //outs() << "File: " << I->path() << "\n";
     }
-    if (Verbose) errs() << "Found " << fileCount << " files in " << dir << "\n";
   }
 
   unsigned BaseArg = 0;
