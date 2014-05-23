@@ -280,7 +280,7 @@ bool StructurizeCFG::doInitialization(Region *R, RGPassManager &RGM) {
 void StructurizeCFG::orderNodes() {
   scc_iterator<Region *> I = scc_begin(ParentRegion);
   for (Order.clear(); !I.isAtEnd(); ++I) {
-    std::vector<RegionNode *> &Nodes = *I;
+    const std::vector<RegionNode *> &Nodes = *I;
     Order.append(Nodes.begin(), Nodes.end());
   }
 }
@@ -454,10 +454,7 @@ void StructurizeCFG::insertConditions(bool Loops) {
   Value *Default = Loops ? BoolTrue : BoolFalse;
   SSAUpdater PhiInserter;
 
-  for (BranchVector::iterator I = Conds.begin(),
-       E = Conds.end(); I != E; ++I) {
-
-    BranchInst *Term = *I;
+  for (BranchInst *Term : Conds) {
     assert(Term->isConditional());
 
     BasicBlock *Parent = Term->getParent();

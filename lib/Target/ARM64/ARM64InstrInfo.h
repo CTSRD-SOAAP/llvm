@@ -56,6 +56,14 @@ public:
   unsigned isStoreToStackSlot(const MachineInstr *MI,
                               int &FrameIndex) const override;
 
+  /// Returns true if there is a shiftable register and that the shift value
+  /// is non-zero.
+  bool hasShiftedReg(const MachineInstr *MI) const;
+
+  /// Returns true if there is an extendable register and that the extending value
+  /// is non-zero.
+  bool hasExtendedReg(const MachineInstr *MI) const;
+
   /// \brief Does this instruction set its full destination register to zero?
   bool isGPRZero(const MachineInstr *MI) const;
 
@@ -162,7 +170,7 @@ void emitFrameOffset(MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI,
                      DebugLoc DL, unsigned DestReg, unsigned SrcReg, int Offset,
                      const ARM64InstrInfo *TII,
                      MachineInstr::MIFlag = MachineInstr::NoFlags,
-                     bool SetCPSR = false);
+                     bool SetNZCV = false);
 
 /// rewriteARM64FrameIndex - Rewrite MI to access 'Offset' bytes from the
 /// FP. Return false if the offset could not be handled directly in MI, and
@@ -193,9 +201,9 @@ enum ARM64FrameOffsetStatus {
 /// (possibly with @p OutUnscaledOp if OutUseUnscaledOp is true) and that
 /// is a legal offset.
 int isARM64FrameOffsetLegal(const MachineInstr &MI, int &Offset,
-                            bool *OutUseUnscaledOp = NULL,
-                            unsigned *OutUnscaledOp = NULL,
-                            int *EmittableOffset = NULL);
+                            bool *OutUseUnscaledOp = nullptr,
+                            unsigned *OutUnscaledOp = nullptr,
+                            int *EmittableOffset = nullptr);
 
 static inline bool isUncondBranchOpcode(int Opc) { return Opc == ARM64::B; }
 
@@ -206,8 +214,10 @@ static inline bool isCondBranchOpcode(int Opc) {
   case ARM64::CBZX:
   case ARM64::CBNZW:
   case ARM64::CBNZX:
-  case ARM64::TBZ:
-  case ARM64::TBNZ:
+  case ARM64::TBZW:
+  case ARM64::TBZX:
+  case ARM64::TBNZW:
+  case ARM64::TBNZX:
     return true;
   default:
     return false;

@@ -322,7 +322,7 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
     uint32_t BitWidth = IT->getBitWidth();
     APInt KnownZero(BitWidth, 0);
     APInt KnownOne(BitWidth, 0);
-    ComputeMaskedBits(II->getArgOperand(0), KnownZero, KnownOne);
+    computeKnownBits(II->getArgOperand(0), KnownZero, KnownOne);
     unsigned TrailingZeros = KnownOne.countTrailingZeros();
     APInt Mask(APInt::getLowBitsSet(BitWidth, TrailingZeros));
     if ((Mask & KnownZero) == Mask)
@@ -340,7 +340,7 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
     uint32_t BitWidth = IT->getBitWidth();
     APInt KnownZero(BitWidth, 0);
     APInt KnownOne(BitWidth, 0);
-    ComputeMaskedBits(II->getArgOperand(0), KnownZero, KnownOne);
+    computeKnownBits(II->getArgOperand(0), KnownZero, KnownOne);
     unsigned LeadingZeros = KnownOne.countLeadingZeros();
     APInt Mask(APInt::getHighBitsSet(BitWidth, LeadingZeros));
     if ((Mask & KnownZero) == Mask)
@@ -355,14 +355,14 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
     uint32_t BitWidth = IT->getBitWidth();
     APInt LHSKnownZero(BitWidth, 0);
     APInt LHSKnownOne(BitWidth, 0);
-    ComputeMaskedBits(LHS, LHSKnownZero, LHSKnownOne);
+    computeKnownBits(LHS, LHSKnownZero, LHSKnownOne);
     bool LHSKnownNegative = LHSKnownOne[BitWidth - 1];
     bool LHSKnownPositive = LHSKnownZero[BitWidth - 1];
 
     if (LHSKnownNegative || LHSKnownPositive) {
       APInt RHSKnownZero(BitWidth, 0);
       APInt RHSKnownOne(BitWidth, 0);
-      ComputeMaskedBits(RHS, RHSKnownZero, RHSKnownOne);
+      computeKnownBits(RHS, RHSKnownZero, RHSKnownOne);
       bool RHSKnownNegative = RHSKnownOne[BitWidth - 1];
       bool RHSKnownPositive = RHSKnownZero[BitWidth - 1];
       if (LHSKnownNegative && RHSKnownNegative) {
@@ -449,10 +449,10 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
 
     APInt LHSKnownZero(BitWidth, 0);
     APInt LHSKnownOne(BitWidth, 0);
-    ComputeMaskedBits(LHS, LHSKnownZero, LHSKnownOne);
+    computeKnownBits(LHS, LHSKnownZero, LHSKnownOne);
     APInt RHSKnownZero(BitWidth, 0);
     APInt RHSKnownOne(BitWidth, 0);
-    ComputeMaskedBits(RHS, RHSKnownZero, RHSKnownOne);
+    computeKnownBits(RHS, RHSKnownZero, RHSKnownOne);
 
     // Get the largest possible values for each operand.
     APInt LHSMax = ~LHSKnownZero;
@@ -570,8 +570,21 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
   case Intrinsic::x86_avx2_psll_w:
   case Intrinsic::x86_avx2_pslli_d:
   case Intrinsic::x86_avx2_pslli_q:
-  case Intrinsic::x86_avx2_pslli_w: {
-    // Simplify if count is constant. To 0 if > BitWidth, otherwise to shl.
+  case Intrinsic::x86_avx2_pslli_w:
+  case Intrinsic::x86_sse2_psrl_d:
+  case Intrinsic::x86_sse2_psrl_q:
+  case Intrinsic::x86_sse2_psrl_w:
+  case Intrinsic::x86_sse2_psrli_d:
+  case Intrinsic::x86_sse2_psrli_q:
+  case Intrinsic::x86_sse2_psrli_w:
+  case Intrinsic::x86_avx2_psrl_d:
+  case Intrinsic::x86_avx2_psrl_q:
+  case Intrinsic::x86_avx2_psrl_w:
+  case Intrinsic::x86_avx2_psrli_d:
+  case Intrinsic::x86_avx2_psrli_q:
+  case Intrinsic::x86_avx2_psrli_w: {
+    // Simplify if count is constant. To 0 if >= BitWidth,
+    // otherwise to shl/lshr.
     auto CDV = dyn_cast<ConstantDataVector>(II->getArgOperand(1));
     auto CInt = dyn_cast<ConstantInt>(II->getArgOperand(1));
     if (!CDV && !CInt)
@@ -588,14 +601,33 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
         VT->getElementType()->getPrimitiveSizeInBits() - 1)
       return ReplaceInstUsesWith(
           CI, ConstantAggregateZero::get(Vec->getType()));
-    else {
-      unsigned VWidth = VT->getNumElements();
-      // Get a constant vector of the same type as the first operand.
-      auto VTCI = ConstantInt::get(VT->getElementType(), Count->getZExtValue());
-      return BinaryOperator::CreateShl(
-          Vec, Builder->CreateVectorSplat(VWidth, VTCI));
+
+    bool isPackedShiftLeft = true;
+    switch (II->getIntrinsicID()) {
+    default : break;
+    case Intrinsic::x86_sse2_psrl_d:
+    case Intrinsic::x86_sse2_psrl_q:
+    case Intrinsic::x86_sse2_psrl_w:
+    case Intrinsic::x86_sse2_psrli_d:
+    case Intrinsic::x86_sse2_psrli_q:
+    case Intrinsic::x86_sse2_psrli_w:
+    case Intrinsic::x86_avx2_psrl_d:
+    case Intrinsic::x86_avx2_psrl_q:
+    case Intrinsic::x86_avx2_psrl_w:
+    case Intrinsic::x86_avx2_psrli_d:
+    case Intrinsic::x86_avx2_psrli_q:
+    case Intrinsic::x86_avx2_psrli_w: isPackedShiftLeft = false; break;
     }
-    break;
+
+    unsigned VWidth = VT->getNumElements();
+    // Get a constant vector of the same type as the first operand.
+    auto VTCI = ConstantInt::get(VT->getElementType(), Count->getZExtValue());
+    if (isPackedShiftLeft)
+      return BinaryOperator::CreateShl(Vec,
+          Builder->CreateVectorSplat(VWidth, VTCI));
+
+    return BinaryOperator::CreateLShr(Vec,
+        Builder->CreateVectorSplat(VWidth, VTCI));
   }
 
   case Intrinsic::x86_sse41_pmovsxbw:
@@ -692,13 +724,38 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
   case Intrinsic::x86_avx_vpermilvar_pd_256: {
     // Convert vpermil* to shufflevector if the mask is constant.
     Value *V = II->getArgOperand(1);
+    unsigned Size = cast<VectorType>(V->getType())->getNumElements();
+    assert(Size == 8 || Size == 4 || Size == 2);
+    uint32_t Indexes[8];
     if (auto C = dyn_cast<ConstantDataVector>(V)) {
-      auto V1 = II->getArgOperand(0);
-      auto V2 = UndefValue::get(V1->getType());
-      auto Shuffle = Builder->CreateShuffleVector(V1, V2, C);
-      return ReplaceInstUsesWith(CI, Shuffle);
+      // The intrinsics only read one or two bits, clear the rest.
+      for (unsigned I = 0; I < Size; ++I) {
+        uint32_t Index = C->getElementAsInteger(I) & 0x3;
+        if (II->getIntrinsicID() == Intrinsic::x86_avx_vpermilvar_pd ||
+            II->getIntrinsicID() == Intrinsic::x86_avx_vpermilvar_pd_256)
+          Index >>= 1;
+        Indexes[I] = Index;
+      }
+    } else if (isa<ConstantAggregateZero>(V)) {
+      for (unsigned I = 0; I < Size; ++I)
+        Indexes[I] = 0;
+    } else {
+      break;
     }
-    break;
+    // The _256 variants are a bit trickier since the mask bits always index
+    // into the corresponding 128 half. In order to convert to a generic
+    // shuffle, we have to make that explicit.
+    if (II->getIntrinsicID() == Intrinsic::x86_avx_vpermilvar_ps_256 ||
+        II->getIntrinsicID() == Intrinsic::x86_avx_vpermilvar_pd_256) {
+      for (unsigned I = Size / 2; I < Size; ++I)
+        Indexes[I] += Size / 2;
+    }
+    auto NewC =
+        ConstantDataVector::get(V->getContext(), makeArrayRef(Indexes, Size));
+    auto V1 = II->getArgOperand(0);
+    auto V2 = UndefValue::get(V1->getType());
+    auto Shuffle = Builder->CreateShuffleVector(V1, V2, NewC);
+    return ReplaceInstUsesWith(CI, Shuffle);
   }
 
   case Intrinsic::ppc_altivec_vperm:

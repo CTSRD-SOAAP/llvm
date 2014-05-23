@@ -352,20 +352,21 @@ MipsTargetLowering::MipsTargetLowering(MipsTargetMachine &TM)
 
   setInsertFencesForAtomic(true);
 
-  if (!Subtarget->hasSEInReg()) {
+  if (!Subtarget->hasMips32r2()) {
     setOperationAction(ISD::SIGN_EXTEND_INREG, MVT::i8,  Expand);
     setOperationAction(ISD::SIGN_EXTEND_INREG, MVT::i16, Expand);
   }
 
-  if (!Subtarget->hasBitCount()) {
+  // MIPS16 lacks MIPS32's clz and clo instructions.
+  if (!Subtarget->hasMips32() || Subtarget->inMips16Mode())
     setOperationAction(ISD::CTLZ, MVT::i32, Expand);
+  if (!Subtarget->hasMips64())
     setOperationAction(ISD::CTLZ, MVT::i64, Expand);
-  }
 
-  if (!Subtarget->hasSwap()) {
+  if (!Subtarget->hasMips32r2())
     setOperationAction(ISD::BSWAP, MVT::i32, Expand);
+  if (!Subtarget->hasMips64r2())
     setOperationAction(ISD::BSWAP, MVT::i64, Expand);
-  }
 
   if (isGP64bit()) {
     setLoadExtAction(ISD::SEXTLOAD, MVT::i32, Custom);
@@ -1510,7 +1511,7 @@ SDValue MipsTargetLowering::lowerGlobalAddress(SDValue Op,
       SDValue GA = DAG.getTargetGlobalAddress(GV, DL, MVT::i32, 0,
                                               MipsII::MO_GPREL);
       SDValue GPRelNode = DAG.getNode(MipsISD::GPRel, DL,
-                                      DAG.getVTList(MVT::i32), &GA, 1);
+                                      DAG.getVTList(MVT::i32), GA);
       SDValue GPReg = DAG.getRegister(Mips::GP, MVT::i32);
       return DAG.getNode(ISD::ADD, DL, MVT::i32, GPReg, GPRelNode);
     }
@@ -1576,11 +1577,9 @@ lowerGlobalTLSAddress(SDValue Op, SelectionDAG &DAG) const
     Entry.Ty = PtrTy;
     Args.push_back(Entry);
 
-    TargetLowering::CallLoweringInfo CLI(DAG.getEntryNode(), PtrTy,
-                  false, false, false, false, 0, CallingConv::C,
-                  /*IsTailCall=*/false, /*doesNotRet=*/false,
-                  /*isReturnValueUsed=*/true,
-                  TlsGetAddr, Args, DAG, DL);
+    TargetLowering::CallLoweringInfo CLI(DAG);
+    CLI.setDebugLoc(DL).setChain(DAG.getEntryNode())
+      .setCallee(CallingConv::C, PtrTy, TlsGetAddr, &Args, 0);
     std::pair<SDValue, SDValue> CallResult = LowerCallTo(CLI);
 
     SDValue Ret = CallResult.first;
@@ -1876,7 +1875,7 @@ SDValue MipsTargetLowering::lowerShiftLeftParts(SDValue Op,
   Hi = DAG.getNode(ISD::SELECT, DL, MVT::i32, Cond, ShiftLeftLo, Or);
 
   SDValue Ops[2] = {Lo, Hi};
-  return DAG.getMergeValues(Ops, 2, DL);
+  return DAG.getMergeValues(Ops, DL);
 }
 
 SDValue MipsTargetLowering::lowerShiftRightParts(SDValue Op, SelectionDAG &DAG,
@@ -1917,7 +1916,7 @@ SDValue MipsTargetLowering::lowerShiftRightParts(SDValue Op, SelectionDAG &DAG,
                    ShiftRightHi);
 
   SDValue Ops[2] = {Lo, Hi};
-  return DAG.getMergeValues(Ops, 2, DL);
+  return DAG.getMergeValues(Ops, DL);
 }
 
 static SDValue createLoadLR(unsigned Opc, SelectionDAG &DAG, LoadSDNode *LD,
@@ -1933,7 +1932,7 @@ static SDValue createLoadLR(unsigned Opc, SelectionDAG &DAG, LoadSDNode *LD,
                       DAG.getConstant(Offset, BasePtrVT));
 
   SDValue Ops[] = { Chain, Ptr, Src };
-  return DAG.getMemIntrinsicNode(Opc, DL, VTList, Ops, 3, MemVT,
+  return DAG.getMemIntrinsicNode(Opc, DL, VTList, Ops, MemVT,
                                  LD->getMemOperand());
 }
 
@@ -1996,7 +1995,7 @@ SDValue MipsTargetLowering::lowerLOAD(SDValue Op, SelectionDAG &DAG) const {
   SDValue SLL = DAG.getNode(ISD::SHL, DL, MVT::i64, LWR, Const32);
   SDValue SRL = DAG.getNode(ISD::SRL, DL, MVT::i64, SLL, Const32);
   SDValue Ops[] = { SRL, LWR.getValue(1) };
-  return DAG.getMergeValues(Ops, 2, DL);
+  return DAG.getMergeValues(Ops, DL);
 }
 
 static SDValue createStoreLR(unsigned Opc, SelectionDAG &DAG, StoreSDNode *SD,
@@ -2011,7 +2010,7 @@ static SDValue createStoreLR(unsigned Opc, SelectionDAG &DAG, StoreSDNode *SD,
                       DAG.getConstant(Offset, BasePtrVT));
 
   SDValue Ops[] = { Chain, Value, Ptr };
-  return DAG.getMemIntrinsicNode(Opc, DL, VTList, Ops, 3, MemVT,
+  return DAG.getMemIntrinsicNode(Opc, DL, VTList, Ops, MemVT,
                                  SD->getMemOperand());
 }
 
@@ -2328,7 +2327,7 @@ MipsTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
 
   MipsCCInfo.analyzeCallOperands(Outs, IsVarArg,
                                  Subtarget->mipsSEUsesSoftFloat(),
-                                 Callee.getNode(), CLI.Args);
+                                 Callee.getNode(), CLI.getArgs());
 
   // Get a count of how many bytes are to be pushed on the stack.
   unsigned NextStackOffset = CCInfo.getNextStackOffset();
@@ -2438,8 +2437,7 @@ MipsTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
   // Transform all store nodes into one single node because all store
   // nodes are independent of each other.
   if (!MemOpChains.empty())
-    Chain = DAG.getNode(ISD::TokenFactor, DL, MVT::Other,
-                        &MemOpChains[0], MemOpChains.size());
+    Chain = DAG.getNode(ISD::TokenFactor, DL, MVT::Other, MemOpChains);
 
   // If the callee is a GlobalAddress/ExternalSymbol node (quite common, every
   // direct call is) turn it into a TargetGlobalAddress/TargetExternalSymbol
@@ -2493,9 +2491,9 @@ MipsTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
               CLI, Callee, Chain);
 
   if (IsTailCall)
-    return DAG.getNode(MipsISD::TailCall, DL, MVT::Other, &Ops[0], Ops.size());
+    return DAG.getNode(MipsISD::TailCall, DL, MVT::Other, Ops);
 
-  Chain = DAG.getNode(MipsISD::JmpLink, DL, NodeTys, &Ops[0], Ops.size());
+  Chain = DAG.getNode(MipsISD::JmpLink, DL, NodeTys, Ops);
   SDValue InFlag = Chain.getValue(1);
 
   // Create the CALLSEQ_END node.
@@ -2662,18 +2660,21 @@ MipsTargetLowering::LowerFormalArguments(SDValue Chain,
     }
   }
 
-  // The mips ABIs for returning structs by value requires that we copy
-  // the sret argument into $v0 for the return. Save the argument into
-  // a virtual register so that we can access it from the return points.
-  if (DAG.getMachineFunction().getFunction()->hasStructRetAttr()) {
-    unsigned Reg = MipsFI->getSRetReturnReg();
-    if (!Reg) {
-      Reg = MF.getRegInfo().createVirtualRegister(
-          getRegClassFor(isN64() ? MVT::i64 : MVT::i32));
-      MipsFI->setSRetReturnReg(Reg);
+  for (unsigned i = 0, e = ArgLocs.size(); i != e; ++i) {
+    // The mips ABIs for returning structs by value requires that we copy
+    // the sret argument into $v0 for the return. Save the argument into
+    // a virtual register so that we can access it from the return points.
+    if (Ins[i].Flags.isSRet()) {
+      unsigned Reg = MipsFI->getSRetReturnReg();
+      if (!Reg) {
+        Reg = MF.getRegInfo().createVirtualRegister(
+            getRegClassFor(isN64() ? MVT::i64 : MVT::i32));
+        MipsFI->setSRetReturnReg(Reg);
+      }
+      SDValue Copy = DAG.getCopyToReg(DAG.getEntryNode(), DL, Reg, InVals[i]);
+      Chain = DAG.getNode(ISD::TokenFactor, DL, MVT::Other, Copy, Chain);
+      break;
     }
-    SDValue Copy = DAG.getCopyToReg(DAG.getEntryNode(), DL, Reg, InVals[0]);
-    Chain = DAG.getNode(ISD::TokenFactor, DL, MVT::Other, Copy, Chain);
   }
 
   if (IsVarArg)
@@ -2683,8 +2684,7 @@ MipsTargetLowering::LowerFormalArguments(SDValue Chain,
   // the size of Ins and InVals. This only happens when on varg functions
   if (!OutChains.empty()) {
     OutChains.push_back(Chain);
-    Chain = DAG.getNode(ISD::TokenFactor, DL, MVT::Other,
-                        &OutChains[0], OutChains.size());
+    Chain = DAG.getNode(ISD::TokenFactor, DL, MVT::Other, OutChains);
   }
 
   return Chain;
@@ -2769,7 +2769,7 @@ MipsTargetLowering::LowerReturn(SDValue Chain,
     RetOps.push_back(Flag);
 
   // Return on Mips is always a "jr $ra"
-  return DAG.getNode(MipsISD::Ret, DL, MVT::Other, &RetOps[0], RetOps.size());
+  return DAG.getNode(MipsISD::Ret, DL, MVT::Other, RetOps);
 }
 
 //===----------------------------------------------------------------------===//
@@ -3270,7 +3270,7 @@ analyzeCallOperands(const SmallVectorImpl<ISD::OutputArg> &Args,
       dbgs() << "Call operand #" << I << " has unhandled type "
              << EVT(ArgVT).getEVTString();
 #endif
-      llvm_unreachable(0);
+      llvm_unreachable(nullptr);
     }
   }
 }
@@ -3302,7 +3302,7 @@ analyzeFormalArguments(const SmallVectorImpl<ISD::InputArg> &Args,
     dbgs() << "Formal Arg #" << I << " has unhandled type "
            << EVT(ArgVT).getEVTString();
 #endif
-    llvm_unreachable(0);
+    llvm_unreachable(nullptr);
   }
 }
 
@@ -3327,7 +3327,7 @@ analyzeReturn(const SmallVectorImpl<Ty> &RetVals, bool IsSoftFloat,
       dbgs() << "Call result #" << I << " has unhandled type "
              << EVT(VT).getEVTString() << '\n';
 #endif
-      llvm_unreachable(0);
+      llvm_unreachable(nullptr);
     }
   }
 }

@@ -1812,10 +1812,15 @@ protected:
     }
 
 public:
-    virtual bool runOnMachineFunction(MachineFunction &MF) {
+    bool runOnMachineFunction(MachineFunction &MF) override {
+      TM = static_cast<const PPCTargetMachine *>(&MF.getTarget());
+      // If we don't have VSX then go ahead and return without doing
+      // anything.
+      if (!TM->getSubtargetImpl()->hasVSX())
+        return false;
+
       LIS = &getAnalysis<LiveIntervals>();
 
-      TM = static_cast<const PPCTargetMachine *>(&MF.getTarget());
       TII = TM->getInstrInfo();
 
       bool Changed = false;
@@ -1832,7 +1837,7 @@ public:
       return Changed;
     }
 
-    virtual void getAnalysisUsage(AnalysisUsage &AU) const {
+    void getAnalysisUsage(AnalysisUsage &AU) const override {
       AU.addRequired<LiveIntervals>();
       AU.addPreserved<LiveIntervals>();
       AU.addRequired<SlotIndexes>();
@@ -1964,8 +1969,11 @@ protected:
     }
 
 public:
-    virtual bool runOnMachineFunction(MachineFunction &MF) {
+    bool runOnMachineFunction(MachineFunction &MF) override {
       TM = static_cast<const PPCTargetMachine *>(&MF.getTarget());
+      // If we don't have VSX on the subtarget, don't do anything.
+      if (!TM->getSubtargetImpl()->hasVSX())
+        return false;
       TII = TM->getInstrInfo();
 
       bool Changed = false;
@@ -1979,7 +1987,7 @@ public:
       return Changed;
     }
 
-    virtual void getAnalysisUsage(AnalysisUsage &AU) const {
+    void getAnalysisUsage(AnalysisUsage &AU) const override {
       MachineFunctionPass::getAnalysisUsage(AU);
     }
   };
@@ -2038,8 +2046,11 @@ protected:
     }
 
 public:
-    virtual bool runOnMachineFunction(MachineFunction &MF) {
+    bool runOnMachineFunction(MachineFunction &MF) override {
       TM = static_cast<const PPCTargetMachine *>(&MF.getTarget());
+      // If we don't have VSX don't bother doing anything here.
+      if (!TM->getSubtargetImpl()->hasVSX())
+        return false;
       TII = TM->getInstrInfo();
 
       bool Changed = false;
@@ -2053,7 +2064,7 @@ public:
       return Changed;
     }
 
-    virtual void getAnalysisUsage(AnalysisUsage &AU) const {
+    void getAnalysisUsage(AnalysisUsage &AU) const override {
       MachineFunctionPass::getAnalysisUsage(AU);
     }
   };
@@ -2195,7 +2206,7 @@ protected:
     }
 
 public:
-    virtual bool runOnMachineFunction(MachineFunction &MF) {
+    bool runOnMachineFunction(MachineFunction &MF) override {
       TM = static_cast<const PPCTargetMachine *>(&MF.getTarget());
       TII = TM->getInstrInfo();
 
@@ -2215,7 +2226,7 @@ public:
       return Changed;
     }
 
-    virtual void getAnalysisUsage(AnalysisUsage &AU) const {
+    void getAnalysisUsage(AnalysisUsage &AU) const override {
       MachineFunctionPass::getAnalysisUsage(AU);
     }
   };

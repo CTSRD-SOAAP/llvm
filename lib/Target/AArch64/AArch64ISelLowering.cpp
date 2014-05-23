@@ -15,6 +15,7 @@
 #include "AArch64.h"
 #include "AArch64ISelLowering.h"
 #include "AArch64MachineFunctionInfo.h"
+#include "AArch64Subtarget.h"
 #include "AArch64TargetMachine.h"
 #include "AArch64TargetObjectFile.h"
 #include "Utils/AArch64BaseInfo.h"
@@ -514,6 +515,13 @@ AArch64TargetLowering::AArch64TargetLowering(AArch64TargetMachine &TM)
                 > VT1.getVectorElementType().getSizeInBits())
           setTruncStoreAction(VT, VT1, Expand);
       }
+
+      setOperationAction(ISD::MULHS, VT, Expand);
+      setOperationAction(ISD::SMUL_LOHI, VT, Expand);
+      setOperationAction(ISD::MULHU, VT, Expand);
+      setOperationAction(ISD::UMUL_LOHI, VT, Expand);
+
+      setOperationAction(ISD::BSWAP, VT, Expand);
     }
 
     // There is no v1i64/v2i64 multiply, expand v1i64/v2i64 to GPR i64 multiply.
@@ -1294,8 +1302,7 @@ AArch64TargetLowering::SaveVarArgRegisters(CCState &CCInfo, SelectionDAG &DAG,
   FuncInfo->setVariadicGPRSize(GPRSaveSize);
 
   if (!MemOps.empty()) {
-    Chain = DAG.getNode(ISD::TokenFactor, DL, MVT::Other, &MemOps[0],
-                        MemOps.size());
+    Chain = DAG.getNode(ISD::TokenFactor, DL, MVT::Other, MemOps);
   }
 }
 
@@ -1488,8 +1495,7 @@ AArch64TargetLowering::LowerReturn(SDValue Chain,
   if (Flag.getNode())
     RetOps.push_back(Flag);
 
-  return DAG.getNode(AArch64ISD::Ret, dl, MVT::Other,
-                     &RetOps[0], RetOps.size());
+  return DAG.getNode(AArch64ISD::Ret, dl, MVT::Other, RetOps);
 }
 
 unsigned AArch64TargetLowering::getByValTypeAlignment(Type *Ty) const {
@@ -1680,8 +1686,7 @@ AArch64TargetLowering::LowerCall(CallLoweringInfo &CLI,
   // other. Combining them with this TokenFactor notes that fact for the rest of
   // the backend.
   if (!MemOpChains.empty())
-    Chain = DAG.getNode(ISD::TokenFactor, dl, MVT::Other,
-                        &MemOpChains[0], MemOpChains.size());
+    Chain = DAG.getNode(ISD::TokenFactor, dl, MVT::Other, MemOpChains);
 
   // Most of the rest of the instructions need to be glued together; we don't
   // want assignments to actual registers used by a call to be rearranged by a
@@ -1751,10 +1756,10 @@ AArch64TargetLowering::LowerCall(CallLoweringInfo &CLI,
   SDVTList NodeTys = DAG.getVTList(MVT::Other, MVT::Glue);
 
   if (IsTailCall) {
-    return DAG.getNode(AArch64ISD::TC_RETURN, dl, NodeTys, &Ops[0], Ops.size());
+    return DAG.getNode(AArch64ISD::TC_RETURN, dl, NodeTys, Ops);
   }
 
-  Chain = DAG.getNode(AArch64ISD::Call, dl, NodeTys, &Ops[0], Ops.size());
+  Chain = DAG.getNode(AArch64ISD::Call, dl, NodeTys, Ops);
   InFlag = Chain.getValue(1);
 
   // Now we can reclaim the stack, just as well do it before working out where
@@ -1966,8 +1971,7 @@ SDValue AArch64TargetLowering::addTokenForArgument(SDValue Chain,
         }
 
    // Build a tokenfactor for all the chains.
-   return DAG.getNode(ISD::TokenFactor, SDLoc(Chain), MVT::Other,
-                      &ArgChains[0], ArgChains.size());
+   return DAG.getNode(ISD::TokenFactor, SDLoc(Chain), MVT::Other, ArgChains);
 }
 
 static A64CC::CondCodes IntCCToA64CC(ISD::CondCode CC) {
@@ -2227,11 +2231,11 @@ AArch64TargetLowering::LowerF128ToCall(SDValue Op, SelectionDAG &DAG,
   if (isTailCall)
     InChain = TCChain;
 
-  TargetLowering::
-  CallLoweringInfo CLI(InChain, RetTy, false, false, false, false,
-                    0, getLibcallCallingConv(Call), isTailCall,
-                    /*doesNotReturn=*/false, /*isReturnValueUsed=*/true,
-                    Callee, Args, DAG, SDLoc(Op));
+  TargetLowering::CallLoweringInfo CLI(DAG);
+  CLI.setDebugLoc(SDLoc(Op)).setChain(InChain)
+    .setCallee(getLibcallCallingConv(Call), RetTy, Callee, &Args, 0)
+    .setTailCall(isTailCall);
+
   std::pair<SDValue, SDValue> CallInfo = LowerCallTo(CLI);
 
   if (!CallInfo.second.getNode())
@@ -2403,6 +2407,18 @@ SDValue AArch64TargetLowering::LowerFRAMEADDR(SDValue Op, SelectionDAG &DAG)
                             MachinePointerInfo(),
                             false, false, false, 0);
   return FrameAddr;
+}
+
+// FIXME? Maybe this could be a TableGen attribute on some registers and
+// this table could be generated automatically from RegInfo.
+unsigned AArch64TargetLowering::getRegisterByName(const char* RegName,
+                                                  EVT VT) const {
+  unsigned Reg = StringSwitch<unsigned>(RegName)
+                       .Case("sp", AArch64::XSP)
+                       .Default(0);
+  if (Reg)
+    return Reg;
+  report_fatal_error("Invalid register name global variable");
 }
 
 SDValue
@@ -2592,8 +2608,7 @@ SDValue AArch64TargetLowering::LowerTLSDescCall(SDValue SymAddr,
   Ops.push_back(Glue);
 
   SDVTList NodeTys = DAG.getVTList(MVT::Other, MVT::Glue);
-  Chain = DAG.getNode(AArch64ISD::TLSDESCCALL, DL, NodeTys, &Ops[0],
-                      Ops.size());
+  Chain = DAG.getNode(AArch64ISD::TLSDESCCALL, DL, NodeTys, Ops);
   Glue = Chain.getValue(1);
 
   // After the call, the offset from TPIDR_EL0 is in X0, copy it out and pass it
@@ -3286,8 +3301,7 @@ AArch64TargetLowering::LowerVASTART(SDValue Op, SelectionDAG &DAG) const {
                                 VROffsAddr, MachinePointerInfo(SV, 28),
                                 false, false, 0));
 
-  return DAG.getNode(ISD::TokenFactor, DL, MVT::Other, &MemOps[0],
-                     MemOps.size());
+  return DAG.getNode(ISD::TokenFactor, DL, MVT::Other, MemOps);
 }
 
 SDValue
@@ -4195,8 +4209,7 @@ static SDValue CombineBaseUpdate(SDNode *N,
     }
     MemIntrinsicSDNode *MemInt = cast<MemIntrinsicSDNode>(N);
     SDValue UpdN = DAG.getMemIntrinsicNode(NewOpc, SDLoc(N), SDTys,
-                                           Ops.data(), Ops.size(),
-                                           MemInt->getMemoryVT(),
+                                           Ops, MemInt->getMemoryVT(),
                                            MemInt->getMemOperand());
 
     // Update the uses.
@@ -4264,7 +4277,7 @@ static SDValue CombineVLDDUP(SDNode *N, TargetLowering::DAGCombinerInfo &DCI) {
   SDVTList SDTys = DAG.getVTList(ArrayRef<EVT>(Tys, NumVecs + 1));
   SDValue Ops[] = { VLD->getOperand(0), VLD->getOperand(2) };
   MemIntrinsicSDNode *VLDMemInt = cast<MemIntrinsicSDNode>(VLD);
-  SDValue VLDDup = DAG.getMemIntrinsicNode(NewOpc, SDLoc(VLD), SDTys, Ops, 2,
+  SDValue VLDDup = DAG.getMemIntrinsicNode(NewOpc, SDLoc(VLD), SDTys, Ops,
                                            VLDMemInt->getMemoryVT(),
                                            VLDMemInt->getMemOperand());
 
@@ -4593,7 +4606,7 @@ SDValue AArch64TargetLowering::LowerShiftRightParts(SDValue Op,
                            TrueVal, FalseVal, A64cc);
 
   SDValue Ops[2] = { Lo, Hi };
-  return DAG.getMergeValues(Ops, 2, dl);
+  return DAG.getMergeValues(Ops, dl);
 }
 
 /// LowerShiftLeftParts - Lower SHL_PARTS, which returns two
@@ -4632,7 +4645,7 @@ SDValue AArch64TargetLowering::LowerShiftLeftParts(SDValue Op,
                            Tmp3, FalseVal, A64cc);
 
   SDValue Ops[2] = { Lo, Hi };
-  return DAG.getMergeValues(Ops, 2, dl);
+  return DAG.getMergeValues(Ops, dl);
 }
 
 // If this is a case we can't handle, return null and let the default
@@ -4822,7 +4835,7 @@ AArch64TargetLowering::LowerBUILD_VECTOR(SDValue Op, SelectionDAG &DAG,
           Ops.push_back(N);
           Ops.push_back(Op.getOperand(I));
           Ops.push_back(DAG.getConstant(I, MVT::i64));
-          N = DAG.getNode(ISD::INSERT_VECTOR_ELT, DL, VT, &Ops[0], 3);
+          N = DAG.getNode(ISD::INSERT_VECTOR_ELT, DL, VT, Ops);
         }
       }
       return N;
