@@ -26,9 +26,9 @@
 #include "llvm/Support/Signals.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/SystemUtils.h"
-#include "llvm/Support/system_error.h"
 #include "llvm/Support/ToolOutputFile.h"
 #include <memory>
+#include <system_error>
 using namespace llvm;
 using namespace llvm::sys::fs;
 
@@ -93,11 +93,11 @@ int main(int argc, char **argv) {
 
     // fill InputFilenames with the name of the files in the argument directory,
     // thus allowing the code below to work with no changes
-    error_code ec; // output parameter to store error codes
+    std::error_code ec; // output parameter to store error codes
     std::string dir = InputFilenames[0];
     InputFilenames.clear();
     for (directory_iterator I = directory_iterator(dir, ec), E; I != E; I.increment(ec)) {
-      if (ec != ec.success()) {
+      if (ec) {
         errs() << "Error iterating directory: " << ec.message() << "\n";
         return -1;
       }
