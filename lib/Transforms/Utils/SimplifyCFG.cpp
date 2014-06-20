@@ -227,6 +227,9 @@ static unsigned ComputeSpeculationCost(const User *I) {
   case Instruction::Trunc:
   case Instruction::ZExt:
   case Instruction::SExt:
+  case Instruction::BitCast:
+  case Instruction::ExtractElement:
+  case Instruction::InsertElement:
     return 1; // These are all cheap.
 
   case Instruction::Call:
@@ -3310,6 +3313,10 @@ static bool ForwardSwitchConditionToPHI(SwitchInst *SI) {
 static bool ValidLookupTableConstant(Constant *C) {
   if (ConstantExpr *CE = dyn_cast<ConstantExpr>(C))
     return CE->isGEPWithNoNotionalOverIndexing();
+  if (C->isThreadDependent())
+    return false;
+  if (C->isDLLImportDependent())
+    return false;
 
   return isa<ConstantFP>(C) ||
       isa<ConstantInt>(C) ||

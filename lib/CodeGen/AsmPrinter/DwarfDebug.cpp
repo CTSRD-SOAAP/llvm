@@ -98,10 +98,6 @@ DwarfPubSections("generate-dwarf-pub-sections", cl::Hidden,
                             clEnumVal(Disable, "Disabled"), clEnumValEnd),
                  cl::init(Default));
 
-static cl::opt<unsigned>
-DwarfVersionNumber("dwarf-version", cl::Hidden,
-                   cl::desc("Generate DWARF for dwarf version."), cl::init(0));
-
 static const char *const DWARFGroupName = "DWARF Emission";
 static const char *const DbgTimerName = "DWARF Debug Writer";
 
@@ -209,8 +205,11 @@ DwarfDebug::DwarfDebug(AsmPrinter *A, Module *M)
   else
     HasDwarfPubSections = DwarfPubSections == Enable;
 
+  unsigned DwarfVersionNumber = Asm->TM.Options.MCOptions.DwarfVersion;
   DwarfVersion = DwarfVersionNumber ? DwarfVersionNumber
                                     : MMI->getModule()->getDwarfVersion();
+
+  Asm->OutStreamer.getContext().setDwarfVersion(DwarfVersion);
 
   {
     NamedRegionTimer T(DbgTimerName, DWARFGroupName, TimePassesIsEnabled);
@@ -314,19 +313,7 @@ bool DwarfDebug::isSubprogramContext(const MDNode *Context) {
 // scope then create and insert DIEs for these variables.
 DIE &DwarfDebug::updateSubprogramScopeDIE(DwarfCompileUnit &SPCU,
                                           DISubprogram SP) {
-  DIE *SPDie = SPCU.getDIE(SP);
-
-  assert(SPDie && "Unable to find subprogram DIE!");
-
-  // If we're updating an abstract DIE, then we will be adding the children and
-  // object pointer later on. But what we don't want to do is process the
-  // concrete DIE twice.
-  if (DIE *AbsSPDIE = AbstractSPDies.lookup(SP)) {
-    assert(SPDie == AbsSPDIE);
-    // Pick up abstract subprogram DIE.
-    SPDie = &SPCU.createAndAddDIE(dwarf::DW_TAG_subprogram, SPCU.getUnitDie());
-    SPCU.addDIEEntry(*SPDie, dwarf::DW_AT_abstract_origin, *AbsSPDIE);
-  }
+  DIE *SPDie = SPCU.getOrCreateSubprogramDIE(SP);
 
   attachLowHighPC(SPCU, *SPDie, FunctionBeginSym, FunctionEndSym);
 
@@ -433,7 +420,7 @@ DwarfDebug::constructInlinedScopeDIE(DwarfCompileUnit &TheCU,
   DISubprogram InlinedSP = getDISubprogram(DS);
   // Find the subprogram's DwarfCompileUnit in the SPMap in case the subprogram
   // was inlined from another compile unit.
-  DIE *OriginDIE = SPMap[InlinedSP]->getDIE(InlinedSP);
+  DIE *OriginDIE = AbstractSPDies[InlinedSP];
   assert(OriginDIE && "Unable to find original DIE for an inlined subprogram.");
 
   auto ScopeDIE = make_unique<DIE>(dwarf::DW_TAG_inlined_subroutine);
@@ -460,12 +447,7 @@ static std::unique_ptr<DIE> constructVariableDIE(DwarfCompileUnit &TheCU,
                                                  DbgVariable &DV,
                                                  const LexicalScope &Scope,
                                                  DIE *&ObjectPointer) {
-  AbstractOrInlined AOI = AOI_None;
-  if (Scope.isAbstractScope())
-    AOI = AOI_Abstract;
-  else if (Scope.getInlinedAt())
-    AOI = AOI_Inlined;
-  auto Var = TheCU.constructVariableDIE(DV, AOI);
+  auto Var = TheCU.constructVariableDIE(DV, Scope.isAbstractScope());
   if (DV.isObjectPointer())
     ObjectPointer = Var.get();
   return Var;
@@ -523,15 +505,33 @@ void DwarfDebug::constructAbstractSubprogramScopeDIE(DwarfCompileUnit &TheCU,
 
   DISubprogram SP(Scope->getScopeNode());
 
-  if (!ProcessedSPNodes.insert(SP))
+  ProcessedSPNodes.insert(SP);
+
+  DIE *&AbsDef = AbstractSPDies[SP];
+  if (AbsDef)
     return;
 
   // Find the subprogram's DwarfCompileUnit in the SPMap in case the subprogram
   // was inlined from another compile unit.
   DwarfCompileUnit &SPCU = *SPMap[SP];
-  DIE *AbsDef = SPCU.getDIE(SP);
-  assert(AbsDef);
-  AbstractSPDies.insert(std::make_pair(SP, AbsDef));
+  DIE *ContextDIE;
+
+  // Some of this is duplicated from DwarfUnit::getOrCreateSubprogramDIE, with
+  // the important distinction that the DIDescriptor is not associated with the
+  // DIE (since the DIDescriptor will be associated with the concrete DIE, if
+  // any). It could be refactored to some common utility function.
+  if (DISubprogram SPDecl = SP.getFunctionDeclaration()) {
+    ContextDIE = &SPCU.getUnitDie();
+    SPCU.getOrCreateSubprogramDIE(SPDecl);
+  } else
+    ContextDIE = SPCU.getOrCreateContextDIE(resolve(SP.getContext()));
+
+  // Passing null as the associated DIDescriptor because the abstract definition
+  // shouldn't be found by lookup.
+  AbsDef = &SPCU.createAndAddDIE(dwarf::DW_TAG_subprogram, *ContextDIE,
+                                 DIDescriptor());
+  SPCU.applySubprogramAttributesToDefinition(SP, *AbsDef);
+
   SPCU.addUInt(*AbsDef, dwarf::DW_AT_inline, None, dwarf::DW_INL_inlined);
   createAndAddScopeChildren(SPCU, Scope, *AbsDef);
 }
@@ -681,28 +681,6 @@ DwarfCompileUnit &DwarfDebug::constructDwarfCompileUnit(DICompileUnit DIUnit) {
   return NewCU;
 }
 
-// Construct subprogram DIE.
-void DwarfDebug::constructSubprogramDIE(DwarfCompileUnit &TheCU,
-                                        const MDNode *N) {
-  // FIXME: We should only call this routine once, however, during LTO if a
-  // program is defined in multiple CUs we could end up calling it out of
-  // beginModule as we walk the CUs.
-
-  DwarfCompileUnit *&CURef = SPMap[N];
-  if (CURef)
-    return;
-  CURef = &TheCU;
-
-  DISubprogram SP(N);
-  assert(SP.isSubprogram());
-  assert(SP.isDefinition());
-
-  DIE &SubprogramDie = *TheCU.getOrCreateSubprogramDIE(SP);
-
-  // Expose as a global name.
-  TheCU.addGlobalName(SP.getName(), SubprogramDie, resolve(SP.getContext()));
-}
-
 void DwarfDebug::constructImportedEntityDIE(DwarfCompileUnit &TheCU,
                                             const MDNode *N) {
   DIImportedEntity Module(N);
@@ -779,7 +757,7 @@ void DwarfDebug::beginModule() {
       CU.createGlobalVariableDIE(DIGlobalVariable(GVs.getElement(i)));
     DIArray SPs = CUNode.getSubprograms();
     for (unsigned i = 0, e = SPs.getNumElements(); i != e; ++i)
-      constructSubprogramDIE(CU, SPs.getElement(i));
+      SPMap.insert(std::make_pair(SPs.getElement(i), &CU));
     DIArray EnumTypes = CUNode.getEnumTypes();
     for (unsigned i = 0, e = EnumTypes.getNumElements(); i != e; ++i)
       CU.getOrCreateTypeDIE(EnumTypes.getElement(i));
@@ -803,6 +781,60 @@ void DwarfDebug::beginModule() {
   // Prime section data.
   SectionMap[Asm->getObjFileLowering().getTextSection()];
 }
+
+void DwarfDebug::finishVariableDefinitions() {
+  for (const auto &Var : ConcreteVariables) {
+    DIE *VariableDie = Var->getDIE();
+    // FIXME: There shouldn't be any variables without DIEs.
+    if (!VariableDie)
+      continue;
+    // FIXME: Consider the time-space tradeoff of just storing the unit pointer
+    // in the ConcreteVariables list, rather than looking it up again here.
+    // DIE::getUnit isn't simple - it walks parent pointers, etc.
+    DwarfCompileUnit *Unit = lookupUnit(VariableDie->getUnit());
+    assert(Unit);
+    DbgVariable *AbsVar = getExistingAbstractVariable(Var->getVariable());
+    if (AbsVar && AbsVar->getDIE()) {
+      Unit->addDIEEntry(*VariableDie, dwarf::DW_AT_abstract_origin,
+                        *AbsVar->getDIE());
+    } else
+      Unit->applyVariableAttributes(*Var, *VariableDie);
+  }
+}
+
+void DwarfDebug::finishSubprogramDefinitions() {
+  const Module *M = MMI->getModule();
+
+  NamedMDNode *CU_Nodes = M->getNamedMetadata("llvm.dbg.cu");
+  for (MDNode *N : CU_Nodes->operands()) {
+    DICompileUnit TheCU(N);
+    // Construct subprogram DIE and add variables DIEs.
+    DwarfCompileUnit *SPCU =
+        static_cast<DwarfCompileUnit *>(CUMap.lookup(TheCU));
+    DIArray Subprograms = TheCU.getSubprograms();
+    for (unsigned i = 0, e = Subprograms.getNumElements(); i != e; ++i) {
+      DISubprogram SP(Subprograms.getElement(i));
+      // Perhaps the subprogram is in another CU (such as due to comdat
+      // folding, etc), in which case ignore it here.
+      if (SPMap[SP] != SPCU)
+        continue;
+      DIE *D = SPCU->getDIE(SP);
+      if (DIE *AbsSPDIE = AbstractSPDies.lookup(SP)) {
+        if (D)
+          // If this subprogram has an abstract definition, reference that
+          SPCU->addDIEEntry(*D, dwarf::DW_AT_abstract_origin, *AbsSPDIE);
+      } else {
+        if (!D)
+          // Lazily construct the subprogram if we didn't see either concrete or
+          // inlined versions during codegen.
+          D = SPCU->getOrCreateSubprogramDIE(SP);
+        // And attach the attributes
+        SPCU->applySubprogramAttributesToDefinition(SP, *D);
+      }
+    }
+  }
+}
+
 
 // Collect info for variables that were optimized out.
 void DwarfDebug::collectDeadVariables() {
@@ -828,13 +860,17 @@ void DwarfDebug::collectDeadVariables() {
         if (Variables.getNumElements() == 0)
           continue;
 
-        DIE *SPDIE = SPCU->getDIE(SP);
+        DIE *SPDIE = AbstractSPDies.lookup(SP);
+        if (!SPDIE)
+          SPDIE = SPCU->getDIE(SP);
         assert(SPDIE);
         for (unsigned vi = 0, ve = Variables.getNumElements(); vi != ve; ++vi) {
           DIVariable DV(Variables.getElement(vi));
           assert(DV.isVariable());
-          DbgVariable NewVar(DV, nullptr, this);
-          SPDIE->addChild(SPCU->constructVariableDIE(NewVar));
+          DbgVariable NewVar(DV, this);
+          auto VariableDie = SPCU->constructVariableDIE(NewVar);
+          SPCU->applyVariableAttributes(NewVar, *VariableDie);
+          SPDIE->addChild(std::move(VariableDie));
         }
       }
     }
@@ -842,6 +878,10 @@ void DwarfDebug::collectDeadVariables() {
 }
 
 void DwarfDebug::finalizeModuleInfo() {
+  finishSubprogramDefinitions();
+
+  finishVariableDefinitions();
+
   // Collect info for variables that were optimized out.
   collectDeadVariables();
 
@@ -998,9 +1038,9 @@ void DwarfDebug::endModule() {
     emitDebugInfoDWO();
     emitDebugAbbrevDWO();
     emitDebugLineDWO();
+    emitDebugLocDWO();
     // Emit DWO addresses.
     AddrPool.emit(*Asm, Asm->getObjFileLowering().getDwarfAddrSection());
-    emitDebugLocDWO();
   } else
     // Emit info into a debug loc section.
     emitDebugLoc();
@@ -1028,27 +1068,51 @@ void DwarfDebug::endModule() {
 }
 
 // Find abstract variable, if any, associated with Var.
-DbgVariable *DwarfDebug::findAbstractVariable(DIVariable &DV,
-                                              DebugLoc ScopeLoc) {
-  return findAbstractVariable(DV, ScopeLoc.getScope(DV->getContext()));
-}
-
-DbgVariable *DwarfDebug::findAbstractVariable(DIVariable &DV,
-                                              const MDNode *ScopeNode) {
+DbgVariable *DwarfDebug::getExistingAbstractVariable(const DIVariable &DV,
+                                                     DIVariable &Cleansed) {
   LLVMContext &Ctx = DV->getContext();
   // More then one inlined variable corresponds to one abstract variable.
-  DIVariable Var = cleanseInlinedVariable(DV, Ctx);
-  auto I = AbstractVariables.find(Var);
+  // FIXME: This duplication of variables when inlining should probably be
+  // removed. It's done to allow each DIVariable to describe its location
+  // because the DebugLoc on the dbg.value/declare isn't accurate. We should
+  // make it accurate then remove this duplication/cleansing stuff.
+  Cleansed = cleanseInlinedVariable(DV, Ctx);
+  auto I = AbstractVariables.find(Cleansed);
   if (I != AbstractVariables.end())
     return I->second.get();
+  return nullptr;
+}
 
-  LexicalScope *Scope = LScopes.findAbstractScope(ScopeNode);
-  if (!Scope)
-    return nullptr;
+DbgVariable *DwarfDebug::getExistingAbstractVariable(const DIVariable &DV) {
+  DIVariable Cleansed;
+  return getExistingAbstractVariable(DV, Cleansed);
+}
 
-  auto AbsDbgVariable = make_unique<DbgVariable>(Var, nullptr, this);
+void DwarfDebug::createAbstractVariable(const DIVariable &Var,
+                                        LexicalScope *Scope) {
+  auto AbsDbgVariable = make_unique<DbgVariable>(Var, this);
   addScopeVariable(Scope, AbsDbgVariable.get());
-  return (AbstractVariables[Var] = std::move(AbsDbgVariable)).get();
+  AbstractVariables[Var] = std::move(AbsDbgVariable);
+}
+
+void DwarfDebug::ensureAbstractVariableIsCreated(const DIVariable &DV,
+                                                 const MDNode *ScopeNode) {
+  DIVariable Cleansed = DV;
+  if (getExistingAbstractVariable(DV, Cleansed))
+    return;
+
+  createAbstractVariable(Cleansed, LScopes.getOrCreateAbstractScope(ScopeNode));
+}
+
+void
+DwarfDebug::ensureAbstractVariableIsCreatedIfScoped(const DIVariable &DV,
+                                                    const MDNode *ScopeNode) {
+  DIVariable Cleansed = DV;
+  if (getExistingAbstractVariable(DV, Cleansed))
+    return;
+
+  if (LexicalScope *Scope = LScopes.findAbstractScope(ScopeNode))
+    createAbstractVariable(Cleansed, Scope);
 }
 
 // If Var is a current function argument then add it to CurrentFnArguments list.
@@ -1087,11 +1151,11 @@ void DwarfDebug::collectVariableInfoFromMMITable(
     if (!Scope)
       continue;
 
-    DbgVariable *AbsDbgVariable = findAbstractVariable(DV, VI.Loc);
-    DbgVariable *RegVar = new DbgVariable(DV, AbsDbgVariable, this);
+    ensureAbstractVariableIsCreatedIfScoped(DV, Scope->getScopeNode());
+    ConcreteVariables.push_back(make_unique<DbgVariable>(DV, this));
+    DbgVariable *RegVar = ConcreteVariables.back().get();
     RegVar->setFrameIndex(VI.Slot);
-    if (!addCurrentFnArgument(RegVar, Scope))
-      addScopeVariable(Scope, RegVar);
+    addScopeVariable(Scope, RegVar);
   }
 }
 
@@ -1134,12 +1198,10 @@ DwarfDebug::collectVariableInfo(SmallPtrSet<const MDNode *, 16> &Processed) {
     if (Processed.count(DV))
       continue;
 
-    // History contains relevant DBG_VALUE instructions for DV and instructions
-    // clobbering it.
-    const SmallVectorImpl<const MachineInstr *> &History = I.second;
-    if (History.empty())
+    // Instruction ranges, specifying where DV is accessible.
+    const auto &Ranges = I.second;
+    if (Ranges.empty())
       continue;
-    const MachineInstr *MInsn = History.front();
 
     LexicalScope *Scope = nullptr;
     if (DV.getTag() == dwarf::DW_TAG_arg_variable &&
@@ -1156,20 +1218,16 @@ DwarfDebug::collectVariableInfo(SmallPtrSet<const MDNode *, 16> &Processed) {
       continue;
 
     Processed.insert(DV);
+    const MachineInstr *MInsn = Ranges.front().first;
     assert(MInsn->isDebugValue() && "History must begin with debug value");
-    DbgVariable *AbsVar = findAbstractVariable(DV, MInsn->getDebugLoc());
-    DbgVariable *RegVar = new DbgVariable(DV, AbsVar, this);
-    if (!addCurrentFnArgument(RegVar, Scope))
-      addScopeVariable(Scope, RegVar);
-    if (AbsVar)
-      AbsVar->setMInsn(MInsn);
+    ensureAbstractVariableIsCreatedIfScoped(DV, Scope->getScopeNode());
+    ConcreteVariables.push_back(make_unique<DbgVariable>(MInsn, this));
+    DbgVariable *RegVar = ConcreteVariables.back().get();
+    addScopeVariable(Scope, RegVar);
 
-    // Simplify ranges that are fully coalesced.
-    if (History.size() <= 1 ||
-        (History.size() == 2 && MInsn->isIdenticalTo(History.back()))) {
-      RegVar->setMInsn(MInsn);
+    // Check if the first DBG_VALUE is valid for the rest of the function.
+    if (Ranges.size() == 1 && Ranges.front().second == nullptr)
       continue;
-    }
 
     // Handle multiple DBG_VALUE instructions describing one variable.
     RegVar->setDotDebugLocOffset(DotDebugLocEntries.size());
@@ -1179,42 +1237,34 @@ DwarfDebug::collectVariableInfo(SmallPtrSet<const MDNode *, 16> &Processed) {
     LocList.Label =
         Asm->GetTempSymbol("debug_loc", DotDebugLocEntries.size() - 1);
     SmallVector<DebugLocEntry, 4> &DebugLoc = LocList.List;
-    for (SmallVectorImpl<const MachineInstr *>::const_iterator
-             HI = History.begin(),
-             HE = History.end();
-         HI != HE; ++HI) {
-      const MachineInstr *Begin = *HI;
+    for (auto I = Ranges.begin(), E = Ranges.end(); I != E; ++I) {
+      const MachineInstr *Begin = I->first;
+      const MachineInstr *End = I->second;
       assert(Begin->isDebugValue() && "Invalid History entry");
 
-      // Check if DBG_VALUE is truncating a range.
+      // Check if a variable is unaccessible in this range.
       if (Begin->getNumOperands() > 1 && Begin->getOperand(0).isReg() &&
           !Begin->getOperand(0).getReg())
         continue;
+      DEBUG(dbgs() << "DotDebugLoc Pair:\n" << "\t" << *Begin);
+      if (End != nullptr)
+        DEBUG(dbgs() << "\t" << *End);
+      else
+        DEBUG(dbgs() << "\tNULL\n");
 
-      // Compute the range for a register location.
-      const MCSymbol *FLabel = getLabelBeforeInsn(Begin);
-      const MCSymbol *SLabel = nullptr;
+      const MCSymbol *StartLabel = getLabelBeforeInsn(Begin);
+      assert(StartLabel && "Forgot label before DBG_VALUE starting a range!");
 
-      if (HI + 1 == HE)
-        // If Begin is the last instruction in History then its value is valid
-        // until the end of the function.
-        SLabel = FunctionEndSym;
-      else {
-        const MachineInstr *End = HI[1];
-        DEBUG(dbgs() << "DotDebugLoc Pair:\n"
-                     << "\t" << *Begin << "\t" << *End << "\n");
-        if (End->isDebugValue() && End->getDebugVariable() == DV)
-          SLabel = getLabelBeforeInsn(End);
-        else {
-          // End is clobbering the range.
-          SLabel = getLabelAfterInsn(End);
-          assert(SLabel && "Forgot label after clobber instruction");
-          ++HI;
-        }
-      }
+      const MCSymbol *EndLabel;
+      if (End != nullptr)
+        EndLabel = getLabelAfterInsn(End);
+      else if (std::next(I) == Ranges.end())
+        EndLabel = FunctionEndSym;
+      else
+        EndLabel = getLabelBeforeInsn(std::next(I)->first);
+      assert(EndLabel && "Forgot label after instruction ending a range!");
 
-      // The value is valid until the next DBG_VALUE or clobber.
-      DebugLocEntry Loc(FLabel, SLabel, getDebugLocValue(Begin), TheCU);
+      DebugLocEntry Loc(StartLabel, EndLabel, getDebugLocValue(Begin), TheCU);
       if (DebugLoc.empty() || !DebugLoc.back().Merge(Loc))
         DebugLoc.push_back(std::move(Loc));
     }
@@ -1227,11 +1277,11 @@ DwarfDebug::collectVariableInfo(SmallPtrSet<const MDNode *, 16> &Processed) {
     assert(DV.isVariable());
     if (!Processed.insert(DV))
       continue;
-    if (LexicalScope *Scope = LScopes.findLexicalScope(DV.getContext()))
-      addScopeVariable(
-          Scope,
-          new DbgVariable(DV, findAbstractVariable(DV, Scope->getScopeNode()),
-                          this));
+    if (LexicalScope *Scope = LScopes.findLexicalScope(DV.getContext())) {
+      ensureAbstractVariableIsCreatedIfScoped(DV, Scope->getScopeNode());
+      ConcreteVariables.push_back(make_unique<DbgVariable>(DV, this));
+      addScopeVariable(Scope, ConcreteVariables.back().get());
+    }
   }
 }
 
@@ -1345,6 +1395,17 @@ void DwarfDebug::identifyScopeMarkers() {
   }
 }
 
+static DebugLoc findPrologueEndLoc(const MachineFunction *MF) {
+  // First known non-DBG_VALUE and non-frame setup location marks
+  // the beginning of the function body.
+  for (const auto &MBB : *MF)
+    for (const auto &MI : MBB)
+      if (!MI.isDebugValue() && !MI.getFlag(MachineInstr::FrameSetup) &&
+          !MI.getDebugLoc().isUnknown())
+        return MI.getDebugLoc();
+  return DebugLoc();
+}
+
 // Gather pre-function debug information.  Assumes being called immediately
 // after the function entry point has been emitted.
 void DwarfDebug::beginFunction(const MachineFunction *MF) {
@@ -1382,34 +1443,13 @@ void DwarfDebug::beginFunction(const MachineFunction *MF) {
   // Assumes in correct section after the entry point.
   Asm->OutStreamer.EmitLabel(FunctionBeginSym);
 
-  // Collect user variables, find the end of the prologue.
-  for (const auto &MBB : *MF) {
-    for (const auto &MI : MBB) {
-      if (MI.isDebugValue()) {
-        assert(MI.getNumOperands() > 1 && "Invalid machine instruction!");
-        // Keep track of user variables in order of appearance. Create the
-        // empty history for each variable so that the order of keys in
-        // DbgValues is correct. Actual history will be populated in
-        // calculateDbgValueHistory() function.
-        const MDNode *Var = MI.getDebugVariable();
-        DbgValues.insert(
-            std::make_pair(Var, SmallVector<const MachineInstr *, 4>()));
-      } else if (!MI.getFlag(MachineInstr::FrameSetup) &&
-                 PrologEndLoc.isUnknown() && !MI.getDebugLoc().isUnknown()) {
-        // First known non-DBG_VALUE and non-frame setup location marks
-        // the beginning of the function body.
-        PrologEndLoc = MI.getDebugLoc();
-      }
-    }
-  }
-
   // Calculate history for local variables.
   calculateDbgValueHistory(MF, Asm->TM.getRegisterInfo(), DbgValues);
 
   // Request labels for the full history.
-  for (auto &I : DbgValues) {
-    const SmallVectorImpl<const MachineInstr *> &History = I.second;
-    if (History.empty())
+  for (const auto &I : DbgValues) {
+    const auto &Ranges = I.second;
+    if (Ranges.empty())
       continue;
 
     // The first mention of a function argument gets the FunctionBeginSym
@@ -1417,13 +1457,12 @@ void DwarfDebug::beginFunction(const MachineFunction *MF) {
     DIVariable DV(I.first);
     if (DV.isVariable() && DV.getTag() == dwarf::DW_TAG_arg_variable &&
         getDISubprogram(DV.getContext()).describes(MF->getFunction()))
-      LabelsBeforeInsn[History.front()] = FunctionBeginSym;
+      LabelsBeforeInsn[Ranges.front().first] = FunctionBeginSym;
 
-    for (const MachineInstr *MI : History) {
-      if (MI->isDebugValue() && MI->getDebugVariable() == DV)
-        requestLabelBeforeInsn(MI);
-      else
-        requestLabelAfterInsn(MI);
+    for (const auto &Range : Ranges) {
+      requestLabelBeforeInsn(Range.first);
+      if (Range.second)
+        requestLabelAfterInsn(Range.second);
     }
   }
 
@@ -1431,6 +1470,7 @@ void DwarfDebug::beginFunction(const MachineFunction *MF) {
   PrevLabel = FunctionBeginSym;
 
   // Record beginning of function.
+  PrologEndLoc = findPrologueEndLoc(MF);
   if (!PrologEndLoc.isUnknown()) {
     DebugLoc FnStartDL =
         PrologEndLoc.getFnDebugLoc(MF->getFunction()->getContext());
@@ -1444,6 +1484,8 @@ void DwarfDebug::beginFunction(const MachineFunction *MF) {
 }
 
 void DwarfDebug::addScopeVariable(LexicalScope *LS, DbgVariable *Var) {
+  if (addCurrentFnArgument(Var, LS))
+    return;
   SmallVectorImpl<DbgVariable *> &Vars = ScopeVariables[LS];
   DIVariable DV = Var->getVariable();
   // Variables with positive arg numbers are parameters.
@@ -1521,7 +1563,7 @@ void DwarfDebug::endFunction(const MachineFunction *MF) {
       assert(DV && DV.isVariable());
       if (!ProcessedVars.insert(DV))
         continue;
-      findAbstractVariable(DV, DV.getContext());
+      ensureAbstractVariableIsCreated(DV, DV.getContext());
     }
     constructAbstractSubprogramScopeDIE(TheCU, AScope);
   }
@@ -1540,12 +1582,8 @@ void DwarfDebug::endFunction(const MachineFunction *MF) {
   // Ownership of DbgVariables is a bit subtle - ScopeVariables owns all the
   // DbgVariables except those that are also in AbstractVariables (since they
   // can be used cross-function)
-  for (const auto &I : ScopeVariables)
-    for (const auto *Var : I.second)
-      if (!AbstractVariables.count(Var->getVariable()) || Var->getAbstractVariable())
-        delete Var;
   ScopeVariables.clear();
-  DeleteContainerPointers(CurrentFnArguments);
+  CurrentFnArguments.clear();
   DbgValues.clear();
   LabelsBeforeInsn.clear();
   LabelsAfterInsn.clear();
@@ -2371,6 +2409,8 @@ void DwarfDebug::addDwarfTypeUnitType(DwarfCompileUnit &CU,
   if (!useSplitDwarf())
     CU.applyStmtList(UnitDie);
 
+  // FIXME: Skip using COMDAT groups for type units in the .dwo file once tools
+  // such as DWP ( http://gcc.gnu.org/wiki/DebugFissionDWP ) can cope with it.
   NewTU.initSection(
       useSplitDwarf()
           ? Asm->getObjFileLowering().getDwarfTypesDWOSection(Signature)

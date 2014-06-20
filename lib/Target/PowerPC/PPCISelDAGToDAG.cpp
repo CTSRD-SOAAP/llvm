@@ -1454,10 +1454,10 @@ SDNode *PPCDAGToDAGISel::Select(SDNode *N) {
     if (CModel != CodeModel::Medium && CModel != CodeModel::Large)
       break;
 
-    // The first source operand is a TargetGlobalAddress or a
-    // TargetJumpTable.  If it is an externally defined symbol, a symbol
-    // with common linkage, a function address, or a jump table address,
-    // or if we are generating code for large code model, we generate:
+    // The first source operand is a TargetGlobalAddress or a TargetJumpTable.
+    // If it is an externally defined symbol, a symbol with common linkage,
+    // a non-local function address, or a jump table address, or if we are
+    // generating code for large code model, we generate:
     //   LDtocL(<ga:@sym>, ADDIStocHA(%X2, <ga:@sym>))
     // Otherwise we generate:
     //   ADDItocL(ADDIStocHA(%X2, <ga:@sym>), <ga:@sym>)
@@ -1472,17 +1472,10 @@ SDNode *PPCDAGToDAGISel::Select(SDNode *N) {
 
     if (GlobalAddressSDNode *G = dyn_cast<GlobalAddressSDNode>(GA)) {
       const GlobalValue *GValue = G->getGlobal();
-      const GlobalAlias *GAlias = dyn_cast<GlobalAlias>(GValue);
-      const GlobalValue *RealGValue = GAlias ? GAlias->getAliasee() : GValue;
-      const GlobalVariable *GVar = dyn_cast<GlobalVariable>(RealGValue);
-      assert((GVar || isa<Function>(RealGValue)) &&
-             "Unexpected global value subclass!");
-
-      // An external variable is one without an initializer.  For these,
-      // for variables with common linkage, and for Functions, generate
-      // the LDtocL form.
-      if (!GVar || !GVar->hasInitializer() || RealGValue->hasCommonLinkage() ||
-          RealGValue->hasAvailableExternallyLinkage())
+      if ((GValue->getType()->getElementType()->isFunctionTy() &&
+           (GValue->isDeclaration() || GValue->isWeakForLinker())) ||
+          GValue->isDeclaration() || GValue->hasCommonLinkage() ||
+          GValue->hasAvailableExternallyLinkage())
         return CurDAG->getMachineNode(PPC::LDtocL, dl, MVT::i64, GA,
                                       SDValue(Tmp, 0));
     }

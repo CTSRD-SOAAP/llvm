@@ -66,6 +66,16 @@ public:
   /// scheduler. It does not yet disable the postRA scheduler.
   virtual bool enableMachineScheduler() const;
 
+  /// \brief True if the subtarget should run PostMachineScheduler.
+  ///
+  /// This only takes effect if the target has configured the
+  /// PostMachineScheduler pass to run, or if the global cl::opt flag,
+  /// MISchedPostRA, is set.
+  virtual bool enablePostMachineScheduler() const;
+
+  /// \brief True if the subtarget should run the atomic expansion pass.
+  virtual bool enableAtomicExpandLoadLinked() const;
+
   /// \brief Override generic scheduling policy within a region.
   ///
   /// This is a convenient way for targets that don't provide any custom
