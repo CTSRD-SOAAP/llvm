@@ -1555,9 +1555,7 @@ bool GVN::PerformLoadPRE(LoadInst *LI, AvailValInBlkVect &ValuesPerBlock,
     FullyAvailableBlocks[UnavailableBlocks[i]] = false;
 
   SmallVector<BasicBlock *, 4> CriticalEdgePred;
-  for (pred_iterator PI = pred_begin(LoadBB), E = pred_end(LoadBB);
-       PI != E; ++PI) {
-    BasicBlock *Pred = *PI;
+  for (BasicBlock *Pred : predecessors(LoadBB)) {
     if (IsValueFullyAvailableInBlock(Pred, FullyAvailableBlocks, 0)) {
       continue;
     }
@@ -1797,6 +1795,10 @@ static void patchReplacementInstruction(Instruction *I, Value *Repl) {
         break;
       case LLVMContext::MD_fpmath:
         ReplInst->setMetadata(Kind, MDNode::getMostGenericFPMath(IMD, ReplMD));
+        break;
+      case LLVMContext::MD_invariant_load:
+        // Only set the !invariant.load if it is present in both instructions.
+        ReplInst->setMetadata(Kind, IMD);
         break;
       }
     }
@@ -2479,9 +2481,7 @@ bool GVN::performPRE(Function &F) {
       BasicBlock *PREPred = nullptr;
       predMap.clear();
 
-      for (pred_iterator PI = pred_begin(CurrentBlock),
-           PE = pred_end(CurrentBlock); PI != PE; ++PI) {
-        BasicBlock *P = *PI;
+      for (BasicBlock *P : predecessors(CurrentBlock)) {
         // We're not interested in PRE where the block is its
         // own predecessor, or in blocks with predecessors
         // that are not reachable.
@@ -2709,14 +2709,13 @@ void GVN::addDeadBlock(BasicBlock *BB) {
     for (SmallVectorImpl<BasicBlock *>::iterator I = Dom.begin(),
            E = Dom.end(); I != E; I++) {
       BasicBlock *B = *I;
-      for (succ_iterator SI = succ_begin(B), SE = succ_end(B); SI != SE; SI++) {
-        BasicBlock *S = *SI;
+      for (BasicBlock *S : successors(B)) {
         if (DeadBlocks.count(S))
           continue;
 
         bool AllPredDead = true;
-        for (pred_iterator PI = pred_begin(S), PE = pred_end(S); PI != PE; PI++)
-          if (!DeadBlocks.count(*PI)) {
+        for (BasicBlock *Pred : predecessors(S))
+          if (!DeadBlocks.count(Pred)) {
             AllPredDead = false;
             break;
           }

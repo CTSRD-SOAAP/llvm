@@ -5355,6 +5355,60 @@ let Constraints = "$src1 = $dst", Predicates = [UseSSE3] in {
                               f128mem, SSE_ALU_F64P>, PD;
 }
 
+// Patterns used to select 'addsub' instructions.
+let Predicates = [HasAVX] in {
+  // Constant 170 corresponds to the binary mask '10101010'.
+  // When used as a blend mask, it allows selecting eight elements from two
+  // input vectors as follow:
+  // - Even-numbered values in the destination are copied from
+  //   the corresponding elements in the first input vector;
+  // - Odd-numbered values in the destination are copied from
+  //   the corresponding elements in the second input vector.
+
+  def : Pat<(v8f32 (X86Blendi (v8f32 (fsub VR256:$lhs, VR256:$rhs)),
+                              (v8f32 (fadd VR256:$lhs, VR256:$rhs)), (i32 170))),
+            (VADDSUBPSYrr VR256:$lhs, VR256:$rhs)>;
+
+  // Constant 10 corresponds to the binary mask '1010'.
+  // In the two pattens below, constant 10 is used as a blend mask to select
+  // - the 1st and 3rd element from the first input vector (the 'fsub' node);
+  // - the 2nd and 4th element from the second input vector (the 'fadd' node).
+
+  def : Pat<(v4f64 (X86Blendi (v4f64 (fsub VR256:$lhs, VR256:$rhs)),
+                             (v4f64 (fadd VR256:$lhs, VR256:$rhs)), (i32 10))),
+            (VADDSUBPDYrr VR256:$lhs, VR256:$rhs)>;
+  def : Pat<(v4f64 (X86Blendi (v4f64 (fsub VR256:$lhs, VR256:$rhs)),
+                              (v4f64 (fadd VR256:$lhs, VR256:$rhs)), (i32 10))),
+            (VADDSUBPDYrr VR256:$lhs, VR256:$rhs)>;
+  def : Pat<(v4f32 (X86Blendi (v4f32 (fsub VR128:$lhs, VR128:$rhs)),
+                              (v4f32 (fadd VR128:$lhs, VR128:$rhs)), (i32 10))),
+            (VADDSUBPSrr VR128:$lhs, VR128:$rhs)>;
+  def : Pat<(v2f64 (X86Blendi (v2f64 (fsub VR128:$lhs, VR128:$rhs)),
+                              (v2f64 (fadd VR128:$lhs, VR128:$rhs)), (i32 2))), 
+            (VADDSUBPDrr VR128:$lhs, VR128:$rhs)>;
+  def : Pat<(v2f64 (X86Movsd (v2f64 (fadd VR128:$lhs, VR128:$rhs)),
+                             (v2f64 (fsub VR128:$lhs, VR128:$rhs)))),
+            (VADDSUBPDrr VR128:$lhs, VR128:$rhs)>;
+}
+
+let Predicates = [UseSSE3] in {
+  // Constant 10 corresponds to the binary mask '1010'.
+  // In the pattern below, it is used as a blend mask to select:
+  // - the 1st and 3rd element from the first input vector (the fsub node);
+  // - the 2nd and 4th element from the second input vector (the fadd node).
+
+  def : Pat<(v4f32 (X86Blendi (v4f32 (fsub VR128:$lhs, VR128:$rhs)),
+                              (v4f32 (fadd VR128:$lhs, VR128:$rhs)), (i32 10))),
+            (ADDSUBPSrr VR128:$lhs, VR128:$rhs)>;
+
+  def : Pat<(v2f64 (X86Blendi (v2f64 (fsub VR128:$lhs, VR128:$rhs)),
+                              (v2f64 (fadd VR128:$lhs, VR128:$rhs)), (i32 2))), 
+            (ADDSUBPDrr VR128:$lhs, VR128:$rhs)>;
+  def : Pat<(v2f64 (X86Movsd (v2f64 (fadd VR128:$lhs, VR128:$rhs)),
+                             (v2f64 (fsub VR128:$lhs, VR128:$rhs)))),
+            (ADDSUBPDrr VR128:$lhs, VR128:$rhs)>;
+}
+
 //===---------------------------------------------------------------------===//
 // SSE3 Instructions
 //===---------------------------------------------------------------------===//
@@ -8482,6 +8536,21 @@ let Predicates = [HasF16C] in {
             (VCVTPH2PSrm addr:$src)>;
   def : Pat<(int_x86_vcvtph2ps_128 (vzload_v2i64 addr:$src)),
             (VCVTPH2PSrm addr:$src)>;
+}
+
+// Patterns for  matching conversions from float to half-float and vice versa.
+let Predicates = [HasF16C] in {
+  def : Pat<(fp_to_f16 FR32:$src),
+            (i16 (EXTRACT_SUBREG (VMOVPDI2DIrr (VCVTPS2PHrr
+              (COPY_TO_REGCLASS FR32:$src, VR128), 0)), sub_16bit))>;
+
+  def : Pat<(f16_to_fp GR16:$src),
+            (f32 (COPY_TO_REGCLASS (VCVTPH2PSrr
+              (COPY_TO_REGCLASS (MOVSX32rr16 GR16:$src), VR128)), FR32)) >;
+
+  def : Pat<(f16_to_fp (i16 (fp_to_f16 FR32:$src))),
+            (f32 (COPY_TO_REGCLASS (VCVTPH2PSrr
+              (VCVTPS2PHrr (COPY_TO_REGCLASS FR32:$src, VR128), 0)), FR32)) >;
 }
 
 //===----------------------------------------------------------------------===//

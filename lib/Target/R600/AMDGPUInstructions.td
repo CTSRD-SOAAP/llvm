@@ -34,6 +34,10 @@ class AMDGPUShaderInst <dag outs, dag ins, string asm, list<dag> pattern>
 
 }
 
+def FP32Denormals : Predicate<"Subtarget.hasFP32Denormals()">;
+def FP64Denormals : Predicate<"Subtarget.hasFP64Denormals()">;
+def UnsafeFPMath : Predicate<"TM.Options.UnsafeFPMath">;
+
 def InstFlag : OperandWithDefaultOps <i32, (ops (i32 0))>;
 def ADDRIndirect : ComplexPattern<iPTR, 2, "SelectADDRIndirect", [], []>;
 
@@ -524,10 +528,17 @@ class RcpPat<Instruction RcpInst, ValueType vt> : Pat <
   (RcpInst $src)
 >;
 
-class RsqPat<Instruction RsqInst, ValueType vt> : Pat <
-  (AMDGPUrcp (fsqrt vt:$src)),
-  (RsqInst $src)
->;
+multiclass RsqPat<Instruction RsqInst, ValueType vt> {
+  def : Pat <
+    (fdiv FP_ONE, (fsqrt vt:$src)),
+    (RsqInst $src)
+  >;
+
+  def : Pat <
+    (AMDGPUrcp (fsqrt vt:$src)),
+    (RsqInst $src)
+  >;
+}
 
 include "R600Instructions.td"
 include "R700Instructions.td"
