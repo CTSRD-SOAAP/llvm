@@ -26,6 +26,7 @@
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/Metadata.h"
 #include "llvm/IR/ValueHandle.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/CommandLine.h"
@@ -353,8 +354,8 @@ ComputeValueKnownInPredecessors(Value *V, BasicBlock *BB, PredValueInfo &Result,
 
   // If V is a constant, then it is known in all predecessors.
   if (Constant *KC = getKnownConstant(V, Preference)) {
-    for (BasicBlock *Pred : predecessors(BB))
-      Result.push_back(std::make_pair(KC, Pred));
+    for (pred_iterator PI = pred_begin(BB), E = pred_end(BB); PI != E; ++PI)
+      Result.push_back(std::make_pair(KC, *PI));
 
     return true;
   }
@@ -377,7 +378,8 @@ ComputeValueKnownInPredecessors(Value *V, BasicBlock *BB, PredValueInfo &Result,
     // "X < 4" and "X < 3" is known true but "X < 4" itself is not available.
     // Perhaps getConstantOnEdge should be smart enough to do this?
 
-    for (BasicBlock *P : predecessors(BB)) {
+    for (pred_iterator PI = pred_begin(BB), E = pred_end(BB); PI != E; ++PI) {
+      BasicBlock *P = *PI;
       // If the value is known by LazyValueInfo to be a constant in a
       // predecessor, use that information to try to thread this block.
       Constant *PredCst = LVI->getConstantOnEdge(V, P, BB);
@@ -531,7 +533,8 @@ ComputeValueKnownInPredecessors(Value *V, BasicBlock *BB, PredValueInfo &Result,
           cast<Instruction>(Cmp->getOperand(0))->getParent() != BB) {
         Constant *RHSCst = cast<Constant>(Cmp->getOperand(1));
 
-        for (BasicBlock *P : predecessors(BB)) {
+        for (pred_iterator PI = pred_begin(BB), E = pred_end(BB);PI != E; ++PI){
+          BasicBlock *P = *PI;
           // If the value is known by LazyValueInfo to be a constant in a
           // predecessor, use that information to try to thread this block.
           LazyValueInfo::Tristate Res =
@@ -604,8 +607,8 @@ ComputeValueKnownInPredecessors(Value *V, BasicBlock *BB, PredValueInfo &Result,
   // If all else fails, see if LVI can figure out a constant value for us.
   Constant *CI = LVI->getConstant(V, BB);
   if (Constant *KC = getKnownConstant(CI, Preference)) {
-    for (BasicBlock *Pred : predecessors(BB))
-      Result.push_back(std::make_pair(KC, Pred));
+    for (pred_iterator PI = pred_begin(BB), E = pred_end(BB); PI != E; ++PI)
+      Result.push_back(std::make_pair(KC, *PI));
   }
 
   return !Result.empty();
@@ -886,9 +889,10 @@ bool JumpThreading::SimplifyPartiallyRedundantLoad(LoadInst *LI) {
   if (BBIt != LoadBB->begin())
     return false;
 
-  // If all of the loads and stores that feed the value have the same TBAA tag,
-  // then we can propagate it onto any newly inserted loads.
-  MDNode *TBAATag = LI->getMetadata(LLVMContext::MD_tbaa);
+  // If all of the loads and stores that feed the value have the same AA tags,
+  // then we can propagate them onto any newly inserted loads.
+  AAMDNodes AATags;
+  LI->getAAMetadata(AATags);
 
   SmallPtrSet<BasicBlock*, 8> PredsScanned;
   typedef SmallVector<std::pair<BasicBlock*, Value*>, 8> AvailablePredsTy;
@@ -897,23 +901,26 @@ bool JumpThreading::SimplifyPartiallyRedundantLoad(LoadInst *LI) {
 
   // If we got here, the loaded value is transparent through to the start of the
   // block.  Check to see if it is available in any of the predecessor blocks.
-  for (BasicBlock *PredBB : predecessors(LoadBB)) {
+  for (pred_iterator PI = pred_begin(LoadBB), PE = pred_end(LoadBB);
+       PI != PE; ++PI) {
+    BasicBlock *PredBB = *PI;
+
     // If we already scanned this predecessor, skip it.
     if (!PredsScanned.insert(PredBB))
       continue;
 
     // Scan the predecessor to see if the value is available in the pred.
     BBIt = PredBB->end();
-    MDNode *ThisTBAATag = nullptr;
+    AAMDNodes ThisAATags;
     Value *PredAvailable = FindAvailableLoadedValue(LoadedPtr, PredBB, BBIt, 6,
-                                                    nullptr, &ThisTBAATag);
+                                                    nullptr, &ThisAATags);
     if (!PredAvailable) {
       OneUnavailablePred = PredBB;
       continue;
     }
 
-    // If tbaa tags disagree or are not present, forget about them.
-    if (TBAATag != ThisTBAATag) TBAATag = nullptr;
+    // If AA tags disagree or are not present, forget about them.
+    if (AATags != ThisAATags) AATags = AAMDNodes();
 
     // If so, this load is partially redundant.  Remember this info so that we
     // can create a PHI node.
@@ -947,7 +954,9 @@ bool JumpThreading::SimplifyPartiallyRedundantLoad(LoadInst *LI) {
       AvailablePredSet.insert(AvailablePreds[i].first);
 
     // Add all the unavailable predecessors to the PredsToSplit list.
-    for (BasicBlock *P : predecessors(LoadBB)) {
+    for (pred_iterator PI = pred_begin(LoadBB), PE = pred_end(LoadBB);
+         PI != PE; ++PI) {
+      BasicBlock *P = *PI;
       // If the predecessor is an indirect goto, we can't split the edge.
       if (isa<IndirectBrInst>(P->getTerminator()))
         return false;
@@ -971,8 +980,8 @@ bool JumpThreading::SimplifyPartiallyRedundantLoad(LoadInst *LI) {
                                  LI->getAlignment(),
                                  UnavailablePred->getTerminator());
     NewVal->setDebugLoc(LI->getDebugLoc());
-    if (TBAATag)
-      NewVal->setMetadata(LLVMContext::MD_tbaa, TBAATag);
+    if (AATags)
+      NewVal->setAAMetadata(AATags);
 
     AvailablePreds.push_back(std::make_pair(UnavailablePred, NewVal));
   }

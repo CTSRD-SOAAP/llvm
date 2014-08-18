@@ -209,6 +209,7 @@ namespace {
 // Forward declarations.
 class LoopVectorizationLegality;
 class LoopVectorizationCostModel;
+class LoopVectorizeHints;
 
 /// Optimization analysis message produced during vectorization. Messages inform
 /// the user why vectorization did not occur.
@@ -535,6 +536,8 @@ static void propagateMetadata(Instruction *To, const Instruction *From) {
     // non-speculated memory access when the condition was false, this would be
     // caught by the runtime overlap checks).
     if (Kind != LLVMContext::MD_tbaa &&
+        Kind != LLVMContext::MD_alias_scope &&
+        Kind != LLVMContext::MD_noalias &&
         Kind != LLVMContext::MD_fpmath)
       continue;
 
@@ -875,8 +878,9 @@ public:
   LoopVectorizationCostModel(Loop *L, ScalarEvolution *SE, LoopInfo *LI,
                              LoopVectorizationLegality *Legal,
                              const TargetTransformInfo &TTI,
-                             const DataLayout *DL, const TargetLibraryInfo *TLI)
-      : TheLoop(L), SE(SE), LI(LI), Legal(Legal), TTI(TTI), DL(DL), TLI(TLI) {}
+                             const DataLayout *DL, const TargetLibraryInfo *TLI,
+                             const Function *F, const LoopVectorizeHints *Hints)
+      : TheLoop(L), SE(SE), LI(LI), Legal(Legal), TTI(TTI), DL(DL), TLI(TLI), TheFunction(F), Hints(Hints) {}
 
   /// Information about vectorization costs
   struct VectorizationFactor {
@@ -887,9 +891,7 @@ public:
   /// This method checks every power of two up to VF. If UserVF is not ZERO
   /// then this vectorization factor will be selected if vectorization is
   /// possible.
-  VectorizationFactor selectVectorizationFactor(bool OptForSize,
-                                                unsigned UserVF,
-                                                bool ForceVectorization);
+  VectorizationFactor selectVectorizationFactor(bool OptForSize);
 
   /// \return The size (in bits) of the widest type in the code that
   /// needs to be vectorized. We ignore values that remain scalar such as
@@ -901,8 +903,7 @@ public:
   /// based on register pressure and other parameters.
   /// VF and LoopCost are the selected vectorization factor and the cost of the
   /// selected VF.
-  unsigned selectUnrollFactor(bool OptForSize, unsigned UserUF, unsigned VF,
-                              unsigned LoopCost);
+  unsigned selectUnrollFactor(bool OptForSize, unsigned VF, unsigned LoopCost);
 
   /// \brief A struct that represents some properties of the register usage
   /// of a loop.
@@ -938,6 +939,16 @@ private:
   /// as a vector operation.
   bool isConsecutiveLoadOrStore(Instruction *I);
 
+  /// Report an analysis message to assist the user in diagnosing loops that are
+  /// not vectorized.
+  void emitAnalysis(Report &Message) {
+    DebugLoc DL = TheLoop->getStartLoc();
+    if (Instruction *I = Message.getInstr())
+      DL = I->getDebugLoc();
+    emitOptimizationRemarkAnalysis(TheFunction->getContext(), DEBUG_TYPE,
+                                   *TheFunction, DL, Message.str());
+  }
+
   /// The loop that we evaluate.
   Loop *TheLoop;
   /// Scev analysis.
@@ -952,6 +963,9 @@ private:
   const DataLayout *DL;
   /// Target Library Info.
   const TargetLibraryInfo *TLI;
+  const Function *TheFunction;
+  // Loop Vectorize Hint.
+  const LoopVectorizeHints *Hints;
 };
 
 /// Utility class for getting and setting loop vectorizer hints in the form
@@ -978,8 +992,8 @@ public:
           << "LV: Unrolling disabled by the pass manager\n");
   }
 
-  /// Return the loop vectorizer metadata prefix.
-  static StringRef Prefix() { return "llvm.loop.vectorize."; }
+  /// Return the loop metadata prefix.
+  static StringRef Prefix() { return "llvm.loop."; }
 
   MDNode *createHint(LLVMContext &Context, StringRef Name, unsigned V) const {
     SmallVector<Value*, 2> Vals;
@@ -1001,8 +1015,10 @@ public:
       for (unsigned i = 1, ie = LoopID->getNumOperands(); i < ie; ++i)
         Vals.push_back(LoopID->getOperand(i));
 
-    Vals.push_back(createHint(Context, Twine(Prefix(), "width").str(), Width));
-    Vals.push_back(createHint(Context, Twine(Prefix(), "unroll").str(), 1));
+    Vals.push_back(
+        createHint(Context, Twine(Prefix(), "vectorize.width").str(), Width));
+    Vals.push_back(
+        createHint(Context, Twine(Prefix(), "interleave.count").str(), 1));
 
     MDNode *NewLoopID = MDNode::get(Context, Vals);
     // Set operand 0 to refer to the loop id itself.
@@ -1017,24 +1033,20 @@ public:
 
   std::string emitRemark() const {
     Report R;
-    R << "vectorization ";
-    switch (Force) {
-    case LoopVectorizeHints::FK_Disabled:
-      R << "is explicitly disabled";
-      break;
-    case LoopVectorizeHints::FK_Enabled:
-      R << "is explicitly enabled";
-      if (Width != 0 && Unroll != 0)
-        R << " with width " << Width << " and interleave count " << Unroll;
-      else if (Width != 0)
-        R << " with width " << Width;
-      else if (Unroll != 0)
-        R << " with interleave count " << Unroll;
-      break;
-    case LoopVectorizeHints::FK_Undefined:
-      R << "was not specified";
-      break;
+    if (Force == LoopVectorizeHints::FK_Disabled)
+      R << "vectorization is explicitly disabled";
+    else {
+      R << "use -Rpass-analysis=loop-vectorize for more info";
+      if (Force == LoopVectorizeHints::FK_Enabled) {
+        R << " (Force=true";
+        if (Width != 0)
+          R << ", Vector Width=" << Width;
+        if (Unroll != 0)
+          R << ", Interleave Count=" << Unroll;
+        R << ")";
+      }
     }
+
     return R.str();
   }
 
@@ -1073,7 +1085,7 @@ private:
       if (!S)
         continue;
 
-      // Check if the hint starts with the vectorizer prefix.
+      // Check if the hint starts with the loop metadata prefix.
       StringRef Hint = S->getString();
       if (!Hint.startswith(Prefix()))
         continue;
@@ -1091,22 +1103,22 @@ private:
     if (!C) return;
     unsigned Val = C->getZExtValue();
 
-    if (Hint == "width") {
+    if (Hint == "vectorize.width") {
       if (isPowerOf2_32(Val) && Val <= MaxVectorWidth)
         Width = Val;
       else
         DEBUG(dbgs() << "LV: ignoring invalid width hint metadata\n");
-    } else if (Hint == "unroll") {
-      if (isPowerOf2_32(Val) && Val <= MaxUnrollFactor)
-        Unroll = Val;
-      else
-        DEBUG(dbgs() << "LV: ignoring invalid unroll hint metadata\n");
-    } else if (Hint == "enable") {
+    } else if (Hint == "vectorize.enable") {
       if (C->getBitWidth() == 1)
         Force = Val == 1 ? LoopVectorizeHints::FK_Enabled
                          : LoopVectorizeHints::FK_Disabled;
       else
         DEBUG(dbgs() << "LV: ignoring invalid enable hint metadata\n");
+    } else if (Hint == "interleave.count") {
+      if (isPowerOf2_32(Val) && Val <= MaxUnrollFactor)
+        Unroll = Val;
+      else
+        DEBUG(dbgs() << "LV: ignoring invalid unroll hint metadata\n");
     } else {
       DEBUG(dbgs() << "LV: ignoring unknown hint " << Hint << '\n');
     }
@@ -1301,7 +1313,7 @@ struct LoopVectorize : public FunctionPass {
     }
 
     // Use the cost model.
-    LoopVectorizationCostModel CM(L, SE, LI, &LVL, *TTI, DL, TLI);
+    LoopVectorizationCostModel CM(L, SE, LI, &LVL, *TTI, DL, TLI, F, &Hints);
 
     // Check the function attributes to find out if this function should be
     // optimized for size.
@@ -1336,13 +1348,11 @@ struct LoopVectorize : public FunctionPass {
 
     // Select the optimal vectorization factor.
     const LoopVectorizationCostModel::VectorizationFactor VF =
-        CM.selectVectorizationFactor(OptForSize, Hints.getWidth(),
-                                     Hints.getForce() ==
-                                         LoopVectorizeHints::FK_Enabled);
+        CM.selectVectorizationFactor(OptForSize);
 
     // Select the unroll factor.
     const unsigned UF =
-        CM.selectUnrollFactor(OptForSize, Hints.getUnroll(), VF.Width, VF.Cost);
+        CM.selectUnrollFactor(OptForSize, VF.Width, VF.Cost);
 
     DEBUG(dbgs() << "LV: Found a vectorizable loop (" << VF.Width << ") in "
                  << DebugLocStr << '\n');
@@ -2950,8 +2960,9 @@ InnerLoopVectorizer::createBlockInMask(BasicBlock *BB) {
   Value *Zero = ConstantInt::get(IntegerType::getInt1Ty(BB->getContext()), 0);
   VectorParts BlockMask = getVectorValue(Zero);
 
-  for (BasicBlock *Pred : predecessors(BB)) {
-    VectorParts EM = createEdgeMask(Pred, BB);
+  // For each pred:
+  for (pred_iterator it = pred_begin(BB), e = pred_end(BB); it != e; ++it) {
+    VectorParts EM = createEdgeMask(*it, BB);
     for (unsigned part = 0; part < UF; ++part)
       BlockMask[part] = Builder.CreateOr(BlockMask[part], EM[part]);
   }
@@ -3585,8 +3596,8 @@ bool LoopVectorizationLegality::canVectorizeInstrs() {
           // identified reduction value with an outside user.
           if (!hasOutsideLoopUser(TheLoop, it, AllowedExit))
             continue;
-          emitAnalysis(Report(it) << "value that could not be identified as "
-                                     "reduction is used outside the loop");
+          emitAnalysis(Report(it) << "value could not be identified as "
+                                     "an induction or reduction variable");
           return false;
         }
 
@@ -3671,7 +3682,8 @@ bool LoopVectorizationLegality::canVectorizeInstrs() {
           continue;
         }
 
-        emitAnalysis(Report(it) << "unvectorizable operation");
+        emitAnalysis(Report(it) << "value that could not be identified as "
+                                   "reduction is used outside the loop");
         DEBUG(dbgs() << "LV: Found an unidentified PHI."<< *Phi <<"\n");
         return false;
       }// end of PHI handling
@@ -3934,7 +3946,7 @@ public:
   /// \brief Register a load  and whether it is only read from.
   void addLoad(AliasAnalysis::Location &Loc, bool IsReadOnly) {
     Value *Ptr = const_cast<Value*>(Loc.Ptr);
-    AST.add(Ptr, AliasAnalysis::UnknownSize, Loc.TBAATag);
+    AST.add(Ptr, AliasAnalysis::UnknownSize, Loc.AATags);
     Accesses.insert(MemAccessInfo(Ptr, false));
     if (IsReadOnly)
       ReadOnlyPtr.insert(Ptr);
@@ -3943,7 +3955,7 @@ public:
   /// \brief Register a store.
   void addStore(AliasAnalysis::Location &Loc) {
     Value *Ptr = const_cast<Value*>(Loc.Ptr);
-    AST.add(Ptr, AliasAnalysis::UnknownSize, Loc.TBAATag);
+    AST.add(Ptr, AliasAnalysis::UnknownSize, Loc.AATags);
     Accesses.insert(MemAccessInfo(Ptr, true));
   }
 
@@ -4734,7 +4746,7 @@ bool LoopVectorizationLegality::canVectorizeMemory() {
       // condition, so we cannot rely on it when determining whether or not we
       // need runtime pointer checks.
       if (blockNeedsPredication(ST->getParent()))
-        Loc.TBAATag = nullptr;
+        Loc.AATags.TBAA = nullptr;
 
       Accesses.addStore(Loc);
     }
@@ -4769,7 +4781,7 @@ bool LoopVectorizationLegality::canVectorizeMemory() {
     // condition, so we cannot rely on it when determining whether or not we
     // need runtime pointer checks.
     if (blockNeedsPredication(LD->getParent()))
-      Loc.TBAATag = nullptr;
+      Loc.AATags.TBAA = nullptr;
 
     Accesses.addLoad(Loc, IsReadOnlyPtr);
   }
@@ -5124,7 +5136,7 @@ LoopVectorizationLegality::isReductionInstr(Instruction *I,
                                             ReductionKind Kind,
                                             ReductionInstDesc &Prev) {
   bool FP = I->getType()->isFloatingPointTy();
-  bool FastMath = (FP && I->isCommutative() && I->isAssociative());
+  bool FastMath = FP && I->hasUnsafeAlgebra();
   switch (I->getOpcode()) {
   default:
     return ReductionInstDesc(false, I);
@@ -5146,6 +5158,7 @@ LoopVectorizationLegality::isReductionInstr(Instruction *I,
     return ReductionInstDesc(Kind == RK_IntegerXor, I);
   case Instruction::FMul:
     return ReductionInstDesc(Kind == RK_FloatMult && FastMath, I);
+  case Instruction::FSub:
   case Instruction::FAdd:
     return ReductionInstDesc(Kind == RK_FloatAdd && FastMath, I);
   case Instruction::FCmp:
@@ -5261,17 +5274,17 @@ bool LoopVectorizationLegality::blockCanBePredicated(BasicBlock *BB,
 }
 
 LoopVectorizationCostModel::VectorizationFactor
-LoopVectorizationCostModel::selectVectorizationFactor(bool OptForSize,
-                                                      unsigned UserVF,
-                                                      bool ForceVectorization) {
+LoopVectorizationCostModel::selectVectorizationFactor(bool OptForSize) {
   // Width 1 means no vectorize
   VectorizationFactor Factor = { 1U, 0U };
   if (OptForSize && Legal->getRuntimePointerCheck()->Need) {
+    emitAnalysis(Report() << "runtime pointer checks needed. Enable vectorization of this loop with '#pragma clang loop vectorize(enable)' when compiling with -Os");
     DEBUG(dbgs() << "LV: Aborting. Runtime ptr check is required in Os.\n");
     return Factor;
   }
 
   if (!EnableCondStoresVectorization && Legal->NumPredStores) {
+    emitAnalysis(Report() << "store that is conditionally executed prevents vectorization");
     DEBUG(dbgs() << "LV: No vectorization. There are conditional stores.\n");
     return Factor;
   }
@@ -5306,6 +5319,7 @@ LoopVectorizationCostModel::selectVectorizationFactor(bool OptForSize,
   if (OptForSize) {
     // If we are unable to calculate the trip count then don't try to vectorize.
     if (TC < 2) {
+      emitAnalysis(Report() << "unable to calculate the loop count due to complex control flow");
       DEBUG(dbgs() << "LV: Aborting. A tail loop is required in Os.\n");
       return Factor;
     }
@@ -5319,11 +5333,13 @@ LoopVectorizationCostModel::selectVectorizationFactor(bool OptForSize,
     // If the trip count that we found modulo the vectorization factor is not
     // zero then we require a tail.
     if (VF < 2) {
+      emitAnalysis(Report() << "cannot optimize for size and vectorize at the same time. Enable vectorization of this loop with '#pragma clang loop vectorize(enable)' when compiling with -Os"); 
       DEBUG(dbgs() << "LV: Aborting. A tail loop is required in Os.\n");
       return Factor;
     }
   }
 
+  int UserVF = Hints->getWidth();
   if (UserVF != 0) {
     assert(isPowerOf2_32(UserVF) && "VF needs to be a power of two");
     DEBUG(dbgs() << "LV: Using user VF " << UserVF << ".\n");
@@ -5339,6 +5355,7 @@ LoopVectorizationCostModel::selectVectorizationFactor(bool OptForSize,
   unsigned Width = 1;
   DEBUG(dbgs() << "LV: Scalar loop costs: " << (int)ScalarCost << ".\n");
 
+  bool ForceVectorization = Hints->getForce() == LoopVectorizeHints::FK_Enabled;
   // Ignore scalar width, because the user explicitly wants vectorization.
   if (ForceVectorization && VF > 1) {
     Width = 2;
@@ -5408,7 +5425,6 @@ unsigned LoopVectorizationCostModel::getWidestType() {
 
 unsigned
 LoopVectorizationCostModel::selectUnrollFactor(bool OptForSize,
-                                               unsigned UserUF,
                                                unsigned VF,
                                                unsigned LoopCost) {
 
@@ -5427,6 +5443,7 @@ LoopVectorizationCostModel::selectUnrollFactor(bool OptForSize,
   // to the increased register pressure.
 
   // Use the user preference, unless 'auto' is selected.
+  int UserUF = Hints->getUnroll();
   if (UserUF != 0)
     return UserUF;
 

@@ -83,6 +83,8 @@ namespace {
     CallGraphNode *DoPromotion(Function *F,
                                SmallPtrSet<Argument*, 8> &ArgsToPromote,
                                SmallPtrSet<Argument*, 8> &ByValArgsToTransform);
+    
+    using llvm::Pass::doInitialization;
     bool doInitialization(CallGraph &CG) override;
     /// The maximum number of elements to expand, or 0 for unlimited.
     unsigned maxElements;
@@ -473,7 +475,8 @@ bool ArgPromotion::isSafeToPromoteArgument(Argument *Arg,
     // Now check every path from the entry block to the load for transparency.
     // To do this, we perform a depth first search on the inverse CFG from the
     // loading block.
-    for (BasicBlock *P : predecessors(BB)) {
+    for (pred_iterator PI = pred_begin(BB), E = pred_end(BB); PI != E; ++PI) {
+      BasicBlock *P = *PI;
       for (idf_ext_iterator<BasicBlock*, SmallPtrSet<BasicBlock*, 16> >
              I = idf_ext_begin(P, TranspBlocks),
              E = idf_ext_end(P, TranspBlocks); I != E; ++I)
@@ -614,9 +617,13 @@ CallGraphNode *ArgPromotion::DoPromotion(Function *F,
 
   // Patch the pointer to LLVM function in debug info descriptor.
   auto DI = FunctionDIs.find(F);
-  if (DI != FunctionDIs.end())
-    DI->second.replaceFunction(NF);
-  
+  if (DI != FunctionDIs.end()) {
+    DISubprogram SP = DI->second;
+    SP.replaceFunction(NF);
+    FunctionDIs.erase(DI);
+    FunctionDIs[NF] = SP;
+  }
+
   DEBUG(dbgs() << "ARG PROMOTION:  Promoting to:" << *NF << "\n"
         << "From: " << *F);
   
@@ -715,9 +722,11 @@ CallGraphNode *ArgPromotion::DoPromotion(Function *F,
           // of the previous load.
           LoadInst *newLoad = new LoadInst(V, V->getName()+".val", Call);
           newLoad->setAlignment(OrigLoad->getAlignment());
-          // Transfer the TBAA info too.
-          newLoad->setMetadata(LLVMContext::MD_tbaa,
-                               OrigLoad->getMetadata(LLVMContext::MD_tbaa));
+          // Transfer the AA info too.
+          AAMDNodes AAInfo;
+          OrigLoad->getAAMetadata(AAInfo);
+          newLoad->setAAMetadata(AAInfo);
+
           Args.push_back(newLoad);
           AA.copyValue(OrigLoad, Args.back());
         }

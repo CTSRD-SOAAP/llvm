@@ -11,8 +11,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_ASMPARSER_LLPARSER_H
-#define LLVM_ASMPARSER_LLPARSER_H
+#ifndef LLVM_LIB_ASMPARSER_LLPARSER_H
+#define LLVM_LIB_ASMPARSER_LLPARSER_H
 
 #include "LLLexer.h"
 #include "llvm/ADT/DenseMap.h"
@@ -258,8 +258,8 @@ namespace llvm {
                      bool HasLinkage, unsigned Visibility,
                      unsigned DLLStorageClass,
                      GlobalVariable::ThreadLocalMode TLM, bool UnnamedAddr);
-    bool ParseAlias(const std::string &Name, LocTy Loc, unsigned Visibility,
-                    unsigned DLLStorageClass,
+    bool ParseAlias(const std::string &Name, LocTy Loc, unsigned Linkage,
+                    unsigned Visibility, unsigned DLLStorageClass,
                     GlobalVariable::ThreadLocalMode TLM, bool UnnamedAddr);
     bool parseComdat();
     bool ParseStandaloneMetadata();

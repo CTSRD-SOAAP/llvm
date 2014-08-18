@@ -31,6 +31,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetLowering.h"
+#include "llvm/Target/TargetSubtargetInfo.h"
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/Local.h"
@@ -142,8 +143,8 @@ static void MarkBlocksLiveIn(BasicBlock *BB,
   if (!LiveBBs.insert(BB))
     return; // already been here.
 
-  for (BasicBlock *Pred : predecessors(BB))
-    MarkBlocksLiveIn(Pred, LiveBBs);
+  for (pred_iterator PI = pred_begin(BB), E = pred_end(BB); PI != E; ++PI)
+    MarkBlocksLiveIn(*PI, LiveBBs);
 }
 
 /// substituteLPadValues - Substitute the values returned by the landingpad
@@ -190,7 +191,7 @@ Value *SjLjEHPrepare::setupFunctionContext(Function &F,
   // Create an alloca for the incoming jump buffer ptr and the new jump buffer
   // that needs to be restored on all exits from the function. This is an alloca
   // because the value needs to be added to the global context list.
-  const TargetLowering *TLI = TM->getTargetLowering();
+  const TargetLowering *TLI = TM->getSubtargetImpl()->getTargetLowering();
   unsigned Align =
       TLI->getDataLayout()->getPrefTypeAlignment(FunctionContextTy);
   FuncCtx = new AllocaInst(FunctionContextTy, nullptr, Align, "fn_context",

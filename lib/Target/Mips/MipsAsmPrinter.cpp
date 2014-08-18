@@ -131,7 +131,7 @@ void MipsAsmPrinter::emitPseudoIndirectBranch(MCStreamer &OutStreamer,
 
 void MipsAsmPrinter::EmitInstruction(const MachineInstr *MI) {
   MipsTargetStreamer &TS = getTargetStreamer();
-  TS.setCanHaveModuleDir(false);
+  TS.forbidModuleDirective();
 
   if (MI->isDebugValue()) {
     SmallString<128> Str;
@@ -266,7 +266,8 @@ void MipsAsmPrinter::printSavedRegsBitmask() {
     if (Mips::GPR32RegClass.contains(Reg))
       break;
 
-    unsigned RegNum = TM.getRegisterInfo()->getEncodingValue(Reg);
+    unsigned RegNum =
+        TM.getSubtargetImpl()->getRegisterInfo()->getEncodingValue(Reg);
     if (Mips::AFGR64RegClass.contains(Reg)) {
       FPUBitmask |= (3 << RegNum);
       CSFPRegsSize += AFGR64RegSize;
@@ -281,7 +282,8 @@ void MipsAsmPrinter::printSavedRegsBitmask() {
   // Set CPU Bitmask.
   for (; i != e; ++i) {
     unsigned Reg = CSI[i].getReg();
-    unsigned RegNum = TM.getRegisterInfo()->getEncodingValue(Reg);
+    unsigned RegNum =
+        TM.getSubtargetImpl()->getRegisterInfo()->getEncodingValue(Reg);
     CPUBitmask |= (1 << RegNum);
   }
 
@@ -306,7 +308,7 @@ void MipsAsmPrinter::printSavedRegsBitmask() {
 
 /// Frame Directive
 void MipsAsmPrinter::emitFrameDirective() {
-  const TargetRegisterInfo &RI = *TM.getRegisterInfo();
+  const TargetRegisterInfo &RI = *TM.getSubtargetImpl()->getRegisterInfo();
 
   unsigned stackReg  = RI.getFrameRegister(*MF);
   unsigned returnReg = RI.getRARegister();
@@ -560,7 +562,7 @@ bool MipsAsmPrinter::PrintAsmMemoryOperand(const MachineInstr *MI,
 
 void MipsAsmPrinter::printOperand(const MachineInstr *MI, int opNum,
                                   raw_ostream &O) {
-  const DataLayout *DL = TM.getDataLayout();
+  const DataLayout *DL = TM.getSubtargetImpl()->getDataLayout();
   const MachineOperand &MO = MI->getOperand(opNum);
   bool closeP = false;
 
@@ -669,9 +671,7 @@ printFCCOperand(const MachineInstr *MI, int opNum, raw_ostream &O,
 }
 
 void MipsAsmPrinter::EmitStartOfAsmFile(Module &M) {
-  // TODO: Need to add -mabicalls and -mno-abicalls flags.
-  // Currently we assume that -mabicalls is the default.
-  bool IsABICalls = true;
+  bool IsABICalls = Subtarget->isABICalls();
   if (IsABICalls) {
     getTargetStreamer().emitDirectiveAbiCalls();
     Reloc::Model RM = TM.getRelocationModel();
@@ -708,16 +708,21 @@ void MipsAsmPrinter::EmitStartOfAsmFile(Module &M) {
   }
 
   getTargetStreamer().updateABIInfo(*Subtarget);
-  getTargetStreamer().emitDirectiveModuleFP();
 
-  // If we are targeting O32 then we must emit a '.module [no]oddspreg' ...
-  if (Subtarget->isABI_O32()) {
-    // ... but don't emit it unless we are contradicting the default or an
-    // option has changed the default (i.e. FPXX).
-    if (!Subtarget->useOddSPReg() || Subtarget->isABI_FPXX())
-      getTargetStreamer().emitDirectiveModuleOddSPReg(Subtarget->useOddSPReg(),
-                                                      Subtarget->isABI_O32());
-  }
+  // We should always emit a '.module fp=...' but binutils 2.24 does not accept
+  // it. We therefore emit it when it contradicts the ABI defaults (-mfpxx or
+  // -mfp64) and omit it otherwise.
+  if (Subtarget->isABI_O32() && (Subtarget->isABI_FPXX() ||
+                                 Subtarget->isFP64bit()))
+    getTargetStreamer().emitDirectiveModuleFP();
+
+  // We should always emit a '.module [no]oddspreg' but binutils 2.24 does not
+  // accept it. We therefore emit it when it contradicts the default or an
+  // option has changed the default (i.e. FPXX) and omit it otherwise.
+  if (Subtarget->isABI_O32() && (!Subtarget->useOddSPReg() ||
+                                 Subtarget->isABI_FPXX()))
+    getTargetStreamer().emitDirectiveModuleOddSPReg(Subtarget->useOddSPReg(),
+                                                    Subtarget->isABI_O32());
 }
 
 void MipsAsmPrinter::EmitJal(MCSymbol *Symbol) {

@@ -500,8 +500,23 @@ bool LazyValueInfoCache::solveBlockValue(Value *Val, BasicBlock *BB) {
   // cache needs updating, i.e. if we have solve a new value or not.
   OverDefinedCacheUpdater ODCacheUpdater(Val, BB, BBLV, this);
 
-  // If we've already computed this block's value, return it.
-  if (!BBLV.isUndefined()) {
+  // Once this BB is encountered, Val's value for this BB will not be Undefined
+  // any longer. When we encounter this BB again, if Val's value is Overdefined,
+  // we need to compute its value again.
+  // 
+  // For example, considering this control flow,
+  //   BB1->BB2, BB1->BB3, BB2->BB3, BB2->BB4
+  //
+  // Suppose we have "icmp slt %v, 0" in BB1, and "icmp sgt %v, 0" in BB3. At
+  // the very beginning, when analyzing edge BB2->BB3, we don't know %v's value
+  // in BB2, and the data flow algorithm tries to compute BB2's predecessors, so
+  // then we know %v has negative value on edge BB1->BB2. And then we return to
+  // check BB2 again, and at this moment BB2 has Overdefined value for %v in
+  // BB2. So we should have to follow data flow propagation algorithm to get the
+  // value on edge BB1->BB2 propagated to BB2, and finally %v on BB2 has a
+  // constant range describing a negative value.
+
+  if (!BBLV.isUndefined() && !BBLV.isOverdefined()) {
     DEBUG(dbgs() << "  reuse BB '" << BB->getName() << "' val=" << BBLV <<'\n');
     
     // Since we're reusing a cached value here, we don't need to update the 
@@ -625,9 +640,9 @@ bool LazyValueInfoCache::solveBlockValueNonLocal(LVILatticeVal &BBLV,
   // Loop over all of our predecessors, merging what we know from them into
   // result.
   bool EdgesMissing = false;
-  for (BasicBlock *Pred : predecessors(BB)) {
+  for (pred_iterator PI = pred_begin(BB), E = pred_end(BB); PI != E; ++PI) {
     LVILatticeVal EdgeResult;
-    EdgesMissing |= !getEdgeValue(Val, Pred, BB, EdgeResult);
+    EdgesMissing |= !getEdgeValue(Val, *PI, BB, EdgeResult);
     if (EdgesMissing)
       continue;
 

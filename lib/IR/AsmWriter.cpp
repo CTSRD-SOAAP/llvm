@@ -1509,6 +1509,7 @@ void AssemblyWriter::printAlias(const GlobalAlias *GA) {
     PrintLLVMName(Out, GA);
     Out << " = ";
   }
+  PrintLinkage(GA->getLinkage(), Out);
   PrintVisibility(GA->getVisibility(), Out);
   PrintDLLStorageClass(GA->getDLLStorageClass(), Out);
   PrintThreadLocalModel(GA->getThreadLocalMode(), Out);
@@ -1516,8 +1517,6 @@ void AssemblyWriter::printAlias(const GlobalAlias *GA) {
     Out << "unnamed_addr ";
 
   Out << "alias ";
-
-  PrintLinkage(GA->getLinkage(), Out);
 
   const Constant *Aliasee = GA->getAliasee();
 
@@ -2291,7 +2290,7 @@ void Value::printAsOperand(raw_ostream &O, bool PrintType, const Module *M) cons
 void Value::dump() const { print(dbgs()); dbgs() << '\n'; }
 
 // Type::dump - allow easy printing of Types from the debugger.
-void Type::dump() const { print(dbgs()); }
+void Type::dump() const { print(dbgs()); dbgs() << '\n'; }
 
 // Module::dump() - Allow printing of Modules from the debugger.
 void Module::dump() const { print(dbgs(), nullptr); }

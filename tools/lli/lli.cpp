@@ -279,7 +279,7 @@ public:
     outfile.close();
   }
 
-  MemoryBuffer* getObject(const Module* M) override {
+  std::unique_ptr<MemoryBuffer> getObject(const Module* M) override {
     const std::string ModuleID = M->getModuleIdentifier();
     std::string CacheName;
     if (!getCacheFilename(ModuleID, CacheName))
@@ -294,7 +294,8 @@ public:
     // because the file has probably just been mmapped.  Instead we make
     // a copy.  The filed-based buffer will be released when it goes
     // out of scope.
-    return MemoryBuffer::getMemBufferCopy(IRObjectBuffer.get()->getBuffer());
+    return std::unique_ptr<MemoryBuffer>(
+        MemoryBuffer::getMemBufferCopy(IRObjectBuffer.get()->getBuffer()));
   }
 
 private:
@@ -528,13 +529,13 @@ int main(int argc, char **argv, char * const *envp) {
   }
 
   for (unsigned i = 0, e = ExtraObjects.size(); i != e; ++i) {
-    ErrorOr<object::ObjectFile *> Obj =
+    ErrorOr<std::unique_ptr<object::ObjectFile>> Obj =
         object::ObjectFile::createObjectFile(ExtraObjects[i]);
     if (!Obj) {
       Err.print(argv[0], errs());
       return 1;
     }
-    EE->addObjectFile(std::unique_ptr<object::ObjectFile>(Obj.get()));
+    EE->addObjectFile(std::move(Obj.get()));
   }
 
   for (unsigned i = 0, e = ExtraArchives.size(); i != e; ++i) {
@@ -544,13 +545,14 @@ int main(int argc, char **argv, char * const *envp) {
       Err.print(argv[0], errs());
       return 1;
     }
-    std::error_code EC;
-    object::Archive *Ar = new object::Archive(std::move(ArBuf.get()), EC);
-    if (EC || !Ar) {
-      Err.print(argv[0], errs());
+
+    ErrorOr<std::unique_ptr<object::Archive>> ArOrErr =
+        object::Archive::create(std::move(ArBuf.get()));
+    if (std::error_code EC = ArOrErr.getError()) {
+      errs() << EC.message();
       return 1;
     }
-    EE->addArchive(Ar);
+    EE->addArchive(std::move(ArOrErr.get()));
   }
 
   // If the target is Cygwin/MingW and we are generating remote code, we

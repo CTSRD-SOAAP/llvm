@@ -13,8 +13,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef AMDGPUISELLOWERING_H
-#define AMDGPUISELLOWERING_H
+#ifndef LLVM_LIB_TARGET_R600_AMDGPUISELLOWERING_H
+#define LLVM_LIB_TARGET_R600_AMDGPUISELLOWERING_H
 
 #include "llvm/Target/TargetLowering.h"
 
@@ -43,13 +43,6 @@ private:
   /// \brief Split a vector store into multiple scalar stores.
   /// \returns The resulting chain.
 
-  SDValue LowerSDIV(SDValue Op, SelectionDAG &DAG) const;
-  SDValue LowerSDIV24(SDValue Op, SelectionDAG &DAG) const;
-  SDValue LowerSDIV32(SDValue Op, SelectionDAG &DAG) const;
-  SDValue LowerSDIV64(SDValue Op, SelectionDAG &DAG) const;
-  SDValue LowerSREM(SDValue Op, SelectionDAG &DAG) const;
-  SDValue LowerSREM32(SDValue Op, SelectionDAG &DAG) const;
-  SDValue LowerSREM64(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerUDIVREM(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerFCEIL(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerFTRUNC(SDValue Op, SelectionDAG &DAG) const;
@@ -71,21 +64,25 @@ protected:
   static EVT getEquivalentMemType(LLVMContext &Context, EVT VT);
   static EVT getEquivalentLoadRegType(LLVMContext &Context, EVT VT);
 
-  /// \brief Helper function that adds Reg to the LiveIn list of the DAG's
-  /// MachineFunction.
-  ///
-  /// \returns a RegisterSDNode representing Reg.
-  virtual SDValue CreateLiveInRegister(SelectionDAG &DAG,
-                                       const TargetRegisterClass *RC,
-                                       unsigned Reg, EVT VT) const;
-  SDValue LowerGlobalAddress(AMDGPUMachineFunction *MFI, SDValue Op,
-                             SelectionDAG &DAG) const;
-  /// \brief Split a vector load into multiple scalar loads.
-  SDValue SplitVectorLoad(const SDValue &Op, SelectionDAG &DAG) const;
+  virtual SDValue LowerGlobalAddress(AMDGPUMachineFunction *MFI, SDValue Op,
+                                     SelectionDAG &DAG) const;
+
+  /// \brief Split a vector load into a scalar load of each component.
+  SDValue ScalarizeVectorLoad(SDValue Op, SelectionDAG &DAG) const;
+
+  /// \brief Split a vector load into 2 loads of half the vector.
+  SDValue SplitVectorLoad(SDValue Op, SelectionDAG &DAG) const;
+
+  /// \brief Split a vector store into a scalar store of each component.
+  SDValue ScalarizeVectorStore(SDValue Op, SelectionDAG &DAG) const;
+
+  /// \brief Split a vector store into 2 stores of half the vector.
   SDValue SplitVectorStore(SDValue Op, SelectionDAG &DAG) const;
+
   SDValue LowerLOAD(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerSTORE(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerSDIVREM(SDValue Op, SelectionDAG &DAG) const;
+  SDValue LowerDIVREM24(SDValue Op, SelectionDAG &DAG, bool sign) const;
   bool isHWTrueValue(SDValue Op) const;
   bool isHWFalseValue(SDValue Op) const;
 
@@ -160,6 +157,14 @@ public:
     SDValue Op,
     const SelectionDAG &DAG,
     unsigned Depth = 0) const override;
+
+  /// \brief Helper function that adds Reg to the LiveIn list of the DAG's
+  /// MachineFunction.
+  ///
+  /// \returns a RegisterSDNode representing Reg.
+  virtual SDValue CreateLiveInRegister(SelectionDAG &DAG,
+                                       const TargetRegisterClass *RC,
+                                       unsigned Reg, EVT VT) const;
 };
 
 namespace AMDGPUISD {
@@ -198,6 +203,7 @@ enum {
   RSQ,
   RSQ_LEGACY,
   RSQ_CLAMPED,
+  LDEXP,
   DOT4,
   BFE_U32, // Extract range of bits with zero extension to 32-bits.
   BFE_I32, // Extract range of bits with sign extension to 32-bits.
@@ -233,6 +239,8 @@ enum {
   /// T2|v.z| | | |
   /// T3|v.w| | | |
   BUILD_VERTICAL_VECTOR,
+  /// Pointer to the start of the shader's constant data.
+  CONST_DATA_PTR,
   FIRST_MEM_OPCODE_NUMBER = ISD::FIRST_TARGET_MEMORY_OPCODE,
   STORE_MSKOR,
   LOAD_CONSTANT,
@@ -245,4 +253,4 @@ enum {
 
 } // End namespace llvm
 
-#endif // AMDGPUISELLOWERING_H
+#endif

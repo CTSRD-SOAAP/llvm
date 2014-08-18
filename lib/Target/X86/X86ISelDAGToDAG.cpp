@@ -192,7 +192,6 @@ namespace {
   private:
     SDNode *Select(SDNode *N) override;
     SDNode *SelectGather(SDNode *N, unsigned Opc);
-    SDNode *SelectAtomic64(SDNode *Node, unsigned Opc);
     SDNode *SelectAtomicLoadArith(SDNode *Node, MVT NVT);
 
     bool FoldOffsetIntoAddress(uint64_t Offset, X86ISelAddressMode &AM);
@@ -297,7 +296,7 @@ namespace {
     /// getInstrInfo - Return a reference to the TargetInstrInfo, casted
     /// to the target-specific type.
     const X86InstrInfo *getInstrInfo() const {
-      return getTargetMachine().getInstrInfo();
+      return getTargetMachine().getSubtargetImpl()->getInstrInfo();
     }
   };
 }
@@ -544,7 +543,7 @@ void X86DAGToDAGISel::PreprocessISelDAG() {
                                           false, false, 0);
     SDValue Result = CurDAG->getExtLoad(ISD::EXTLOAD, dl, DstVT, Store, MemTmp,
                                         MachinePointerInfo(),
-                                        MemVT, false, false, 0);
+                                        MemVT, false, false, false, 0);
 
     // We're about to replace all uses of the FP_ROUND/FP_EXTEND with the
     // extload we created.  This will cause general havok on the dag because
@@ -565,7 +564,7 @@ void X86DAGToDAGISel::PreprocessISelDAG() {
 /// the main function.
 void X86DAGToDAGISel::EmitSpecialCodeForMain(MachineBasicBlock *BB,
                                              MachineFrameInfo *MFI) {
-  const TargetInstrInfo *TII = TM.getInstrInfo();
+  const TargetInstrInfo *TII = TM.getSubtargetImpl()->getInstrInfo();
   if (Subtarget->isTargetCygMing()) {
     unsigned CallOp =
       Subtarget->is64Bit() ? X86::CALL64pcrel32 : X86::CALLpcrel32;
@@ -1565,24 +1564,6 @@ SDNode *X86DAGToDAGISel::getGlobalBaseReg() {
   unsigned GlobalBaseReg = getInstrInfo()->getGlobalBaseReg(MF);
   return CurDAG->getRegister(GlobalBaseReg,
                              getTargetLowering()->getPointerTy()).getNode();
-}
-
-SDNode *X86DAGToDAGISel::SelectAtomic64(SDNode *Node, unsigned Opc) {
-  SDValue Chain = Node->getOperand(0);
-  SDValue In1 = Node->getOperand(1);
-  SDValue In2L = Node->getOperand(2);
-  SDValue In2H = Node->getOperand(3);
-
-  SDValue Tmp0, Tmp1, Tmp2, Tmp3, Tmp4;
-  if (!SelectAddr(Node, In1, Tmp0, Tmp1, Tmp2, Tmp3, Tmp4))
-    return nullptr;
-  MachineSDNode::mmo_iterator MemOp = MF->allocateMemRefsArray(1);
-  MemOp[0] = cast<MemSDNode>(Node)->getMemOperand();
-  const SDValue Ops[] = { Tmp0, Tmp1, Tmp2, Tmp3, Tmp4, In2L, In2H, Chain};
-  SDNode *ResNode = CurDAG->getMachineNode(Opc, SDLoc(Node),
-                                           MVT::i32, MVT::i32, MVT::Other, Ops);
-  cast<MachineSDNode>(ResNode)->setMemRefs(MemOp, MemOp + 1);
-  return ResNode;
 }
 
 /// Atomic opcode table

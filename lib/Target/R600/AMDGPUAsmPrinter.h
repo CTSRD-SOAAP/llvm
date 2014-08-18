@@ -12,8 +12,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef AMDGPU_ASMPRINTER_H
-#define AMDGPU_ASMPRINTER_H
+#ifndef LLVM_LIB_TARGET_R600_AMDGPUASMPRINTER_H
+#define LLVM_LIB_TARGET_R600_AMDGPUASMPRINTER_H
 
 #include "llvm/CodeGen/AsmPrinter.h"
 #include <vector>
@@ -32,6 +32,7 @@ private:
       DX10Clamp(0),
       DebugMode(0),
       IEEEMode(0),
+      ScratchSize(0),
       CodeLen(0) {}
 
     // Fields set in PGM_RSRC1 pm4 packet.
@@ -43,6 +44,7 @@ private:
     uint32_t DX10Clamp;
     uint32_t DebugMode;
     uint32_t IEEEMode;
+    uint32_t ScratchSize;
 
     // Bonus information for debugging.
     uint64_t CodeLen;
@@ -70,6 +72,8 @@ public:
   /// Implemented in AMDGPUMCInstLower.cpp
   void EmitInstruction(const MachineInstr *MI) override;
 
+  void EmitEndOfAsmFile(Module &M) override;
+
 protected:
   bool DisasmEnabled;
   std::vector<std::string> DisasmLines, HexLines;
@@ -78,4 +82,4 @@ protected:
 
 } // End anonymous llvm
 
-#endif //AMDGPU_ASMPRINTER_H
+#endif

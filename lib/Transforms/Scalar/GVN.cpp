@@ -45,6 +45,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Target/TargetLibraryInfo.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
+#include "llvm/Transforms/Utils/Local.h"
 #include "llvm/Transforms/Utils/SSAUpdater.h"
 #include <vector>
 using namespace llvm;
@@ -1555,7 +1556,9 @@ bool GVN::PerformLoadPRE(LoadInst *LI, AvailValInBlkVect &ValuesPerBlock,
     FullyAvailableBlocks[UnavailableBlocks[i]] = false;
 
   SmallVector<BasicBlock *, 4> CriticalEdgePred;
-  for (BasicBlock *Pred : predecessors(LoadBB)) {
+  for (pred_iterator PI = pred_begin(LoadBB), E = pred_end(LoadBB);
+       PI != E; ++PI) {
+    BasicBlock *Pred = *PI;
     if (IsValueFullyAvailableInBlock(Pred, FullyAvailableBlocks, 0)) {
       continue;
     }
@@ -1667,9 +1670,11 @@ bool GVN::PerformLoadPRE(LoadInst *LI, AvailValInBlkVect &ValuesPerBlock,
                                         LI->getAlignment(),
                                         UnavailablePred->getTerminator());
 
-    // Transfer the old load's TBAA tag to the new load.
-    if (MDNode *Tag = LI->getMetadata(LLVMContext::MD_tbaa))
-      NewLoad->setMetadata(LLVMContext::MD_tbaa, Tag);
+    // Transfer the old load's AA tags to the new load.
+    AAMDNodes Tags;
+    LI->getAAMetadata(Tags);
+    if (Tags)
+      NewLoad->setAAMetadata(Tags);
 
     // Transfer DebugLoc.
     NewLoad->setDebugLoc(LI->getDebugLoc());
@@ -1772,36 +1777,24 @@ static void patchReplacementInstruction(Instruction *I, Value *Repl) {
       ReplOp->setHasNoUnsignedWrap(false);
   }
   if (Instruction *ReplInst = dyn_cast<Instruction>(Repl)) {
-    SmallVector<std::pair<unsigned, MDNode*>, 4> Metadata;
-    ReplInst->getAllMetadataOtherThanDebugLoc(Metadata);
-    for (int i = 0, n = Metadata.size(); i < n; ++i) {
-      unsigned Kind = Metadata[i].first;
-      MDNode *IMD = I->getMetadata(Kind);
-      MDNode *ReplMD = Metadata[i].second;
-      switch(Kind) {
-      default:
-        ReplInst->setMetadata(Kind, nullptr); // Remove unknown metadata
-        break;
-      case LLVMContext::MD_dbg:
-        llvm_unreachable("getAllMetadataOtherThanDebugLoc returned a MD_dbg");
-      case LLVMContext::MD_tbaa:
-        ReplInst->setMetadata(Kind, MDNode::getMostGenericTBAA(IMD, ReplMD));
-        break;
-      case LLVMContext::MD_range:
-        ReplInst->setMetadata(Kind, MDNode::getMostGenericRange(IMD, ReplMD));
-        break;
-      case LLVMContext::MD_prof:
-        llvm_unreachable("MD_prof in a non-terminator instruction");
-        break;
-      case LLVMContext::MD_fpmath:
-        ReplInst->setMetadata(Kind, MDNode::getMostGenericFPMath(IMD, ReplMD));
-        break;
-      case LLVMContext::MD_invariant_load:
-        // Only set the !invariant.load if it is present in both instructions.
-        ReplInst->setMetadata(Kind, IMD);
-        break;
-      }
-    }
+    // FIXME: If both the original and replacement value are part of the
+    // same control-flow region (meaning that the execution of one
+    // guarentees the executation of the other), then we can combine the
+    // noalias scopes here and do better than the general conservative
+    // answer used in combineMetadata().
+
+    // In general, GVN unifies expressions over different control-flow
+    // regions, and so we need a conservative combination of the noalias
+    // scopes.
+    unsigned KnownIDs[] = {
+      LLVMContext::MD_tbaa,
+      LLVMContext::MD_alias_scope,
+      LLVMContext::MD_noalias,
+      LLVMContext::MD_range,
+      LLVMContext::MD_fpmath,
+      LLVMContext::MD_invariant_load,
+    };
+    combineMetadata(ReplInst, I, KnownIDs);
   }
 }
 
@@ -2481,7 +2474,9 @@ bool GVN::performPRE(Function &F) {
       BasicBlock *PREPred = nullptr;
       predMap.clear();
 
-      for (BasicBlock *P : predecessors(CurrentBlock)) {
+      for (pred_iterator PI = pred_begin(CurrentBlock),
+           PE = pred_end(CurrentBlock); PI != PE; ++PI) {
+        BasicBlock *P = *PI;
         // We're not interested in PRE where the block is its
         // own predecessor, or in blocks with predecessors
         // that are not reachable.
@@ -2709,13 +2704,14 @@ void GVN::addDeadBlock(BasicBlock *BB) {
     for (SmallVectorImpl<BasicBlock *>::iterator I = Dom.begin(),
            E = Dom.end(); I != E; I++) {
       BasicBlock *B = *I;
-      for (BasicBlock *S : successors(B)) {
+      for (succ_iterator SI = succ_begin(B), SE = succ_end(B); SI != SE; SI++) {
+        BasicBlock *S = *SI;
         if (DeadBlocks.count(S))
           continue;
 
         bool AllPredDead = true;
-        for (BasicBlock *Pred : predecessors(S))
-          if (!DeadBlocks.count(Pred)) {
+        for (pred_iterator PI = pred_begin(S), PE = pred_end(S); PI != PE; PI++)
+          if (!DeadBlocks.count(*PI)) {
             AllPredDead = false;
             break;
           }
@@ -2797,7 +2793,7 @@ bool GVN::processFoldableCondBr(BranchInst *BI) {
   return true;
 }
 
-// performPRE() will trigger assert if it come across an instruciton without
+// performPRE() will trigger assert if it comes across an instruction without
 // associated val-num. As it normally has far more live instructions than dead
 // instructions, it makes more sense just to "fabricate" a val-number for the
 // dead code than checking if instruction involved is dead or not.

@@ -168,7 +168,8 @@ bool CodeGenPrepare::runOnFunction(Function &F) {
   PromotedInsts.clear();
 
   ModifiedDT = false;
-  if (TM) TLI = TM->getTargetLowering();
+  if (TM)
+    TLI = TM->getSubtargetImpl()->getTargetLowering();
   TLInfo = &getAnalysis<TargetLibraryInfo>();
   DominatorTreeWrapperPass *DTWP =
       getAnalysisIfAvailable<DominatorTreeWrapperPass>();
@@ -453,8 +454,8 @@ void CodeGenPrepare::EliminateMostlyEmptyBlock(BasicBlock *BB) {
         for (unsigned i = 0, e = BBPN->getNumIncomingValues(); i != e; ++i)
           PN->addIncoming(InVal, BBPN->getIncomingBlock(i));
       } else {
-        for (BasicBlock *Pred : predecessors(BB))
-          PN->addIncoming(InVal, Pred);
+        for (pred_iterator PI = pred_begin(BB), E = pred_end(BB); PI != E; ++PI)
+          PN->addIncoming(InVal, *PI);
       }
     }
   }
@@ -662,10 +663,13 @@ SinkShiftAndTruncate(BinaryOperator *ShiftI, Instruction *User, ConstantInt *CI,
     if (!ISDOpcode)
       continue;
 
-    // If the use is actually a legal node, there will not be an implicit
-    // truncate.
+    // If the use is actually a legal node, there will not be an
+    // implicit truncate.
+    // FIXME: always querying the result type is just an
+    // approximation; some nodes' legality is determined by the
+    // operand or other means. There's no good way to find out though.
     if (TLI.isOperationLegalOrCustom(ISDOpcode,
-                                     EVT::getEVT(TruncUser->getType())))
+                                     EVT::getEVT(TruncUser->getType(), true)))
       continue;
 
     // Don't bother for PHI nodes.
@@ -977,11 +981,11 @@ bool CodeGenPrepare::DupRetToEnableTailCallOpts(BasicBlock *BB) {
     }
   } else {
     SmallPtrSet<BasicBlock*, 4> VisitedBBs;
-    for (BasicBlock *Pred : predecessors(BB)) {
-      if (!VisitedBBs.insert(Pred))
+    for (pred_iterator PI = pred_begin(BB), PE = pred_end(BB); PI != PE; ++PI) {
+      if (!VisitedBBs.insert(*PI))
         continue;
 
-      BasicBlock::InstListType &InstList = Pred->getInstList();
+      BasicBlock::InstListType &InstList = (*PI)->getInstList();
       BasicBlock::InstListType::reverse_iterator RI = InstList.rbegin();
       BasicBlock::InstListType::reverse_iterator RE = InstList.rend();
       do { ++RI; } while (RI != RE && isa<DbgInfoIntrinsic>(&*RI));

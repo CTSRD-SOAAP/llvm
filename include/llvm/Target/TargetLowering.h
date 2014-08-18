@@ -261,6 +261,11 @@ public:
   bool isMaskAndBranchFoldingLegal() const {
     return MaskAndBranchFoldingIsLegal;
   }
+  
+  /// Return true if target supports floating point exceptions.
+  bool hasFloatingPointExceptions() const {
+    return HasFloatingPointExceptions;
+  }
 
   /// Return the ValueType of the result of SETCC operations.  Also used to
   /// obtain the target's preferred type for the condition operand of SELECT and
@@ -426,10 +431,15 @@ public:
     EVT          memVT;       // memory VT
     const Value* ptrVal;      // value representing memory location
     int          offset;      // offset off of ptrVal
+    unsigned     size;        // the size of the memory location
+                              // (taken from memVT if zero)
     unsigned     align;       // alignment
     bool         vol;         // is volatile?
     bool         readMem;     // reads memory?
     bool         writeMem;    // writes memory?
+
+    IntrinsicInfo() : opc(0), ptrVal(nullptr), offset(0), size(0), align(1),
+                      vol(false), readMem(false), writeMem(false) {}
   };
 
   /// Given an intrinsic, checks if on the target the intrinsic will need to map
@@ -517,10 +527,12 @@ public:
   /// Return how this load with extension should be treated: either it is legal,
   /// needs to be promoted to a larger size, needs to be expanded to some other
   /// code sequence, or the target has a custom expander for it.
-  LegalizeAction getLoadExtAction(unsigned ExtType, MVT VT) const {
-    assert(ExtType < ISD::LAST_LOADEXT_TYPE && VT < MVT::LAST_VALUETYPE &&
+  LegalizeAction getLoadExtAction(unsigned ExtType, EVT VT) const {
+    if (VT.isExtended()) return Expand;
+    unsigned I = (unsigned) VT.getSimpleVT().SimpleTy;
+    assert(ExtType < ISD::LAST_LOADEXT_TYPE && I < MVT::LAST_VALUETYPE &&
            "Table isn't big enough!");
-    return (LegalizeAction)LoadExtActions[VT.SimpleTy][ExtType];
+    return (LegalizeAction)LoadExtActions[I][ExtType];
   }
 
   /// Return true if the specified load with extension is legal on this target.
@@ -532,11 +544,13 @@ public:
   /// Return how this store with truncation should be treated: either it is
   /// legal, needs to be promoted to a larger size, needs to be expanded to some
   /// other code sequence, or the target has a custom expander for it.
-  LegalizeAction getTruncStoreAction(MVT ValVT, MVT MemVT) const {
-    assert(ValVT < MVT::LAST_VALUETYPE && MemVT < MVT::LAST_VALUETYPE &&
+  LegalizeAction getTruncStoreAction(EVT ValVT, EVT MemVT) const {
+    if (ValVT.isExtended() || MemVT.isExtended()) return Expand;
+    unsigned ValI = (unsigned) ValVT.getSimpleVT().SimpleTy;
+    unsigned MemI = (unsigned) MemVT.getSimpleVT().SimpleTy;
+    assert(ValI < MVT::LAST_VALUETYPE && MemI < MVT::LAST_VALUETYPE &&
            "Table isn't big enough!");
-    return (LegalizeAction)TruncStoreActions[ValVT.SimpleTy]
-                                            [MemVT.SimpleTy];
+    return (LegalizeAction)TruncStoreActions[ValI][MemI];
   }
 
   /// Return true if the specified store with truncation is legal on this
@@ -773,14 +787,15 @@ public:
   ///
   /// This function returns true if the target allows unaligned memory accesses
   /// of the specified type in the given address space. If true, it also returns
-  /// whether the unaligned memory access is "fast" in the third argument by
+  /// whether the unaligned memory access is "fast" in the last argument by
   /// reference. This is used, for example, in situations where an array
   /// copy/move/set is converted to a sequence of store operations. Its use
   /// helps to ensure that such replacements don't generate code that causes an
   /// alignment error (trap) on the target machine.
-  virtual bool allowsUnalignedMemoryAccesses(EVT,
-                                             unsigned AddrSpace = 0,
-                                             bool * /*Fast*/ = nullptr) const {
+  virtual bool allowsMisalignedMemoryAccesses(EVT,
+                                              unsigned AddrSpace = 0,
+                                              unsigned Align = 1,
+                                              bool * /*Fast*/ = nullptr) const {
     return false;
   }
 
@@ -1058,6 +1073,12 @@ protected:
   /// possible, should be replaced by an alternate sequence of instructions not
   /// containing an integer divide.
   void setIntDivIsCheap(bool isCheap = true) { IntDivIsCheap = isCheap; }
+  
+  /// Tells the code generator that this target supports floating point
+  /// exceptions and cares about preserving floating point exception behavior.
+  void setHasFloatingPointExceptions(bool FPExceptions = true) {
+    HasFloatingPointExceptions = FPExceptions;
+  }
 
   /// Tells the code generator which bitwidths to bypass.
   void addBypassSlowDiv(unsigned int SlowBitWidth, unsigned int FastBitWidth) {
@@ -1493,6 +1514,10 @@ private:
   /// instructions and should attempt to combine flow control instructions via
   /// predication.
   bool JumpIsExpensive;
+
+  /// Whether the target supports or cares about preserving floating point
+  /// exception behavior.
+  bool HasFloatingPointExceptions;
 
   /// This target prefers to use _setjmp to implement llvm.setjmp.
   ///
@@ -2324,9 +2349,9 @@ public:
   /// all the time, e.g. i1 on x86-64. It is also not necessary for non-C
   /// calling conventions. The frontend should handle this and include all of
   /// the necessary information.
-  virtual MVT getTypeForExtArgOrReturn(MVT VT,
+  virtual EVT getTypeForExtArgOrReturn(LLVMContext &Context, EVT VT,
                                        ISD::NodeType /*ExtendKind*/) const {
-    MVT MinVT = getRegisterType(MVT::i32);
+    EVT MinVT = getRegisterType(Context, MVT::i32);
     return VT.bitsLT(MinVT) ? MinVT : VT;
   }
 
@@ -2545,6 +2570,11 @@ public:
   SDValue BuildUDIV(SDNode *N, const APInt &Divisor, SelectionDAG &DAG,
                     bool IsAfterLegalization,
                     std::vector<SDNode *> *Created) const;
+  virtual SDValue BuildSDIVPow2(SDNode *N, const APInt &Divisor,
+                                SelectionDAG &DAG,
+                                std::vector<SDNode *> *Created) const {
+    return SDValue();
+  }
 
   //===--------------------------------------------------------------------===//
   // Legalization utility functions
@@ -2589,6 +2619,12 @@ public:
   /// ARM 's' setting instructions.
   virtual void
   AdjustInstrPostInstrSelection(MachineInstr *MI, SDNode *Node) const;
+
+  /// If this function returns true, SelectionDAGBuilder emits a
+  /// LOAD_STACK_GUARD node when it is lowering Intrinsic::stackprotector.
+  virtual bool useLoadStackGuardNode() const {
+    return false;
+  }
 };
 
 /// Given an LLVM IR type and return type attributes, compute the return value

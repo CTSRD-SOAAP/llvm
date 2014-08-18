@@ -227,12 +227,10 @@ struct AllocaDerivedValueTracker {
   }
 
   void callUsesLocalStack(CallSite CS, bool IsNocapture) {
-    // Add it to the list of alloca users. If it's already there, skip further
-    // processing.
-    if (!AllocaUsers.insert(CS.getInstruction()))
-      return;
+    // Add it to the list of alloca users.
+    AllocaUsers.insert(CS.getInstruction());
 
-    // If it's nocapture then it can't capture the alloca.
+    // If it's nocapture then it can't capture this alloca.
     if (IsNocapture)
       return;
 
@@ -335,7 +333,7 @@ bool TailCallElim::markTails(Function &F, bool &AllCallsAreTailCalls) {
       }
     }
 
-    for (auto *SuccBB : successors(BB)) {
+    for (auto *SuccBB : make_range(succ_begin(BB), succ_end(BB))) {
       auto &State = Visited[SuccBB];
       if (State < Escaped) {
         State = Escaped;
@@ -807,7 +805,8 @@ bool TailCallElim::FoldReturnAndProcessPred(BasicBlock *BB,
   // predecessors and perform TRC there. Look for predecessors that end
   // in unconditional branch and recursive call(s).
   SmallVector<BranchInst*, 8> UncondBranchPreds;
-  for (BasicBlock *Pred : predecessors(BB)) {
+  for (pred_iterator PI = pred_begin(BB), E = pred_end(BB); PI != E; ++PI) {
+    BasicBlock *Pred = *PI;
     TerminatorInst *PTI = Pred->getTerminator();
     if (BranchInst *BI = dyn_cast<BranchInst>(PTI))
       if (BI->isUnconditional())
