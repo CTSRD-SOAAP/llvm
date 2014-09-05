@@ -101,7 +101,8 @@ private:
 // called.
 
 class MCJIT : public ExecutionEngine {
-  MCJIT(Module *M, TargetMachine *tm, RTDyldMemoryManager *MemMgr);
+  MCJIT(std::unique_ptr<Module> M, std::unique_ptr<TargetMachine> tm,
+        RTDyldMemoryManager *MemMgr);
 
   typedef llvm::SmallPtrSet<Module *, 4> ModulePtrSet;
 
@@ -124,8 +125,8 @@ class MCJIT : public ExecutionEngine {
     ModulePtrSet::iterator begin_finalized() { return FinalizedModules.begin(); }
     ModulePtrSet::iterator end_finalized() { return FinalizedModules.end(); }
 
-    void addModule(Module *M) {
-      AddedModules.insert(M);
+    void addModule(std::unique_ptr<Module> M) {
+      AddedModules.insert(M.release());
     }
 
     bool removeModule(Module *M) {
@@ -207,18 +208,18 @@ class MCJIT : public ExecutionEngine {
     }
   };
 
-  TargetMachine *TM;
+  std::unique_ptr<TargetMachine> TM;
   MCContext *Ctx;
   LinkingMemoryManager MemMgr;
   RuntimeDyld Dyld;
-  SmallVector<JITEventListener*, 2> EventListeners;
+  std::vector<JITEventListener*> EventListeners;
 
   OwningModuleContainer OwnedModules;
 
-  SmallVector<std::unique_ptr<object::Archive>, 2> Archives;
+  SmallVector<object::OwningBinary<object::Archive>, 2> Archives;
+  SmallVector<std::unique_ptr<MemoryBuffer>, 2> Buffers;
 
-  typedef SmallVector<ObjectImage *, 2> LoadedObjectList;
-  LoadedObjectList  LoadedObjects;
+  SmallVector<std::unique_ptr<ObjectImage>, 2> LoadedObjects;
 
   // An optional ObjectCache to be notified of compiled objects and used to
   // perform lookup of pre-compiled code to avoid re-compilation.
@@ -237,9 +238,10 @@ public:
 
   /// @name ExecutionEngine interface implementation
   /// @{
-  void addModule(Module *M) override;
+  void addModule(std::unique_ptr<Module> M) override;
   void addObjectFile(std::unique_ptr<object::ObjectFile> O) override;
-  void addArchive(std::unique_ptr<object::Archive> O) override;
+  void addObjectFile(object::OwningBinary<object::ObjectFile> O) override;
+  void addArchive(object::OwningBinary<object::Archive> O) override;
   bool removeModule(Module *M) override;
 
   /// FindFunctionNamed - Search all of the active modules to find the one that
@@ -275,13 +277,7 @@ public:
   /// \param isDtors - Run the destructors instead of constructors.
   void runStaticConstructorsDestructors(bool isDtors) override;
 
-  void *getPointerToBasicBlock(BasicBlock *BB) override;
-
   void *getPointerToFunction(Function *F) override;
-
-  void *recompileAndRelinkFunction(Function *F) override;
-
-  void freeMachineCodeForFunction(Function *F) override;
 
   GenericValue runFunction(Function *F,
                            const std::vector<GenericValue> &ArgValues) override;
@@ -314,7 +310,7 @@ public:
   uint64_t getGlobalValueAddress(const std::string &Name) override;
   uint64_t getFunctionAddress(const std::string &Name) override;
 
-  TargetMachine *getTargetMachine() override { return TM; }
+  TargetMachine *getTargetMachine() override { return TM.get(); }
 
   /// @}
   /// @name (Private) Registration Interfaces
@@ -324,10 +320,10 @@ public:
     MCJITCtor = createJIT;
   }
 
-  static ExecutionEngine *createJIT(Module *M,
+  static ExecutionEngine *createJIT(std::unique_ptr<Module> M,
                                     std::string *ErrorStr,
                                     RTDyldMemoryManager *MemMgr,
-                                    TargetMachine *TM);
+                                    std::unique_ptr<TargetMachine> TM);
 
   // @}
 
@@ -342,7 +338,7 @@ protected:
   /// this function call is expected to be the contained module.  The module
   /// is passed as a parameter here to prepare for multiple module support in
   /// the future.
-  ObjectBufferStream* emitObject(Module *M);
+  std::unique_ptr<ObjectBufferStream> emitObject(Module *M);
 
   void NotifyObjectEmitted(const ObjectImage& Obj);
   void NotifyFreeingObject(const ObjectImage& Obj);

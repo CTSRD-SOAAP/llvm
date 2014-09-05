@@ -265,9 +265,12 @@ class ARMAsmParser : public MCTargetAsmParser {
   bool hasARM() const {
     return !(STI.getFeatureBits() & ARM::FeatureNoARM);
   }
+  bool hasThumb2DSP() const {
+    return STI.getFeatureBits() & ARM::FeatureDSPThumb2;
+  }
 
   void SwitchMode() {
-    unsigned FB = ComputeAvailableFeatures(STI.ToggleFeature(ARM::ModeThumb));
+    uint64_t FB = ComputeAvailableFeatures(STI.ToggleFeature(ARM::ModeThumb));
     setAvailableFeatures(FB);
   }
   bool isMClass() const {
@@ -360,7 +363,7 @@ public:
 
   bool MatchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
                                OperandVector &Operands, MCStreamer &Out,
-                               unsigned &ErrorInfo,
+                               uint64_t &ErrorInfo,
                                bool MatchingInlineAsm) override;
   void onLabelParsed(MCSymbol *Symbol) override;
 };
@@ -3928,9 +3931,6 @@ ARMAsmParser::parseMSRMaskOperand(OperandVector &Operands) {
       // should really only be allowed when writing a special register.  Note
       // they get dropped in the MRS instruction reading a special register as
       // the SYSm field is only 8 bits.
-      //
-      // FIXME: the _g and _nzcvqg versions are only allowed if the processor
-      // includes the DSP extension but that is not checked.
       .Case("apsr", 0x800)
       .Case("apsr_nzcvq", 0x800)
       .Case("apsr_g", 0x400)
@@ -3960,6 +3960,11 @@ ARMAsmParser::parseMSRMaskOperand(OperandVector &Operands) {
       .Default(~0U);
 
     if (FlagsVal == ~0U)
+      return MatchOperand_NoMatch;
+
+    if (!hasThumb2DSP() && (FlagsVal & 0x400))
+      // The _g and _nzcvqg versions are only valid if the DSP extension is
+      // available.
       return MatchOperand_NoMatch;
 
     if (!hasV7Ops() && FlagsVal >= 0x811 && FlagsVal <= 0x813)
@@ -5363,7 +5368,7 @@ static bool isDataTypeToken(StringRef Tok) {
 static bool doesIgnoreDataTypeSuffix(StringRef Mnemonic, StringRef DT) {
   return Mnemonic.startswith("vldm") || Mnemonic.startswith("vstm");
 }
-static void applyMnemonicAliases(StringRef &Mnemonic, unsigned Features,
+static void applyMnemonicAliases(StringRef &Mnemonic, uint64_t Features,
                                  unsigned VariantID);
 
 static bool RequiresVFPRegListValidation(StringRef Inst,
@@ -5401,7 +5406,7 @@ bool ARMAsmParser::ParseInstruction(ParseInstructionInfo &Info, StringRef Name,
   // The generic tblgen'erated code does this later, at the start of
   // MatchInstructionImpl(), but that's too late for aliases that include
   // any sort of suffix.
-  unsigned AvailableFeatures = getAvailableFeatures();
+  uint64_t AvailableFeatures = getAvailableFeatures();
   unsigned AssemblerDialect = getParser().getAssemblerDialect();
   applyMnemonicAliases(Name, AvailableFeatures, AssemblerDialect);
 
@@ -8162,10 +8167,10 @@ template <> inline bool IsCPSRDead<MCInst>(MCInst *Instr) {
 }
 }
 
-static const char *getSubtargetFeatureName(unsigned Val);
+static const char *getSubtargetFeatureName(uint64_t Val);
 bool ARMAsmParser::MatchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
                                            OperandVector &Operands,
-                                           MCStreamer &Out, unsigned &ErrorInfo,
+                                           MCStreamer &Out, uint64_t &ErrorInfo,
                                            bool MatchingInlineAsm) {
   MCInst Inst;
   unsigned MatchResult;
@@ -8219,7 +8224,7 @@ bool ARMAsmParser::MatchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
     // Special case the error message for the very common case where only
     // a single subtarget feature is missing (Thumb vs. ARM, e.g.).
     std::string Msg = "instruction requires:";
-    unsigned Mask = 1;
+    uint64_t Mask = 1;
     for (unsigned i = 0; i < (sizeof(ErrorInfo)*8-1); ++i) {
       if (ErrorInfo & Mask) {
         Msg += " ";
@@ -8231,7 +8236,7 @@ bool ARMAsmParser::MatchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
   }
   case Match_InvalidOperand: {
     SMLoc ErrorLoc = IDLoc;
-    if (ErrorInfo != ~0U) {
+    if (ErrorInfo != ~0ULL) {
       if (ErrorInfo >= Operands.size())
         return Error(IDLoc, "too few operands for instruction");
 
@@ -8796,7 +8801,7 @@ bool ARMAsmParser::parseDirectiveFPU(SMLoc L) {
 
     // Need to toggle features that should be on but are off and that
     // should off but are on.
-    unsigned Toggle = (Fpu.Enabled & ~STI.getFeatureBits()) |
+    uint64_t Toggle = (Fpu.Enabled & ~STI.getFeatureBits()) |
                       (Fpu.Disabled & STI.getFeatureBits());
     setAvailableFeatures(ComputeAvailableFeatures(STI.ToggleFeature(Toggle)));
     break;
@@ -9580,10 +9585,10 @@ bool ARMAsmParser::parseDirectiveArchExtension(SMLoc L) {
       return false;
     }
 
-    unsigned ToggleFeatures = EnableFeature
+    uint64_t ToggleFeatures = EnableFeature
                                   ? (~STI.getFeatureBits() & Extension.Features)
                                   : ( STI.getFeatureBits() & Extension.Features);
-    unsigned Features =
+    uint64_t Features =
         ComputeAvailableFeatures(STI.ToggleFeature(ToggleFeatures));
     setAvailableFeatures(Features);
     return false;

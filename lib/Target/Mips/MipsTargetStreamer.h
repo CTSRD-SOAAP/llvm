@@ -48,6 +48,7 @@ public:
   virtual void emitMask(unsigned CPUBitmask, int CPUTopSavedRegOff);
   virtual void emitFMask(unsigned FPUBitmask, int FPUTopSavedRegOff);
 
+  virtual void emitDirectiveSetArch(StringRef Arch);
   virtual void emitDirectiveSetMips1();
   virtual void emitDirectiveSetMips2();
   virtual void emitDirectiveSetMips3();
@@ -147,6 +148,7 @@ public:
   void emitMask(unsigned CPUBitmask, int CPUTopSavedRegOff) override;
   void emitFMask(unsigned FPUBitmask, int FPUTopSavedRegOff) override;
 
+  void emitDirectiveSetArch(StringRef Arch) override;
   void emitDirectiveSetMips1() override;
   void emitDirectiveSetMips2() override;
   void emitDirectiveSetMips3() override;
@@ -161,7 +163,7 @@ public:
   void emitDirectiveSetDsp() override;
 
   // PIC support
-  virtual void emitDirectiveCpload(unsigned RegNo);
+  void emitDirectiveCpload(unsigned RegNo) override;
   void emitDirectiveCpsetup(unsigned RegNo, int RegOrOffset,
                             const MCSymbol &Sym, bool IsReg) override;
 
@@ -207,7 +209,7 @@ public:
   void emitFMask(unsigned FPUBitmask, int FPUTopSavedRegOff) override;
 
   // PIC support
-  virtual void emitDirectiveCpload(unsigned RegNo);
+  void emitDirectiveCpload(unsigned RegNo) override;
   void emitDirectiveCpsetup(unsigned RegNo, int RegOrOffset,
                             const MCSymbol &Sym, bool IsReg) override;
 

@@ -19,6 +19,9 @@ namespace llvm {
 class RuntimeDyldMachOX86_64
     : public RuntimeDyldMachOCRTPBase<RuntimeDyldMachOX86_64> {
 public:
+
+  typedef uint64_t TargetPtrT;
+
   RuntimeDyldMachOX86_64(RTDyldMemoryManager *MM)
       : RuntimeDyldMachOCRTPBase(MM) {}
 
@@ -61,7 +64,7 @@ public:
     return ++RelI;
   }
 
-  void resolveRelocation(const RelocationEntry &RE, uint64_t Value) {
+  void resolveRelocation(const RelocationEntry &RE, uint64_t Value) override {
     DEBUG(dumpRelocationToResolve(RE, Value));
     const SectionEntry &Section = Sections[RE.SectionID];
     uint8_t *LocalAddress = Section.Address + RE.Offset;
@@ -84,7 +87,7 @@ public:
     case MachO::X86_64_RELOC_SIGNED:
     case MachO::X86_64_RELOC_UNSIGNED:
     case MachO::X86_64_RELOC_BRANCH:
-      writeBytesUnaligned(LocalAddress, Value + RE.Addend, 1 << RE.Size);
+      writeBytesUnaligned(Value + RE.Addend, LocalAddress, 1 << RE.Size);
       break;
     case MachO::X86_64_RELOC_GOT_LOAD:
     case MachO::X86_64_RELOC_GOT:

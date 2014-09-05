@@ -693,11 +693,11 @@ static void EmitGenDwarfInfo(MCStreamer *MCOS,
 
   // DW_AT_stmt_list, a 4 byte offset from the start of the .debug_line section,
   // which is at the start of that section so this is zero.
-  if (LineSectionSymbol) {
-    MCOS->EmitSymbolValue(LineSectionSymbol, 4);
-  } else {
+  if (LineSectionSymbol)
+    MCOS->EmitSymbolValue(LineSectionSymbol, 4,
+                          AsmInfo.needsDwarfSectionOffsetDirective());
+  else
     MCOS->EmitIntValue(0, 4);
-  }
 
   if (RangesSectionSymbol) {
     // There are multiple sections containing code, so we must use the
@@ -1016,12 +1016,11 @@ static void EmitPersonality(MCStreamer &streamer, const MCSymbol &symbol,
 namespace {
   class FrameEmitterImpl {
     int CFAOffset;
-    int CIENum;
     bool IsEH;
     const MCSymbol *SectionStart;
   public:
     FrameEmitterImpl(bool isEH)
-        : CFAOffset(0), CIENum(0), IsEH(isEH), SectionStart(nullptr) {}
+        : CFAOffset(0), IsEH(isEH), SectionStart(nullptr) {}
 
     void setSectionStart(const MCSymbol *Label) { SectionStart = Label; }
 
@@ -1257,7 +1256,6 @@ const MCSymbol &FrameEmitterImpl::EmitCIE(MCObjectStreamer &streamer,
 
   MCSymbol *sectionStart = context.CreateTempSymbol();
   streamer.EmitLabel(sectionStart);
-  CIENum++;
 
   MCSymbol *sectionEnd = context.CreateTempSymbol();
 

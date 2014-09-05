@@ -36,19 +36,16 @@ protected:
 
   // This form of the constructor allows subclasses to use
   // format-specific subclasses of ObjectFile directly
-  ObjectImageCommon(ObjectBuffer *Input, std::unique_ptr<object::ObjectFile> Obj)
-  : ObjectImage(Input), // saves Input as Buffer and takes ownership
-    ObjFile(std::move(Obj))
-  {
-  }
+  ObjectImageCommon(std::unique_ptr<ObjectBuffer> Input,
+                    std::unique_ptr<object::ObjectFile> Obj)
+      : ObjectImage(std::move(Input)), ObjFile(std::move(Obj)) {}
 
 public:
-  ObjectImageCommon(ObjectBuffer* Input)
-  : ObjectImage(Input) // saves Input as Buffer and takes ownership
-  {
+  ObjectImageCommon(std::unique_ptr<ObjectBuffer> Input)
+      : ObjectImage(std::move(Input)) {
     // FIXME: error checking? createObjectFile returns an ErrorOr<ObjectFile*>
     // and should probably be checked for failure.
-    std::unique_ptr<MemoryBuffer> Buf = Buffer->getMemBuffer();
+    MemoryBufferRef Buf = Buffer->getMemBuffer();
     ObjFile = std::move(object::ObjectFile::createObjectFile(Buf).get());
   }
   ObjectImageCommon(std::unique_ptr<object::ObjectFile> Input)

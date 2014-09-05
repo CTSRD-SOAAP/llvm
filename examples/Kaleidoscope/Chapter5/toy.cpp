@@ -1,6 +1,5 @@
 #include "llvm/Analysis/Passes.h"
 #include "llvm/ExecutionEngine/ExecutionEngine.h"
-#include "llvm/ExecutionEngine/JIT.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/IRBuilder.h"
@@ -817,11 +816,13 @@ int main() {
   getNextToken();
 
   // Make the module, which holds all the code.
-  TheModule = new Module("my cool jit", Context);
+  std::unique_ptr<Module> Owner = make_unique<Module>("my cool jit", Context);
+  TheModule = Owner.get();
 
   // Create the JIT.  This takes ownership of the module.
   std::string ErrStr;
-  TheExecutionEngine = EngineBuilder(TheModule).setErrorStr(&ErrStr).create();
+  TheExecutionEngine =
+      EngineBuilder(std::move(Owner)).setErrorStr(&ErrStr).create();
   if (!TheExecutionEngine) {
     fprintf(stderr, "Could not create ExecutionEngine: %s\n", ErrStr.c_str());
     exit(1);

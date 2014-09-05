@@ -20,6 +20,9 @@ namespace llvm {
 class RuntimeDyldMachOAArch64
     : public RuntimeDyldMachOCRTPBase<RuntimeDyldMachOAArch64> {
 public:
+
+  typedef uint64_t TargetPtrT;
+
   RuntimeDyldMachOAArch64(RTDyldMemoryManager *MM)
       : RuntimeDyldMachOCRTPBase(MM) {}
 
@@ -296,7 +299,7 @@ public:
     return ++RelI;
   }
 
-  void resolveRelocation(const RelocationEntry &RE, uint64_t Value) {
+  void resolveRelocation(const RelocationEntry &RE, uint64_t Value) override {
     DEBUG(dumpRelocationToResolve(RE, Value));
 
     const SectionEntry &Section = Sections[RE.SectionID];
