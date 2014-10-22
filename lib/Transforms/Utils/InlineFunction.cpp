@@ -18,6 +18,7 @@
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Analysis/AliasAnalysis.h"
+#include "llvm/Analysis/AssumptionTracker.h"
 #include "llvm/Analysis/CallGraph.h"
 #include "llvm/Analysis/CaptureTracking.h"
 #include "llvm/Analysis/InstructionSimplify.h"
@@ -45,6 +46,11 @@ static cl::opt<bool>
 EnableNoAliasConversion("enable-noalias-to-md-conversion", cl::init(true),
   cl::Hidden,
   cl::desc("Convert noalias attributes to metadata during inlining."));
+
+static cl::opt<bool>
+PreserveAlignmentAssumptions("preserve-alignment-assumptions-during-inlining",
+  cl::init(true), cl::Hidden,
+  cl::desc("Convert align attributes to assumptions during inlining."));
 
 bool llvm::InlineFunction(CallInst *CI, InlineFunctionInfo &IFI,
                           bool InsertLifetime) {
@@ -615,6 +621,41 @@ static void AddAliasScopeMetadata(CallSite CS, ValueToValueMapTy &VMap,
   }
 }
 
+/// If the inlined function has non-byval align arguments, then
+/// add @llvm.assume-based alignment assumptions to preserve this information.
+static void AddAlignmentAssumptions(CallSite CS, InlineFunctionInfo &IFI) {
+  if (!PreserveAlignmentAssumptions || !IFI.DL)
+    return;
+
+  // To avoid inserting redundant assumptions, we should check for assumptions
+  // already in the caller. To do this, we might need a DT of the caller.
+  DominatorTree DT;
+  bool DTCalculated = false;
+
+  const Function *CalledFunc = CS.getCalledFunction();
+  for (Function::const_arg_iterator I = CalledFunc->arg_begin(),
+       E = CalledFunc->arg_end(); I != E; ++I) {
+    unsigned Align = I->getType()->isPointerTy() ? I->getParamAlignment() : 0;
+    if (Align && !I->hasByValOrInAllocaAttr() && !I->hasNUses(0)) {
+      if (!DTCalculated) {
+        DT.recalculate(const_cast<Function&>(*CS.getInstruction()->getParent()
+                                               ->getParent()));
+        DTCalculated = true;
+      }
+
+      // If we can already prove the asserted alignment in the context of the
+      // caller, then don't bother inserting the assumption.
+      Value *Arg = CS.getArgument(I->getArgNo());
+      if (getKnownAlignment(Arg, IFI.DL, IFI.AT, CS.getInstruction(),
+                            &DT) >= Align)
+        continue;
+
+      IRBuilder<>(CS.getInstruction()).CreateAlignmentAssumption(*IFI.DL, Arg,
+                                                                 Align);
+    }
+  }
+}
+
 /// UpdateCallGraphAfterInlining - Once we have cloned code over from a callee
 /// into the caller, update the specified callgraph to reflect the changes we
 /// made.  Note that it's possible that not all code was copied over, so only
@@ -682,31 +723,19 @@ static void UpdateCallGraphAfterInlining(CallSite CS,
 static void HandleByValArgumentInit(Value *Dst, Value *Src, Module *M,
                                     BasicBlock *InsertBlock,
                                     InlineFunctionInfo &IFI) {
-  LLVMContext &Context = Src->getContext();
-  Type *VoidPtrTy = Type::getInt8PtrTy(Context);
   Type *AggTy = cast<PointerType>(Src->getType())->getElementType();
-  Type *Tys[3] = { VoidPtrTy, VoidPtrTy, Type::getInt64Ty(Context) };
-  Function *MemCpyFn = Intrinsic::getDeclaration(M, Intrinsic::memcpy, Tys);
-  IRBuilder<> builder(InsertBlock->begin());
-  Value *DstCast = builder.CreateBitCast(Dst, VoidPtrTy, "tmp");
-  Value *SrcCast = builder.CreateBitCast(Src, VoidPtrTy, "tmp");
+  IRBuilder<> Builder(InsertBlock->begin());
 
   Value *Size;
   if (IFI.DL == nullptr)
     Size = ConstantExpr::getSizeOf(AggTy);
   else
-    Size = ConstantInt::get(Type::getInt64Ty(Context),
-                            IFI.DL->getTypeStoreSize(AggTy));
+    Size = Builder.getInt64(IFI.DL->getTypeStoreSize(AggTy));
 
   // Always generate a memcpy of alignment 1 here because we don't know
   // the alignment of the src pointer.  Other optimizations can infer
   // better alignment.
-  Value *CallArgs[] = {
-    DstCast, SrcCast, Size,
-    ConstantInt::get(Type::getInt32Ty(Context), 1),
-    ConstantInt::getFalse(Context) // isVolatile
-  };
-  builder.CreateCall(MemCpyFn, CallArgs);
+  Builder.CreateMemCpy(Dst, Src, Size, /*Align=*/1);
 }
 
 /// HandleByValArgument - When inlining a call site that has a byval argument,
@@ -731,7 +760,7 @@ static Value *HandleByValArgument(Value *Arg, Instruction *TheCall,
     // If the pointer is already known to be sufficiently aligned, or if we can
     // round it up to a larger alignment, then we don't need a temporary.
     if (getOrEnforceKnownAlignment(Arg, ByValAlignment,
-                                   IFI.DL) >= ByValAlignment)
+                                   IFI.DL, IFI.AT, TheCall) >= ByValAlignment)
       return Arg;
     
     // Otherwise, we have to make a memcpy to get a safe alignment.  This is bad
@@ -827,6 +856,12 @@ static void fixupLineNumbers(Function *Fn, Function::iterator FI,
         // originates from the call location. This is important for
         // ((__always_inline__, __nodebug__)) functions which must use caller
         // location for all instructions in their function body.
+
+        // Don't update static allocas, as they may get moved later.
+        if (auto *AI = dyn_cast<AllocaInst>(BI))
+          if (isa<Constant>(AI->getArraySize()))
+            continue;
+
         BI->setDebugLoc(TheCallDL);
       } else {
         BI->setDebugLoc(updateInlinedAtInfo(DL, TheCallDL, BI->getContext()));
@@ -954,6 +989,11 @@ bool llvm::InlineFunction(CallSite CS, InlineFunctionInfo &IFI,
       VMap[I] = ActualArg;
     }
 
+    // Add alignment assumptions if necessary. We do this before the inlined
+    // instructions are actually cloned into the caller so that we can easily
+    // check what will be known at the start of the inlined code.
+    AddAlignmentAssumptions(CS, IFI);
+
     // We want the inliner to prune the code as it copies.  We would LOVE to
     // have no dead or constant instructions leftover after inlining occurs
     // (which can happen, e.g., because an argument was constant), but we'll be
@@ -982,6 +1022,11 @@ bool llvm::InlineFunction(CallSite CS, InlineFunctionInfo &IFI,
 
     // Add noalias metadata if necessary.
     AddAliasScopeMetadata(CS, VMap, IFI.DL, IFI.AA);
+
+    // FIXME: We could register any cloned assumptions instead of clearing the
+    // whole function's cache.
+    if (IFI.AT)
+      IFI.AT->forgetCachedAssumptions(Caller);
   }
 
   // If there are any alloca instructions in the block that used to be the entry
@@ -1352,7 +1397,7 @@ bool llvm::InlineFunction(CallSite CS, InlineFunctionInfo &IFI,
   // the entries are the same or undef).  If so, remove the PHI so it doesn't
   // block other optimizations.
   if (PHI) {
-    if (Value *V = SimplifyInstruction(PHI, IFI.DL)) {
+    if (Value *V = SimplifyInstruction(PHI, IFI.DL, nullptr, nullptr, IFI.AT)) {
       PHI->replaceAllUsesWith(V);
       PHI->eraseFromParent();
     }

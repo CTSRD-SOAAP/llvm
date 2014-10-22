@@ -18,6 +18,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/AliasAnalysis.h"
+#include "llvm/Analysis/AssumptionTracker.h"
 #include "llvm/Analysis/InstructionSimplify.h"
 #include "llvm/Analysis/MemoryBuiltins.h"
 #include "llvm/Analysis/PHITransAddr.h"
@@ -48,13 +49,17 @@ STATISTIC(NumCacheCompleteNonLocalPtr,
           "Number of block queries that were completely cached");
 
 // Limit for the number of instructions to scan in a block.
-static const int BlockScanLimit = 100;
+static const unsigned int BlockScanLimit = 100;
+
+// Limit on the number of memdep results to process.
+static const unsigned int NumResultsLimit = 100;
 
 char MemoryDependenceAnalysis::ID = 0;
 
 // Register this pass...
 INITIALIZE_PASS_BEGIN(MemoryDependenceAnalysis, "memdep",
                 "Memory Dependence Analysis", false, true)
+INITIALIZE_PASS_DEPENDENCY(AssumptionTracker)
 INITIALIZE_AG_DEPENDENCY(AliasAnalysis)
 INITIALIZE_PASS_END(MemoryDependenceAnalysis, "memdep",
                       "Memory Dependence Analysis", false, true)
@@ -83,11 +88,13 @@ void MemoryDependenceAnalysis::releaseMemory() {
 ///
 void MemoryDependenceAnalysis::getAnalysisUsage(AnalysisUsage &AU) const {
   AU.setPreservesAll();
+  AU.addRequired<AssumptionTracker>();
   AU.addRequiredTransitive<AliasAnalysis>();
 }
 
 bool MemoryDependenceAnalysis::runOnFunction(Function &) {
   AA = &getAnalysis<AliasAnalysis>();
+  AT = &getAnalysis<AssumptionTracker>();
   DataLayoutPass *DLP = getAnalysisIfAvailable<DataLayoutPass>();
   DL = DLP ? &DLP->getDataLayout() : nullptr;
   DominatorTreeWrapperPass *DTWP =
@@ -859,7 +866,7 @@ getNonLocalPointerDependency(const AliasAnalysis::Location &Loc, bool isLoad,
          "Can't get pointer deps of a non-pointer!");
   Result.clear();
 
-  PHITransAddr Address(const_cast<Value *>(Loc.Ptr), DL);
+  PHITransAddr Address(const_cast<Value *>(Loc.Ptr), DL, AT);
 
   // This is the set of blocks we've inspected, and the pointer we consider in
   // each block.  Because of critical edges, we currently bail out if querying
@@ -1128,6 +1135,25 @@ getNonLocalPointerDepFromBB(const PHITransAddr &Pointer,
 
   while (!Worklist.empty()) {
     BasicBlock *BB = Worklist.pop_back_val();
+
+    // If we do process a large number of blocks it becomes very expensive and
+    // likely it isn't worth worrying about
+    if (Result.size() > NumResultsLimit) {
+      Worklist.clear();
+      // Sort it now (if needed) so that recursive invocations of
+      // getNonLocalPointerDepFromBB and other routines that could reuse the
+      // cache value will only see properly sorted cache arrays.
+      if (Cache && NumSortedEntries != Cache->size()) {
+        SortNonLocalDepInfoCache(*Cache, NumSortedEntries);
+        NumSortedEntries = Cache->size();
+      }
+      // Since we bail out, the "Cache" set won't contain all of the
+      // results for the query.  This is ok (we can still use it to accelerate
+      // specific block queries) but we can't do the fastpath "return all
+      // results from the set".  Clear out the indicator for this.
+      CacheInfo->Pair = BBSkipFirstBlockPair();
+      return true;
+    }
 
     // Skip the first block if we have it.
     if (!SkipFirstBlock) {

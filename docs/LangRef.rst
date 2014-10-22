@@ -783,7 +783,7 @@ In a COFF object file, this will create a COMDAT section with selection kind
 ``IMAGE_COMDAT_SELECT_LARGEST`` containing the contents of the ``@foo`` symbol
 and another COMDAT section with selection kind
 ``IMAGE_COMDAT_SELECT_ASSOCIATIVE`` which is associated with the first COMDAT
-section and contains the contents of the ``@baz`` symbol.
+section and contains the contents of the ``@bar`` symbol.
 
 There are some restrictions on the properties of the global object.
 It, or an alias to it, must have the same name as the COMDAT group when
@@ -2276,7 +2276,9 @@ constants and smaller complex constants.
     square brackets (``[]``)). For example:
     "``[ i32 42, i32 11, i32 74 ]``". Array constants must have
     :ref:`array type <t_array>`, and the number and types of elements must
-    match those specified by the type.
+    match those specified by the type. As a special case, character array
+    constants may also be represented as a double-quoted string using the ``c``
+    prefix. For example: "``c"Hello World\0A\00"``".
 **Vector constants**
     Vector constants are represented with notation similar to vector
     type definitions (a comma separated list of elements, surrounded by
@@ -2393,7 +2395,7 @@ allowed to assume that the '``undef``' operand could be the same as
       %C = xor %B, %B
 
       %D = undef
-      %E = icmp lt %D, 4
+      %E = icmp slt %D, 4
       %F = icmp gte %D, 4
 
     Safe:
@@ -5075,7 +5077,7 @@ Example:
 
       %agg1 = insertvalue {i32, float} undef, i32 1, 0              ; yields {i32 1, float undef}
       %agg2 = insertvalue {i32, float} %agg1, float %val, 1         ; yields {i32 1, float %val}
-      %agg3 = insertvalue {i32, {float}} %agg1, float %val, 1, 0    ; yields {i32 1, float %val}
+      %agg3 = insertvalue {i32, {float}} undef, float %val, 1, 0    ; yields {i32 undef, {float %val}}
 
 .. _memoryops:
 
@@ -5155,7 +5157,7 @@ Syntax:
 
 ::
 
-      <result> = load [volatile] <ty>* <pointer>[, align <alignment>][, !nontemporal !<index>][, !invariant.load !<index>]
+      <result> = load [volatile] <ty>* <pointer>[, align <alignment>][, !nontemporal !<index>][, !invariant.load !<index>][, !nonnull !<index>]
       <result> = load atomic [volatile] <ty>* <pointer> [singlethread] <ordering>, align <alignment>
       !<index> = !{ i32 1 }
 
@@ -5210,6 +5212,14 @@ instruction tells the optimizer and code generator that this load
 address points to memory which does not change value during program
 execution. The optimizer may then move this load around, for example, by
 hoisting it out of loops using loop invariant code motion.
+
+The optional ``!nonnull`` metadata must reference a single
+metadata name ``<index>`` corresponding to a metadata node with no
+entries. The existence of the ``!nonnull`` metadata on the
+instruction tells the optimizer that the value loaded is known to
+never be null.  This is analogous to the ''nonnull'' attribute
+on parameters and return values.  This metadata can only be applied 
+to loads of a pointer type.  
 
 Semantics:
 """"""""""
@@ -8018,9 +8028,9 @@ all types however.
 
       declare float     @llvm.fabs.f32(float  %Val)
       declare double    @llvm.fabs.f64(double %Val)
-      declare x86_fp80  @llvm.fabs.f80(x86_fp80  %Val)
+      declare x86_fp80  @llvm.fabs.f80(x86_fp80 %Val)
       declare fp128     @llvm.fabs.f128(fp128 %Val)
-      declare ppc_fp128 @llvm.fabs.ppcf128(ppc_fp128  %Val)
+      declare ppc_fp128 @llvm.fabs.ppcf128(ppc_fp128 %Val)
 
 Overview:
 """""""""
@@ -8039,6 +8049,89 @@ Semantics:
 
 This function returns the same values as the libm ``fabs`` functions
 would, and handles error conditions in the same way.
+
+'``llvm.minnum.*``' Intrinsic
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Syntax:
+"""""""
+
+This is an overloaded intrinsic. You can use ``llvm.minnum`` on any
+floating point or vector of floating point type. Not all targets support
+all types however.
+
+::
+
+      declare float     @llvm.minnum.f32(float %Val)
+      declare double    @llvm.minnum.f64(double %Val)
+      declare x86_fp80  @llvm.minnum.f80(x86_fp80 %Val)
+      declare fp128     @llvm.minnum.f128(fp128 %Val)
+      declare ppc_fp128 @llvm.minnum.ppcf128(ppc_fp128 %Val)
+
+Overview:
+"""""""""
+
+The '``llvm.minnum.*``' intrinsics return the minimum of the two
+arguments.
+
+
+Arguments:
+""""""""""
+
+The arguments and return value are floating point numbers of the same
+type.
+
+Semantics:
+""""""""""
+
+Follows the IEEE-754 semantics for minNum, which also match for libm's
+fmin.
+
+If either operand is a NaN, returns the other non-NaN operand. Returns
+NaN only if both operands are NaN. If the operands compare equal,
+returns a value that compares equal to both operands. This means that
+fmin(+/-0.0, +/-0.0) could return either -0.0 or 0.0.
+
+'``llvm.maxnum.*``' Intrinsic
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Syntax:
+"""""""
+
+This is an overloaded intrinsic. You can use ``llvm.maxnum`` on any
+floating point or vector of floating point type. Not all targets support
+all types however.
+
+::
+
+      declare float     @llvm.maxnum.f32(float  %Val)
+      declare double    @llvm.maxnum.f64(double %Val)
+      declare x86_fp80  @llvm.maxnum.f80(x86_fp80  %Val)
+      declare fp128     @llvm.maxnum.f128(fp128 %Val)
+      declare ppc_fp128 @llvm.maxnum.ppcf128(ppc_fp128  %Val)
+
+Overview:
+"""""""""
+
+The '``llvm.maxnum.*``' intrinsics return the maximum of the two
+arguments.
+
+
+Arguments:
+""""""""""
+
+The arguments and return value are floating point numbers of the same
+type.
+
+Semantics:
+""""""""""
+Follows the IEEE-754 semantics for maxNum, which also match for libm's
+fmax.
+
+If either operand is a NaN, returns the other non-NaN operand. Returns
+NaN only if both operands are NaN. If the operands compare equal,
+returns a value that compares equal to both operands. This means that
+fmax(+/-0.0, +/-0.0) could return either -0.0 or 0.0.
 
 '``llvm.copysign.*``' Intrinsic
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

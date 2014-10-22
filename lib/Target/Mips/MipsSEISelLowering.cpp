@@ -35,7 +35,7 @@ static cl::opt<bool> NoDPLoadStore("mno-ldc1-sdc1", cl::init(false),
                                             "stores to their single precision "
                                             "counterparts"));
 
-MipsSETargetLowering::MipsSETargetLowering(MipsTargetMachine &TM,
+MipsSETargetLowering::MipsSETargetLowering(const MipsTargetMachine &TM,
                                            const MipsSubtarget &STI)
     : MipsTargetLowering(TM, STI) {
   // Set up the register classes
@@ -128,6 +128,8 @@ MipsSETargetLowering::MipsSETargetLowering(MipsTargetMachine &TM,
   if (Subtarget.isGP64bit()) {
     setOperationAction(ISD::MULHS,            MVT::i64, Custom);
     setOperationAction(ISD::MULHU,            MVT::i64, Custom);
+    setOperationAction(ISD::SDIVREM,          MVT::i64, Custom);
+    setOperationAction(ISD::UDIVREM,          MVT::i64, Custom);
   }
 
   setOperationAction(ISD::INTRINSIC_WO_CHAIN, MVT::i64, Custom);
@@ -135,8 +137,6 @@ MipsSETargetLowering::MipsSETargetLowering(MipsTargetMachine &TM,
 
   setOperationAction(ISD::SDIVREM, MVT::i32, Custom);
   setOperationAction(ISD::UDIVREM, MVT::i32, Custom);
-  setOperationAction(ISD::SDIVREM, MVT::i64, Custom);
-  setOperationAction(ISD::UDIVREM, MVT::i64, Custom);
   setOperationAction(ISD::ATOMIC_FENCE,       MVT::Other, Custom);
   setOperationAction(ISD::LOAD,               MVT::i32, Custom);
   setOperationAction(ISD::STORE,              MVT::i32, Custom);
@@ -228,7 +228,7 @@ MipsSETargetLowering::MipsSETargetLowering(MipsTargetMachine &TM,
 }
 
 const MipsTargetLowering *
-llvm::createMipsSETargetLowering(MipsTargetMachine &TM,
+llvm::createMipsSETargetLowering(const MipsTargetMachine &TM,
                                  const MipsSubtarget &STI) {
   return new MipsSETargetLowering(TM, STI);
 }
@@ -1187,10 +1187,12 @@ void MipsSETargetLowering::
 getOpndList(SmallVectorImpl<SDValue> &Ops,
             std::deque< std::pair<unsigned, SDValue> > &RegsToPass,
             bool IsPICCall, bool GlobalOrExternal, bool InternalLinkage,
-            CallLoweringInfo &CLI, SDValue Callee, SDValue Chain) const {
+            bool IsCallReloc, CallLoweringInfo &CLI, SDValue Callee,
+            SDValue Chain) const {
   Ops.push_back(Callee);
   MipsTargetLowering::getOpndList(Ops, RegsToPass, IsPICCall, GlobalOrExternal,
-                                  InternalLinkage, CLI, Callee, Chain);
+                                  InternalLinkage, IsCallReloc, CLI, Callee,
+                                  Chain);
 }
 
 SDValue MipsSETargetLowering::lowerLOAD(SDValue Op, SelectionDAG &DAG) const {

@@ -106,6 +106,9 @@ void DAGTypeLegalizer::ScalarizeVectorResult(SDNode *N, unsigned ResNo) {
   case ISD::FCOPYSIGN:
   case ISD::FDIV:
   case ISD::FMUL:
+  case ISD::FMINNUM:
+  case ISD::FMAXNUM:
+
   case ISD::FPOW:
   case ISD::FREM:
   case ISD::FSUB:
@@ -627,6 +630,8 @@ void DAGTypeLegalizer::SplitVectorResult(SDNode *N, unsigned ResNo) {
   case ISD::FCOPYSIGN:
   case ISD::FSUB:
   case ISD::FMUL:
+  case ISD::FMINNUM:
+  case ISD::FMAXNUM:
   case ISD::SDIV:
   case ISD::UDIV:
   case ISD::FDIV:
@@ -867,6 +872,10 @@ void DAGTypeLegalizer::SplitVecRes_INSERT_VECTOR_ELT(SDNode *N, SDValue &Lo,
                                        TLI.getVectorIdxTy()));
     return;
   }
+
+  // See if the target wants to custom expand this node.
+  if (CustomLowerNode(N, N->getValueType(0), true))
+    return;
 
   // Spill the vector to the stack.
   EVT VecVT = Vec.getValueType();
@@ -1349,6 +1358,10 @@ SDValue DAGTypeLegalizer::SplitVecOp_EXTRACT_VECTOR_ELT(SDNode *N) {
                                                   Idx.getValueType())), 0);
   }
 
+  // See if the target wants to custom expand this node.
+  if (CustomLowerNode(N, N->getValueType(0), true))
+    return SDValue();
+
   // Store the vector to the stack.
   EVT EltVT = VecVT.getVectorElementType();
   SDLoc dl(N);
@@ -1575,6 +1588,8 @@ void DAGTypeLegalizer::WidenVectorResult(SDNode *N, unsigned ResNo) {
   case ISD::OR:
   case ISD::SUB:
   case ISD::XOR:
+  case ISD::FMINNUM:
+  case ISD::FMAXNUM:
     Res = WidenVecRes_Binary(N);
     break;
 

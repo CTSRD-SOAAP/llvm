@@ -1052,62 +1052,78 @@ Instruction *InstCombiner::FoldICmpCstShrCst(ICmpInst &I, Value *Op, Value *A,
   APInt AP1 = CI1->getValue();
   APInt AP2 = CI2->getValue();
 
-  if (!AP1) {
-    if (!AP2) {
-      // Both Constants are 0.
-      return getConstant(true);
-    }
+  assert(AP2 != 0 && "Handled in InstSimplify");
+  assert(!AP2.isAllOnesValue() && "Handled in InstSimplify");
 
-    if (cast<BinaryOperator>(Op)->isExact())
-      return getConstant(false);
-
-    if (AP2.isNegative()) {
-      // MSB is set, so a lshr with a large enough 'A' would be undefined.
-      return getConstant(false);
-    }
-
+  if (!AP1)
     // 'A' must be large enough to shift out the highest set bit.
     return getICmp(I.ICMP_UGT, A,
                    ConstantInt::get(A->getType(), AP2.logBase2()));
-  }
 
-  if (!AP2) {
-    // Shifting 0 by any value gives 0.
-    return getConstant(false);
-  }
+  if (AP1 == AP2)
+    return getICmp(I.ICMP_EQ, A, ConstantInt::getNullValue(A->getType()));
 
   bool IsAShr = isa<AShrOperator>(Op);
-  if (AP1 == AP2) {
-    if (AP1.isAllOnesValue() && IsAShr) {
-      // Arithmatic shift of -1 is always -1.
-      return getConstant(true);
-    }
-    return getICmp(I.ICMP_EQ, A, ConstantInt::getNullValue(A->getType()));
-  }
-
-  if (IsAShr) {
-    if (AP1.isNegative() != AP2.isNegative()) {
-      // Arithmetic shift will never change the sign.
-      return getConstant(false);
-    }
-    // Both the constants are negative, take their positive to calculate
-    // log.
-    if (AP1.isNegative()) {
-      AP1 = -AP1;
-      AP2 = -AP2;
-    }
-  }
-
-  if (AP1.ugt(AP2)) {
-    // Right-shifting will not increase the value.
-    return getConstant(false);
-  }
+  // If we are dealing with an arithmetic shift, both constants should agree in
+  // sign.  InstSimplify's SimplifyICmpInst range analysis is supposed to catch
+  // the cases when they disagree.
+  assert((!IsAShr || (AP1.isNegative() == AP2.isNegative() && AP1.sgt(AP2))) &&
+         "Handled in InstSimplify");
 
   // Get the distance between the highest bit that's set.
-  int Shift = AP2.logBase2() - AP1.logBase2();
+  int Shift;
+  // Both the constants are negative, take their positive to calculate log.
+  if (IsAShr && AP1.isNegative())
+    // Get the ones' complement of AP2 and AP1 when computing the distance.
+    Shift = (~AP2).logBase2() - (~AP1).logBase2();
+  else
+    Shift = AP2.logBase2() - AP1.logBase2();
 
-  // Use lshr here, since we've canonicalized to +ve numbers.
-  if (AP1 == AP2.lshr(Shift))
+  if (Shift > 0) {
+    if (IsAShr ? AP1 == AP2.ashr(Shift) : AP1 == AP2.lshr(Shift))
+      return getICmp(I.ICMP_EQ, A, ConstantInt::get(A->getType(), Shift));
+  }
+  // Shifting const2 will never be equal to const1.
+  return getConstant(false);
+}
+
+/// FoldICmpCstShlCst - Handle "(icmp eq/ne (shl const2, A), const1)" ->
+/// (icmp eq/ne A, TrailingZeros(const1) - TrailingZeros(const2)).
+Instruction *InstCombiner::FoldICmpCstShlCst(ICmpInst &I, Value *Op, Value *A,
+                                             ConstantInt *CI1,
+                                             ConstantInt *CI2) {
+  assert(I.isEquality() && "Cannot fold icmp gt/lt");
+
+  auto getConstant = [&I, this](bool IsTrue) {
+    if (I.getPredicate() == I.ICMP_NE)
+      IsTrue = !IsTrue;
+    return ReplaceInstUsesWith(I, ConstantInt::get(I.getType(), IsTrue));
+  };
+
+  auto getICmp = [&I](CmpInst::Predicate Pred, Value *LHS, Value *RHS) {
+    if (I.getPredicate() == I.ICMP_NE)
+      Pred = CmpInst::getInversePredicate(Pred);
+    return new ICmpInst(Pred, LHS, RHS);
+  };
+
+  APInt AP1 = CI1->getValue();
+  APInt AP2 = CI2->getValue();
+
+  assert(AP2 != 0 && "Handled in InstSimplify");
+
+  unsigned AP2TrailingZeros = AP2.countTrailingZeros();
+
+  if (!AP1 && AP2TrailingZeros != 0)
+    return getICmp(I.ICMP_UGE, A,
+                   ConstantInt::get(A->getType(), AP2.getBitWidth() - AP2TrailingZeros));
+
+  if (AP1 == AP2)
+    return getICmp(I.ICMP_EQ, A, ConstantInt::getNullValue(A->getType()));
+
+  // Get the distance between the lowest bits that are set.
+  int Shift = AP1.countTrailingZeros() - AP2TrailingZeros;
+
+  if (Shift > 0 && AP2.shl(Shift) == AP1)
     return getICmp(I.ICMP_EQ, A, ConstantInt::get(A->getType(), Shift));
 
   // Shifting const2 will never be equal to const1.
@@ -1129,7 +1145,7 @@ Instruction *InstCombiner::visitICmpInstWithInstAndIntCst(ICmpInst &ICI,
       unsigned DstBits = LHSI->getType()->getPrimitiveSizeInBits(),
              SrcBits = LHSI->getOperand(0)->getType()->getPrimitiveSizeInBits();
       APInt KnownZero(SrcBits, 0), KnownOne(SrcBits, 0);
-      computeKnownBits(LHSI->getOperand(0), KnownZero, KnownOne);
+      computeKnownBits(LHSI->getOperand(0), KnownZero, KnownOne, 0, &ICI);
 
       // If all the high bits are known, we can do this xform.
       if ((KnownZero|KnownOne).countLeadingOnes() >= SrcBits-DstBits) {
@@ -2033,8 +2049,8 @@ static Instruction *ProcessUGT_ADDCST_ADD(ICmpInst &I, Value *A, Value *B,
   // sign-extended; check for that condition. For example, if CI2 is 2^31 and
   // the operands of the add are 64 bits wide, we need at least 33 sign bits.
   unsigned NeededSignBits = CI1->getBitWidth() - NewWidth + 1;
-  if (IC.ComputeNumSignBits(A) < NeededSignBits ||
-      IC.ComputeNumSignBits(B) < NeededSignBits)
+  if (IC.ComputeNumSignBits(A, 0, &I) < NeededSignBits ||
+      IC.ComputeNumSignBits(B, 0, &I) < NeededSignBits)
     return nullptr;
 
   // In order to replace the original add with a narrower
@@ -2442,7 +2458,7 @@ Instruction *InstCombiner::visitICmpInst(ICmpInst &I) {
     Changed = true;
   }
 
-  if (Value *V = SimplifyICmpInst(I.getPredicate(), Op0, Op1, DL))
+  if (Value *V = SimplifyICmpInst(I.getPredicate(), Op0, Op1, DL, TLI, DT, AT))
     return ReplaceInstUsesWith(I, V);
 
   // comparing -val or val with non-zero is the same as just comparing val
@@ -2570,12 +2586,16 @@ Instruction *InstCombiner::visitICmpInst(ICmpInst &I) {
                           Builder->getInt(CI->getValue()-1));
     }
 
-    // (icmp eq/ne (ashr/lshr const2, A), const1)
     if (I.isEquality()) {
       ConstantInt *CI2;
       if (match(Op0, m_AShr(m_ConstantInt(CI2), m_Value(A))) ||
           match(Op0, m_LShr(m_ConstantInt(CI2), m_Value(A)))) {
+        // (icmp eq/ne (ashr/lshr const2, A), const1)
         return FoldICmpCstShrCst(I, Op0, A, CI, CI2);
+      }
+      if (match(Op0, m_Shl(m_ConstantInt(CI2), m_Value(A)))) {
+        // (icmp eq/ne (shl const2, A), const1)
+        return FoldICmpCstShlCst(I, Op0, A, CI, CI2);
       }
     }
 
@@ -3222,7 +3242,9 @@ Instruction *InstCombiner::visitICmpInst(ICmpInst &I) {
     // and       (A & ~B) != 0 --> (A & B) == 0
     // if A is a power of 2.
     if (match(Op0, m_And(m_Value(A), m_Not(m_Value(B)))) &&
-        match(Op1, m_Zero()) && isKnownToBeAPowerOfTwo(A) && I.isEquality())
+        match(Op1, m_Zero()) && isKnownToBeAPowerOfTwo(A, false,
+                                                       0, AT, &I, DT) &&
+                                I.isEquality())
       return new ICmpInst(I.getInversePredicate(),
                           Builder->CreateAnd(A, B),
                           Op1);
@@ -3612,7 +3634,7 @@ Instruction *InstCombiner::visitFCmpInst(FCmpInst &I) {
 
   Value *Op0 = I.getOperand(0), *Op1 = I.getOperand(1);
 
-  if (Value *V = SimplifyFCmpInst(I.getPredicate(), Op0, Op1, DL))
+  if (Value *V = SimplifyFCmpInst(I.getPredicate(), Op0, Op1, DL, TLI, DT, AT))
     return ReplaceInstUsesWith(I, V);
 
   // Simplify 'fcmp pred X, X'

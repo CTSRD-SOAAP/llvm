@@ -105,14 +105,16 @@ static VectorType *arrayTypeToVecType(const Type *ArrayTy) {
                          ArrayTy->getArrayNumElements());
 }
 
-static Value* calculateVectorIndex(Value *Ptr,
-                                  std::map<GetElementPtrInst*, Value*> GEPIdx) {
+static Value *
+calculateVectorIndex(Value *Ptr,
+                     const std::map<GetElementPtrInst *, Value *> &GEPIdx) {
   if (isa<AllocaInst>(Ptr))
     return Constant::getNullValue(Type::getInt32Ty(Ptr->getContext()));
 
   GetElementPtrInst *GEP = cast<GetElementPtrInst>(Ptr);
 
-  return GEPIdx[GEP];
+  auto I = GEPIdx.find(GEP);
+  return I == GEPIdx.end() ? nullptr : I->second;
 }
 
 static Value* GEPToVectorIndex(GetElementPtrInst *GEP) {
@@ -329,6 +331,13 @@ void AMDGPUPromoteAlloca::visitAlloca(AllocaInst &I) {
     if (!Call) {
       Type *EltTy = V->getType()->getPointerElementType();
       PointerType *NewTy = PointerType::get(EltTy, AMDGPUAS::LOCAL_ADDRESS);
+
+      // The operand's value should be corrected on its own.
+      if (isa<AddrSpaceCastInst>(V))
+        continue;
+
+      // FIXME: It doesn't really make sense to try to do this for all
+      // instructions.
       V->mutateType(NewTy);
       continue;
     }

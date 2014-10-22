@@ -31,7 +31,6 @@
 #include "llvm/MC/MCSectionMachO.h"
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCSymbol.h"
-#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Dwarf.h"
 #include "llvm/Support/ELF.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -41,13 +40,6 @@
 #include "llvm/Target/TargetSubtargetInfo.h"
 using namespace llvm;
 using namespace dwarf;
-
-// Disabled by default because it hits bug 17350 in GNU ld (gold is fine)
-static cl::opt<bool>
-    EnableStructorCOMDAT("enable-structor-comdat", cl::Hidden,
-                         cl::desc("Use comdats to keep only one copy of a "
-                                  "constructor/destructor invocation"),
-                         cl::init(false));
 
 //===----------------------------------------------------------------------===//
 //                                  ELF
@@ -371,9 +363,6 @@ static const MCSectionELF *getStaticStructorSection(MCContext &Ctx,
                                                     bool IsCtor,
                                                     unsigned Priority,
                                                     const MCSymbol *KeySym) {
-  if (!EnableStructorCOMDAT)
-    KeySym = nullptr;
-
   std::string Name;
   unsigned Type;
   unsigned Flags = ELF::SHF_ALLOC | ELF::SHF_WRITE;
@@ -772,7 +761,7 @@ getCOFFSectionFlags(SectionKind K) {
       COFF::IMAGE_SCN_MEM_EXECUTE |
       COFF::IMAGE_SCN_MEM_READ |
       COFF::IMAGE_SCN_CNT_CODE;
-  else if (K.isBSS ())
+  else if (K.isBSS())
     Flags |=
       COFF::IMAGE_SCN_CNT_UNINITIALIZED_DATA |
       COFF::IMAGE_SCN_MEM_READ |
@@ -782,7 +771,7 @@ getCOFFSectionFlags(SectionKind K) {
       COFF::IMAGE_SCN_CNT_INITIALIZED_DATA |
       COFF::IMAGE_SCN_MEM_READ |
       COFF::IMAGE_SCN_MEM_WRITE;
-  else if (K.isReadOnly())
+  else if (K.isReadOnly() || K.isReadOnlyWithRel())
     Flags |=
       COFF::IMAGE_SCN_CNT_INITIALIZED_DATA |
       COFF::IMAGE_SCN_MEM_READ;
@@ -807,7 +796,7 @@ static const GlobalValue *getComdatGVForCOFF(const GlobalValue *GV) {
 
   if (ComdatGV->getComdat() != C)
     report_fatal_error("Associative COMDAT symbol '" + ComdatGVName +
-                       "' is not a key for it's COMDAT.");
+                       "' is not a key for its COMDAT.");
 
   return ComdatGV;
 }
@@ -876,9 +865,9 @@ static const char *getCOFFSectionNameForUniqueGlobal(SectionKind Kind) {
     return ".bss";
   if (Kind.isThreadLocal())
     return ".tls$";
-  if (Kind.isWriteable())
-    return ".data";
-  return ".rdata";
+  if (Kind.isReadOnly() || Kind.isReadOnlyWithRel())
+    return ".rdata";
+  return ".data";
 }
 
 
@@ -926,7 +915,7 @@ SelectSectionForGlobal(const GlobalValue *GV, SectionKind Kind,
   if (Kind.isThreadLocal())
     return TLSDataSection;
 
-  if (Kind.isReadOnly())
+  if (Kind.isReadOnly() || Kind.isReadOnlyWithRel())
     return ReadOnlySection;
 
   // Note: we claim that common symbols are put in BSSSection, but they are

@@ -47,23 +47,24 @@ let Uses = [RM] in {
 
   // Load indexed instructions
   let mayLoad = 1, canFoldAsLoad = 1 in {
-    def LXSDX : XForm_1<31, 588,
+    def LXSDX : XX1Form<31, 588,
                         (outs vsfrc:$XT), (ins memrr:$src),
                         "lxsdx $XT, $src", IIC_LdStLFD,
                         [(set f64:$XT, (load xoaddr:$src))]>;
 
-    def LXVD2X : XForm_1<31, 844,
+    def LXVD2X : XX1Form<31, 844,
                          (outs vsrc:$XT), (ins memrr:$src),
                          "lxvd2x $XT, $src", IIC_LdStLFD,
                          [(set v2f64:$XT, (load xoaddr:$src))]>;
 
-    def LXVDSX : XForm_1<31, 332,
+    def LXVDSX : XX1Form<31, 332,
                          (outs vsrc:$XT), (ins memrr:$src),
                          "lxvdsx $XT, $src", IIC_LdStLFD, []>;
 
-    def LXVW4X : XForm_1<31, 780,
+    def LXVW4X : XX1Form<31, 780,
                          (outs vsrc:$XT), (ins memrr:$src),
-                         "lxvw4x $XT, $src", IIC_LdStLFD, []>;
+                         "lxvw4x $XT, $src", IIC_LdStLFD,
+                         [(set v4i32:$XT, (load xoaddr:$src))]>;
   }
 
   // Store indexed instructions
@@ -80,7 +81,8 @@ let Uses = [RM] in {
 
     def STXVW4X : XX1Form<31, 908,
                          (outs), (ins vsrc:$XT, memrr:$dst),
-                         "stxvw4x $XT, $dst", IIC_LdStSTFD, []>;
+                         "stxvw4x $XT, $dst", IIC_LdStSTFD,
+                         [(store v4i32:$XT, xoaddr:$dst)]>;
   }
 
   // Add/Mul Instructions
@@ -717,6 +719,21 @@ let Uses = [RM] in {
 } // neverHasSideEffects
 } // AddedComplexity
 
+// SELECT_CC_* - Used to implement the SELECT_CC DAG operation.  Expanded after
+// instruction selection into a branch sequence.
+let usesCustomInserter = 1,    // Expanded after instruction selection.
+    PPC970_Single = 1 in {
+
+  def SELECT_CC_VSRC: Pseudo<(outs vsrc:$dst),
+                             (ins crrc:$cond, vsrc:$T, vsrc:$F, i32imm:$BROPC),
+                             "#SELECT_CC_VSRC",
+                             []>;
+  def SELECT_VSRC: Pseudo<(outs vsrc:$dst), (ins crbitrc:$cond,
+                          vsrc:$T, vsrc:$F), "#SELECT_VSRC",
+                          [(set v2f64:$dst,
+                                (select i1:$cond, v2f64:$T, v2f64:$F))]>;
+}
+
 def : InstAlias<"xvmovdp $XT, $XB",
                 (XVCPSGNDP vsrc:$XT, vsrc:$XB, vsrc:$XB)>;
 def : InstAlias<"xvmovsp $XT, $XB",
@@ -810,6 +827,27 @@ def : Pat<(sext_inreg v2i64:$C, v2i32),
           (XVCVDPSXDS (XVCVSXWDP (XXSLDWI $C, $C, 1)))>;
 def : Pat<(v2f64 (sint_to_fp (sext_inreg v2i64:$C, v2i32))),
           (XVCVSXWDP (XXSLDWI $C, $C, 1))>;
+
+// Loads.
+def : Pat<(v4i32 (load xoaddr:$src)), (LXVW4X xoaddr:$src)>;
+
+// Stores.
+def : Pat<(store v4i32:$rS, xoaddr:$dst),
+          (STXVW4X $rS, xoaddr:$dst)>;
+
+// Selects.
+def : Pat<(v2f64 (selectcc i1:$lhs, i1:$rhs, v2f64:$tval, v2f64:$fval, SETLT)),
+          (SELECT_VSRC (CRANDC $rhs, $lhs), $tval, $fval)>;
+def : Pat<(v2f64 (selectcc i1:$lhs, i1:$rhs, v2f64:$tval, v2f64:$fval, SETLE)),
+          (SELECT_VSRC (CRORC  $rhs, $lhs), $tval, $fval)>;
+def : Pat<(v2f64 (selectcc i1:$lhs, i1:$rhs, v2f64:$tval, v2f64:$fval, SETEQ)),
+          (SELECT_VSRC (CREQV $lhs, $rhs), $tval, $fval)>;
+def : Pat<(v2f64 (selectcc i1:$lhs, i1:$rhs, v2f64:$tval, v2f64:$fval, SETGE)),
+          (SELECT_VSRC (CRORC  $lhs, $rhs), $tval, $fval)>;
+def : Pat<(v2f64 (selectcc i1:$lhs, i1:$rhs, v2f64:$tval, v2f64:$fval, SETGT)),
+          (SELECT_VSRC (CRANDC $lhs, $rhs), $tval, $fval)>;
+def : Pat<(v2f64 (selectcc i1:$lhs, i1:$rhs, v2f64:$tval, v2f64:$fval, SETNE)),
+          (SELECT_VSRC (CRXOR $lhs, $rhs), $tval, $fval)>;
 
 } // AddedComplexity
 } // HasVSX

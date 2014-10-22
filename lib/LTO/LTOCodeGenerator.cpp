@@ -471,7 +471,7 @@ bool LTOCodeGenerator::generateObjectFile(raw_ostream &out,
 
   PassManager codeGenPasses;
 
-  codeGenPasses.add(new DataLayoutPass(mergedModule));
+  codeGenPasses.add(new DataLayoutPass());
 
   formatted_raw_ostream Out(out);
 
@@ -558,5 +558,6 @@ LTOCodeGenerator::setDiagnosticHandler(lto_diagnostic_handler_t DiagHandler,
     return Context.setDiagnosticHandler(nullptr, nullptr);
   // Register the LTOCodeGenerator stub in the LLVMContext to forward the
   // diagnostic to the external DiagHandler.
-  Context.setDiagnosticHandler(LTOCodeGenerator::DiagnosticHandler, this);
+  Context.setDiagnosticHandler(LTOCodeGenerator::DiagnosticHandler, this,
+                               /* RespectFilters */ true);
 }

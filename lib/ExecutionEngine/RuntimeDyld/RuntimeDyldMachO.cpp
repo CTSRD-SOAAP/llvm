@@ -53,25 +53,23 @@ RelocationValueRef RuntimeDyldMachO::getRelocationValueRef(
     SymbolTableMap::const_iterator SI = Symbols.find(TargetName.data());
     if (SI != Symbols.end()) {
       Value.SectionID = SI->second.first;
-      Value.Addend = SI->second.second + RE.Addend;
+      Value.Offset = SI->second.second + RE.Addend;
     } else {
       SI = GlobalSymbolTable.find(TargetName.data());
       if (SI != GlobalSymbolTable.end()) {
         Value.SectionID = SI->second.first;
-        Value.Addend = SI->second.second + RE.Addend;
+        Value.Offset = SI->second.second + RE.Addend;
       } else {
         Value.SymbolName = TargetName.data();
-        Value.Addend = RE.Addend;
+        Value.Offset = RE.Addend;
       }
     }
   } else {
     SectionRef Sec = Obj.getRelocationSection(RelInfo);
-    bool IsCode = false;
-    Sec.isText(IsCode);
+    bool IsCode = Sec.isText();
     Value.SectionID = findOrEmitSection(ObjImg, Sec, IsCode, ObjSectionToID);
-    uint64_t Addr;
-    Sec.getAddress(Addr);
-    Value.Addend = RE.Addend - Addr;
+    uint64_t Addr = Sec.getAddress();
+    Value.Offset = RE.Addend - Addr;
   }
 
   return Value;
@@ -90,7 +88,7 @@ void RuntimeDyldMachO::makeValueAddendPCRel(RelocationValueRef &Value,
   if (IsPCRel) {
     uint64_t RelocAddr = 0;
     RI->getAddress(RelocAddr);
-    Value.Addend += RelocAddr + OffsetToNextPC;
+    Value.Offset += RelocAddr + OffsetToNextPC;
   }
 }
 
@@ -106,6 +104,63 @@ void RuntimeDyldMachO::dumpRelocationToResolve(const RelocationEntry &RE,
          << " Value: " << format("0x%016" PRIx64, Value) << " Addend: " << RE.Addend
          << " isPCRel: " << RE.IsPCRel << " MachoType: " << RE.RelType
          << " Size: " << (1 << RE.Size) << "\n";
+}
+
+section_iterator
+RuntimeDyldMachO::getSectionByAddress(const MachOObjectFile &Obj,
+                                      uint64_t Addr) {
+  section_iterator SI = Obj.section_begin();
+  section_iterator SE = Obj.section_end();
+
+  for (; SI != SE; ++SI) {
+    uint64_t SAddr = SI->getAddress();
+    uint64_t SSize = SI->getSize();
+    if ((Addr >= SAddr) && (Addr < SAddr + SSize))
+      return SI;
+  }
+
+  return SE;
+}
+
+
+// Populate __pointers section.
+void RuntimeDyldMachO::populateIndirectSymbolPointersSection(
+                                                    MachOObjectFile &Obj,
+                                                    const SectionRef &PTSection,
+                                                    unsigned PTSectionID) {
+  assert(!Obj.is64Bit() &&
+         "Pointer table section not supported in 64-bit MachO.");
+
+  MachO::dysymtab_command DySymTabCmd = Obj.getDysymtabLoadCommand();
+  MachO::section Sec32 = Obj.getSection(PTSection.getRawDataRefImpl());
+  uint32_t PTSectionSize = Sec32.size;
+  unsigned FirstIndirectSymbol = Sec32.reserved1;
+  const unsigned PTEntrySize = 4;
+  unsigned NumPTEntries = PTSectionSize / PTEntrySize;
+  unsigned PTEntryOffset = 0;
+
+  assert((PTSectionSize % PTEntrySize) == 0 &&
+         "Pointers section does not contain a whole number of stubs?");
+
+  DEBUG(dbgs() << "Populating pointer table section "
+               << Sections[PTSectionID].Name
+               << ", Section ID " << PTSectionID << ", "
+               << NumPTEntries << " entries, " << PTEntrySize
+               << " bytes each:\n");
+
+  for (unsigned i = 0; i < NumPTEntries; ++i) {
+    unsigned SymbolIndex =
+      Obj.getIndirectSymbolTableEntry(DySymTabCmd, FirstIndirectSymbol + i);
+    symbol_iterator SI = Obj.getSymbolByIndex(SymbolIndex);
+    StringRef IndirectSymbolName;
+    SI->getName(IndirectSymbolName);
+    DEBUG(dbgs() << "  " << IndirectSymbolName << ": index " << SymbolIndex
+          << ", PT offset: " << PTEntryOffset << "\n");
+    RelocationEntry RE(PTSectionID, PTEntryOffset,
+                       MachO::GENERIC_RELOC_VANILLA, 0, false, 2);
+    addRelocationForSymbol(RE, IndirectSymbolName);
+    PTEntryOffset += PTEntrySize;
+  }
 }
 
 bool
