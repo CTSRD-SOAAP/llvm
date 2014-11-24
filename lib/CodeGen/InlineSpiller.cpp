@@ -184,11 +184,16 @@ private:
 }
 
 namespace llvm {
+
+Spiller::~Spiller() { }
+void Spiller::anchor() { }
+
 Spiller *createInlineSpiller(MachineFunctionPass &pass,
                              MachineFunction &mf,
                              VirtRegMap &vrm) {
   return new InlineSpiller(pass, mf, vrm);
 }
+
 }
 
 //===----------------------------------------------------------------------===//
@@ -818,7 +823,7 @@ void InlineSpiller::markValueUsed(LiveInterval *LI, VNInfo *VNI) {
   WorkList.push_back(std::make_pair(LI, VNI));
   do {
     std::tie(LI, VNI) = WorkList.pop_back_val();
-    if (!UsedValues.insert(VNI))
+    if (!UsedValues.insert(VNI).second)
       continue;
 
     if (VNI->isPHIDef()) {
@@ -1372,7 +1377,7 @@ void InlineSpiller::spill(LiveRangeEdit &edit) {
   StackInt = nullptr;
 
   DEBUG(dbgs() << "Inline spilling "
-               << MRI.getRegClass(edit.getReg())->getName()
+               << TRI.getRegClassName(MRI.getRegClass(edit.getReg()))
                << ':' << edit.getParent()
                << "\nFrom original " << PrintReg(Original) << '\n');
   assert(edit.getParent().isSpillable() &&

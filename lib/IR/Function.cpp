@@ -213,6 +213,12 @@ void Argument::removeAttr(AttributeSet AS) {
 // Helper Methods in Function
 //===----------------------------------------------------------------------===//
 
+bool Function::isMaterializable() const {
+  return getGlobalObjectSubClassData();
+}
+
+void Function::setIsMaterializable(bool V) { setGlobalObjectSubClassData(V); }
+
 LLVMContext &Function::getContext() const {
   return getType()->getContext();
 }
@@ -241,12 +247,13 @@ void Function::eraseFromParent() {
 // Function Implementation
 //===----------------------------------------------------------------------===//
 
-Function::Function(FunctionType *Ty, LinkageTypes Linkage,
-                   const Twine &name, Module *ParentModule)
-  : GlobalObject(PointerType::getUnqual(Ty),
-                Value::FunctionVal, nullptr, 0, Linkage, name) {
+Function::Function(FunctionType *Ty, LinkageTypes Linkage, const Twine &name,
+                   Module *ParentModule)
+    : GlobalObject(PointerType::getUnqual(Ty), Value::FunctionVal, nullptr, 0,
+                   Linkage, name) {
   assert(FunctionType::isValidReturnType(getReturnType()) &&
          "invalid return type");
+  setIsMaterializable(false);
   SymTab = new ValueSymbolTable();
 
   // If the function has arguments, mark them as lazily built.
@@ -318,6 +325,8 @@ void Function::setParent(Module *parent) {
 // delete.
 //
 void Function::dropAllReferences() {
+  setIsMaterializable(false);
+
   for (iterator I = begin(), E = end(); I != E; ++I)
     I->dropAllReferences();
 
@@ -446,6 +455,33 @@ unsigned Function::lookupIntrinsicID() const {
   return 0;
 }
 
+/// Returns a stable mangling for the type specified for use in the name
+/// mangling scheme used by 'any' types in intrinsic signatures.
+static std::string getMangledTypeStr(Type* Ty) {
+  std::string Result;
+  if (PointerType* PTyp = dyn_cast<PointerType>(Ty)) {
+    Result += "p" + llvm::utostr(PTyp->getAddressSpace()) +
+      getMangledTypeStr(PTyp->getElementType());
+  } else if (ArrayType* ATyp = dyn_cast<ArrayType>(Ty)) {
+    Result += "a" + llvm::utostr(ATyp->getNumElements()) +
+      getMangledTypeStr(ATyp->getElementType());
+  } else if (StructType* STyp = dyn_cast<StructType>(Ty)) {
+    if (!STyp->isLiteral())
+      Result += STyp->getName();
+    else
+      llvm_unreachable("TODO: implement literal types");
+  } else if (FunctionType* FT = dyn_cast<FunctionType>(Ty)) {
+    Result += "f_" + getMangledTypeStr(FT->getReturnType());
+    for (size_t i = 0; i < FT->getNumParams(); i++)
+      Result += getMangledTypeStr(FT->getParamType(i));
+    if (FT->isVarArg())
+      Result += "vararg";
+    Result += "f"; //ensure distinguishable
+  } else if (Ty)
+    Result += EVT::getEVT(Ty).getEVTString();
+  return Result;
+}
+
 std::string Intrinsic::getName(ID id, ArrayRef<Type*> Tys) {
   assert(id < num_intrinsics && "Invalid intrinsic ID!");
   static const char * const Table[] = {
@@ -458,12 +494,7 @@ std::string Intrinsic::getName(ID id, ArrayRef<Type*> Tys) {
     return Table[id];
   std::string Result(Table[id]);
   for (unsigned i = 0; i < Tys.size(); ++i) {
-    if (PointerType* PTyp = dyn_cast<PointerType>(Tys[i])) {
-      Result += ".p" + llvm::utostr(PTyp->getAddressSpace()) +
-                EVT::getEVT(PTyp->getElementType()).getEVTString();
-    }
-    else if (Tys[i])
-      Result += "." + EVT::getEVT(Tys[i]).getEVTString();
+    Result += "." + getMangledTypeStr(Tys[i]);
   }
   return Result;
 }
@@ -506,7 +537,8 @@ enum IIT_Info {
   IIT_ANYPTR = 26,
   IIT_V1   = 27,
   IIT_VARARG = 28,
-  IIT_HALF_VEC_ARG = 29
+  IIT_HALF_VEC_ARG = 29,
+  IIT_SAME_VEC_WIDTH_ARG = 30
 };
 
 
@@ -611,6 +643,12 @@ static void DecodeIITType(unsigned &NextElt, ArrayRef<unsigned char> Infos,
   case IIT_HALF_VEC_ARG: {
     unsigned ArgInfo = (NextElt == Infos.size() ? 0 : Infos[NextElt++]);
     OutputTable.push_back(IITDescriptor::get(IITDescriptor::HalfVecArgument,
+                                             ArgInfo));
+    return;
+  }
+  case IIT_SAME_VEC_WIDTH_ARG: {
+    unsigned ArgInfo = (NextElt == Infos.size() ? 0 : Infos[NextElt++]);
+    OutputTable.push_back(IITDescriptor::get(IITDescriptor::SameVecWidthArgument,
                                              ArgInfo));
     return;
   }
@@ -721,7 +759,14 @@ static Type *DecodeFixedType(ArrayRef<Intrinsic::IITDescriptor> &Infos,
   case IITDescriptor::HalfVecArgument:
     return VectorType::getHalfElementsVectorType(cast<VectorType>(
                                                   Tys[D.getArgumentNumber()]));
-  }
+  case IITDescriptor::SameVecWidthArgument:
+    Type *EltTy = DecodeFixedType(Infos, Tys, Context);
+    Type *Ty = Tys[D.getArgumentNumber()];
+    if (VectorType *VTy = dyn_cast<VectorType>(Ty)) {
+      return VectorType::get(EltTy, VTy->getNumElements());
+    }
+    llvm_unreachable("unhandled");
+ }
   llvm_unreachable("unhandled");
 }
 
