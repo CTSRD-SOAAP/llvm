@@ -18,6 +18,9 @@
 /* Define to enable crash overrides */
 #cmakedefine ENABLE_CRASH_OVERRIDES
 
+/* Define to disable C++ atexit */
+#cmakedefine DISABLE_LLVM_DYLIB_ATEXIT
+
 /* Define if position independent code is enabled */
 #cmakedefine ENABLE_PIC
 
@@ -423,6 +426,9 @@
 /* Have host's __chkstk */
 #cmakedefine HAVE___CHKSTK ${HAVE___CHKSTK}
 
+/* Have host's __chkstk_ms */
+#cmakedefine HAVE___CHKSTK_MS ${HAVE___CHKSTK_MS}
+
 /* Have host's __cmpdi2 */
 #cmakedefine HAVE___CMPDI2 ${HAVE___CMPDI2}
 
@@ -458,6 +464,9 @@
 
 /* Have host's ___chkstk */
 #cmakedefine HAVE____CHKSTK ${HAVE____CHKSTK}
+
+/* Have host's ___chkstk_ms */
+#cmakedefine HAVE____CHKSTK_MS ${HAVE____CHKSTK_MS}
 
 /* Define if we link Polly to the tools */
 #cmakedefine LINK_POLLY_INTO_TOOLS
@@ -518,9 +527,6 @@
 /* Type of 1st arg on ELM Callback */
 #cmakedefine WIN32_ELMCB_PCSTR ${WIN32_ELMCB_PCSTR}
 
-/* Define to empty if `const' does not conform to ANSI C. */
-#undef const
-
 /* Define to `int' if <sys/types.h> does not define. */
 #undef pid_t
 
@@ -541,8 +547,5 @@
 
 /* Define to 1 if you have the `_chsize_s' function. */
 #cmakedefine HAVE__CHSIZE_S ${HAVE__CHSIZE_S}
-
-/* Maximum path length */
-#cmakedefine MAXPATHLEN ${MAXPATHLEN}
 
 #endif

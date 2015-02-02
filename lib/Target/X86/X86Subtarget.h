@@ -161,7 +161,7 @@ protected:
 
   /// True if unaligned 32-byte memory accesses are slow.
   bool IsUAMem32Slow;
-  
+
   /// HasVectorUAMem - True if SIMD operations can have unaligned memory
   /// operands. This may require setting a feature bit in the processor.
   bool HasVectorUAMem;
@@ -208,7 +208,7 @@ protected:
   /// For this to be profitable, the cost of FDIV must be
   /// substantially higher than normal FP ops like FADD and FMUL.
   bool UseReciprocalEst;
-  
+
   /// Processor has AVX-512 PreFetch Instructions
   bool HasPFI;
 
@@ -242,8 +242,6 @@ protected:
   InstrItineraryData InstrItins;
 
 private:
-  // Calculates type size & alignment
-  const DataLayout DL;
 
   /// StackAlignOverride - Override the stack alignment.
   unsigned StackAlignOverride;
@@ -276,7 +274,6 @@ public:
     return &TLInfo;
   }
   const X86InstrInfo *getInstrInfo() const override { return &InstrInfo; }
-  const DataLayout *getDataLayout() const override { return &DL; }
   const X86FrameLowering *getFrameLowering() const override {
     return &FrameLowering;
   }
@@ -404,11 +401,13 @@ public:
 
   bool isTargetDarwin() const { return TargetTriple.isOSDarwin(); }
   bool isTargetFreeBSD() const { return TargetTriple.isOSFreeBSD(); }
+  bool isTargetDragonFly() const { return TargetTriple.isOSDragonFly(); }
   bool isTargetSolaris() const { return TargetTriple.isOSSolaris(); }
+  bool isTargetPS4() const { return TargetTriple.isPS4(); }
 
   bool isTargetELF() const { return TargetTriple.isOSBinFormatELF(); }
   bool isTargetCOFF() const { return TargetTriple.isOSBinFormatCOFF(); }
-  bool isTargetMacho() const { return TargetTriple.isOSBinFormatMachO(); }
+  bool isTargetMachO() const { return TargetTriple.isOSBinFormatMachO(); }
 
   bool isTargetLinux() const { return TargetTriple.isOSLinux(); }
   bool isTargetNaCl() const { return TargetTriple.isOSNaCl(); }

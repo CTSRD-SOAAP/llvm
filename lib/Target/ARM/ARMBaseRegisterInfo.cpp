@@ -60,9 +60,8 @@ ARMBaseRegisterInfo::ARMBaseRegisterInfo(const ARMSubtarget &sti)
 
 const MCPhysReg*
 ARMBaseRegisterInfo::getCalleeSavedRegs(const MachineFunction *MF) const {
-  const MCPhysReg *RegList = (STI.isTargetIOS() && !STI.isAAPCS_ABI())
-                                ? CSR_iOS_SaveList
-                                : CSR_AAPCS_SaveList;
+  const MCPhysReg *RegList =
+      STI.isTargetDarwin() ? CSR_iOS_SaveList : CSR_AAPCS_SaveList;
 
   if (!MF) return RegList;
 
@@ -95,8 +94,7 @@ ARMBaseRegisterInfo::getCallPreservedMask(CallingConv::ID CC) const {
   if (CC == CallingConv::GHC)
     // This is academic becase all GHC calls are (supposed to be) tail calls
     return CSR_NoRegs_RegMask;
-  return (STI.isTargetIOS() && !STI.isAAPCS_ABI())
-    ? CSR_iOS_RegMask : CSR_AAPCS_RegMask;
+  return STI.isTargetDarwin() ? CSR_iOS_RegMask : CSR_AAPCS_RegMask;
 }
 
 const uint32_t*
@@ -117,8 +115,8 @@ ARMBaseRegisterInfo::getThisReturnPreservedMask(CallingConv::ID CC) const {
   if (CC == CallingConv::GHC)
     // This is academic becase all GHC calls are (supposed to be) tail calls
     return nullptr;
-  return (STI.isTargetIOS() && !STI.isAAPCS_ABI())
-    ? CSR_iOS_ThisReturn_RegMask : CSR_AAPCS_ThisReturn_RegMask;
+  return STI.isTargetDarwin() ? CSR_iOS_ThisReturn_RegMask
+                              : CSR_AAPCS_ThisReturn_RegMask;
 }
 
 BitVector ARMBaseRegisterInfo::
@@ -356,10 +354,7 @@ bool ARMBaseRegisterInfo::canRealignStack(const MachineFunction &MF) const {
     return false;
   // We may also need a base pointer if there are dynamic allocas or stack
   // pointer adjustments around calls.
-  if (MF.getTarget()
-          .getSubtargetImpl()
-          ->getFrameLowering()
-          ->hasReservedCallFrame(MF))
+  if (MF.getSubtarget().getFrameLowering()->hasReservedCallFrame(MF))
     return true;
   // A base pointer is required and allowed.  Check that it isn't too late to
   // reserve it.
@@ -370,10 +365,8 @@ bool ARMBaseRegisterInfo::
 needsStackRealignment(const MachineFunction &MF) const {
   const MachineFrameInfo *MFI = MF.getFrameInfo();
   const Function *F = MF.getFunction();
-  unsigned StackAlign = MF.getTarget()
-                            .getSubtargetImpl()
-                            ->getFrameLowering()
-                            ->getStackAlignment();
+  unsigned StackAlign =
+      MF.getSubtarget().getFrameLowering()->getStackAlignment();
   bool requiresRealignment =
     ((MFI->getMaxAlignment() > StackAlign) ||
      F->getAttributes().hasAttribute(AttributeSet::FunctionIndex,

@@ -468,8 +468,6 @@ void
 X86RegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
                                      int SPAdj, unsigned FIOperandNum,
                                      RegScavenger *RS) const {
-  assert(SPAdj == 0 && "Unexpected");
-
   MachineInstr &MI = *II;
   MachineFunction &MF = *MI.getParent()->getParent();
   const TargetFrameLowering *TFI = MF.getSubtarget().getFrameLowering();
@@ -506,6 +504,9 @@ X86RegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
   } else
     FIOffset = TFI->getFrameIndexOffset(MF, FrameIndex);
 
+  if (BasePtr == StackPtr)
+    FIOffset += SPAdj;
+
   // The frame index format for stackmaps and patchpoints is different from the
   // X86 format. It only has a FI and an offset.
   if (Opc == TargetOpcode::STACKMAP || Opc == TargetOpcode::PATCHPOINT) {
@@ -533,6 +534,14 @@ X86RegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
 unsigned X86RegisterInfo::getFrameRegister(const MachineFunction &MF) const {
   const TargetFrameLowering *TFI = MF.getSubtarget().getFrameLowering();
   return TFI->hasFP(MF) ? FramePtr : StackPtr;
+}
+
+unsigned X86RegisterInfo::getPtrSizedFrameRegister(
+    const MachineFunction &MF) const {
+  unsigned FrameReg = getFrameRegister(MF);
+  if (Subtarget.isTarget64BitILP32())
+    FrameReg = getX86SubSuperRegister(FrameReg, MVT::i32, false);
+  return FrameReg;
 }
 
 namespace llvm {

@@ -42,7 +42,10 @@
 #define  _RESTRICT_KYWD
 #endif
 #include <spawn.h>
-#if !defined(__APPLE__)
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+#if !defined(__APPLE__) || defined(TARGET_OS_IPHONE)
   extern char **environ;
 #else
 #include <crt_externs.h> // _NSGetEnviron
@@ -63,11 +66,12 @@ ErrorOr<std::string> sys::findProgramByName(StringRef Name,
   if (Name.find('/') != StringRef::npos)
     return std::string(Name);
 
-  if (Paths.empty()) {
-    SmallVector<StringRef, 16> SearchPaths;
-    SplitString(std::getenv("PATH"), SearchPaths, ":");
-    return findProgramByName(Name, SearchPaths);
-  }
+  SmallVector<StringRef, 16> EnvironmentPaths;
+  if (Paths.empty())
+    if (const char *PathEnv = std::getenv("PATH")) {
+      SplitString(PathEnv, EnvironmentPaths, ":");
+      Paths = EnvironmentPaths;
+    }
 
   for (auto Path : Paths) {
     if (Path.empty())
@@ -216,7 +220,7 @@ static bool Execute(ProcessInfo &PI, StringRef Program, const char **args,
     }
 
     if (!envp)
-#if !defined(__APPLE__)
+#if !defined(__APPLE__) || defined(TARGET_OS_IPHONE)
       envp = const_cast<const char **>(environ);
 #else
       // environ is missing in dylibs.

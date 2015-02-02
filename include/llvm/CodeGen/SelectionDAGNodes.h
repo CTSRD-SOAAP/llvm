@@ -19,7 +19,6 @@
 #ifndef LLVM_CODEGEN_SELECTIONDAGNODES_H
 #define LLVM_CODEGEN_SELECTIONDAGNODES_H
 
-#include "llvm/ADT/iterator_range.h"
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/FoldingSet.h"
 #include "llvm/ADT/GraphTraits.h"
@@ -27,6 +26,7 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/ilist_node.h"
+#include "llvm/ADT/iterator_range.h"
 #include "llvm/CodeGen/ISDOpcodes.h"
 #include "llvm/CodeGen/MachineMemOperand.h"
 #include "llvm/CodeGen/ValueTypes.h"
@@ -762,11 +762,13 @@ protected:
       ValueList(VTs.VTs), UseList(nullptr),
       NumOperands(Ops.size()), NumValues(VTs.NumVTs),
       debugLoc(dl), IROrder(Order) {
+    assert(debugLoc.hasTrivialDestructor() && "Expected trivial destructor");
     assert(NumOperands == Ops.size() &&
            "NumOperands wasn't wide enough for its operands!");
     assert(NumValues == VTs.NumVTs &&
            "NumValues wasn't wide enough for its operands!");
     for (unsigned i = 0; i != Ops.size(); ++i) {
+      assert(OperandList && "no operands available");
       OperandList[i].setUser(this);
       OperandList[i].setInitial(Ops[i]);
     }
@@ -780,6 +782,7 @@ protected:
       SubclassData(0), NodeId(-1), OperandList(nullptr), ValueList(VTs.VTs),
       UseList(nullptr), NumOperands(0), NumValues(VTs.NumVTs), debugLoc(dl),
       IROrder(Order) {
+    assert(debugLoc.hasTrivialDestructor() && "Expected trivial destructor");
     assert(NumValues == VTs.NumVTs &&
            "NumValues wasn't wide enough for its operands!");
   }
@@ -1415,6 +1418,12 @@ public:
   /// isNaN - Return true if the value is a NaN.
   bool isNaN() const { return Value->isNaN(); }
 
+  /// isInfinity - Return true if the value is an infinity
+  bool isInfinity() const { return Value->isInfinity(); }
+
+  /// isNegative - Return true if the value is negative.
+  bool isNegative() const { return Value->isNegative(); }
+
   /// isExactlyValue - We don't rely on operator== working on double values, as
   /// it returns true for things that are clearly not equal, like -0.0 and 0.0.
   /// As such, this method can be used to do an exact bit-for-bit comparison of
@@ -1961,13 +1970,17 @@ public:
 class MaskedLoadSDNode : public MaskedLoadStoreSDNode {
 public:
   friend class SelectionDAG;
-  MaskedLoadSDNode(unsigned Order, DebugLoc dl,
-                   SDValue *Operands, unsigned numOperands, 
-                   SDVTList VTs, EVT MemVT, MachineMemOperand *MMO)
+  MaskedLoadSDNode(unsigned Order, DebugLoc dl, SDValue *Operands,
+                   unsigned numOperands, SDVTList VTs, ISD::LoadExtType ETy,
+                   EVT MemVT, MachineMemOperand *MMO)
     : MaskedLoadStoreSDNode(ISD::MLOAD, Order, dl, Operands, numOperands,
-                            VTs, MemVT, MMO) 
-  {}
+                            VTs, MemVT, MMO) {
+    SubclassData |= (unsigned short)ETy;
+  }
 
+  ISD::LoadExtType getExtensionType() const {
+    return ISD::LoadExtType(SubclassData & 3);
+  } 
   const SDValue &getSrc0() const { return getOperand(3); }
   static bool classof(const SDNode *N) {
     return N->getOpcode() == ISD::MLOAD;
@@ -1980,14 +1993,19 @@ class MaskedStoreSDNode : public MaskedLoadStoreSDNode {
 
 public:
   friend class SelectionDAG;
-  MaskedStoreSDNode(unsigned Order, DebugLoc dl,
-                   SDValue *Operands, unsigned numOperands, 
-                   SDVTList VTs, EVT MemVT, MachineMemOperand *MMO)
+  MaskedStoreSDNode(unsigned Order, DebugLoc dl, SDValue *Operands,
+                    unsigned numOperands, SDVTList VTs, bool isTrunc, EVT MemVT,
+                    MachineMemOperand *MMO)
     : MaskedLoadStoreSDNode(ISD::MSTORE, Order, dl, Operands, numOperands,
-                            VTs, MemVT, MMO) 
-  {}
+                            VTs, MemVT, MMO) {
+      SubclassData |= (unsigned short)isTrunc;
+  }
+  /// isTruncatingStore - Return true if the op does a truncation before store.
+  /// For integers this is the same as doing a TRUNCATE and storing the result.
+  /// For floats, it is the same as doing an FP_ROUND and storing the result.
+  bool isTruncatingStore() const { return SubclassData & 1; }
 
-  const SDValue &getData() const { return getOperand(3); }
+  const SDValue &getValue() const { return getOperand(3); }
 
   static bool classof(const SDNode *N) {
     return N->getOpcode() == ISD::MSTORE;

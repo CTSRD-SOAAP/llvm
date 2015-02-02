@@ -12,6 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Target/TargetMachine.h"
+#include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/GlobalAlias.h"
@@ -21,8 +22,10 @@
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCCodeGenInfo.h"
 #include "llvm/MC/MCContext.h"
+#include "llvm/MC/MCSectionMachO.h"
 #include "llvm/MC/MCTargetOptions.h"
 #include "llvm/MC/SectionKind.h"
+#include "llvm/PassManager.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Target/TargetLowering.h"
 #include "llvm/Target/TargetLoweringObjectFile.h"
@@ -169,6 +172,24 @@ void TargetMachine::setDataSections(bool V) {
   Options.DataSections = V;
 }
 
+TargetIRAnalysis TargetMachine::getTargetIRAnalysis() {
+  return TargetIRAnalysis(
+      [this](Function &) { return TargetTransformInfo(getDataLayout()); });
+}
+
+static bool canUsePrivateLabel(const MCAsmInfo &AsmInfo,
+                               const MCSection &Section) {
+  if (!AsmInfo.isSectionAtomizableBySymbols(Section))
+    return true;
+
+  // If it is not dead stripped, it is safe to use private labels.
+  const MCSectionMachO &SMO = cast<MCSectionMachO>(Section);
+  if (SMO.hasAttribute(MachO::S_ATTR_NO_DEAD_STRIP))
+    return true;
+
+  return false;
+}
+
 void TargetMachine::getNameWithPrefix(SmallVectorImpl<char> &Name,
                                       const GlobalValue *GV, Mangler &Mang,
                                       bool MayAlwaysUsePrivate) const {
@@ -182,7 +203,7 @@ void TargetMachine::getNameWithPrefix(SmallVectorImpl<char> &Name,
   const TargetLoweringObjectFile &TLOF =
       getSubtargetImpl()->getTargetLowering()->getObjFileLowering();
   const MCSection *TheSection = TLOF.SectionForGlobal(GV, GVKind, Mang, *this);
-  bool CannotUsePrivateLabel = TLOF.isSectionAtomizableBySymbols(*TheSection);
+  bool CannotUsePrivateLabel = !canUsePrivateLabel(*AsmInfo, *TheSection);
   Mang.getNameWithPrefix(Name, GV, CannotUsePrivateLabel);
 }
 
