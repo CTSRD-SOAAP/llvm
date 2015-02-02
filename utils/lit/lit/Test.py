@@ -232,21 +232,7 @@ class Test:
                 return True
 
         return False
-<<<<<<< HEAD
     
-    def getJUnitXML(self):
-        xml = "<testcase classname='" + ".".join(self.path_in_suite)
-        xml += "' name='" + '/'.join(self.path_in_suite) + "'"
-        if self.result.code.isFailure:
-          xml += ">\n\t<failure >\n" + escape(self.result.output) + "\n\t</failure>"
-          xml += "\n</testcase>"
-        else:
-          xml += "/>"
-        return xml
-
-=======
-
-
     def getJUnitXML(self):
         test_name = self.path_in_suite[-1]
         test_path = self.path_in_suite[:-1]
@@ -267,4 +253,3 @@ class Test:
         else:
             xml += "/>"
         return xml
->>>>>>> vendor
