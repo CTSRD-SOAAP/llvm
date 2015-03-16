@@ -643,8 +643,8 @@ struct TupleExpander : SetTheory::Expander {
 //===----------------------------------------------------------------------===//
 
 static void sortAndUniqueRegisters(CodeGenRegister::Vec &M) {
-  std::sort(M.begin(), M.end(), CodeGenRegister::Less());
-  M.erase(std::unique(M.begin(), M.end(), CodeGenRegister::Equal()), M.end());
+  std::sort(M.begin(), M.end(), deref<llvm::less>());
+  M.erase(std::unique(M.begin(), M.end(), deref<llvm::equal>()), M.end());
 }
 
 CodeGenRegisterClass::CodeGenRegisterClass(CodeGenRegBank &RegBank, Record *R)
@@ -656,9 +656,7 @@ CodeGenRegisterClass::CodeGenRegisterClass(CodeGenRegBank &RegBank, Record *R)
   // Rename anonymous register classes.
   if (R->getName().size() > 9 && R->getName()[9] == '.') {
     static unsigned AnonCounter = 0;
-    R->setName("AnonRegClass_" + utostr(AnonCounter));
-    // MSVC2012 ICEs if AnonCounter++ is directly passed to utostr.
-    ++AnonCounter;
+    R->setName("AnonRegClass_" + utostr(AnonCounter++));
   }
 
   std::vector<Record*> TypeList = R->getValueAsListOfDefs("RegTypes");
@@ -756,7 +754,7 @@ void CodeGenRegisterClass::inheritProperties(CodeGenRegBank &RegBank) {
 
 bool CodeGenRegisterClass::contains(const CodeGenRegister *Reg) const {
   return std::binary_search(Members.begin(), Members.end(), Reg,
-                            CodeGenRegister::Less());
+                            deref<llvm::less>());
 }
 
 namespace llvm {
@@ -789,10 +787,10 @@ operator<(const CodeGenRegisterClass::Key &B) const {
 static bool testSubClass(const CodeGenRegisterClass *A,
                          const CodeGenRegisterClass *B) {
   return A->SpillAlignment && B->SpillAlignment % A->SpillAlignment == 0 &&
-    A->SpillSize <= B->SpillSize &&
-    std::includes(A->getMembers().begin(), A->getMembers().end(),
-                  B->getMembers().begin(), B->getMembers().end(),
-                  CodeGenRegister::Less());
+         A->SpillSize <= B->SpillSize &&
+         std::includes(A->getMembers().begin(), A->getMembers().end(),
+                       B->getMembers().begin(), B->getMembers().end(),
+                       deref<llvm::less>());
 }
 
 /// Sorting predicate for register classes.  This provides a topological
@@ -1783,6 +1781,7 @@ void CodeGenRegBank::computeRegUnitLaneMasks() {
           }
           ++u;
         }
+        (void)Found;
         assert(Found);
       }
     }
@@ -1844,10 +1843,9 @@ void CodeGenRegBank::inferCommonSubClass(CodeGenRegisterClass *RC) {
     const CodeGenRegister::Vec &Memb1 = RC1->getMembers();
     const CodeGenRegister::Vec &Memb2 = RC2->getMembers();
     CodeGenRegister::Vec Intersection;
-    std::set_intersection(Memb1.begin(), Memb1.end(),
-                          Memb2.begin(), Memb2.end(),
-                          std::inserter(Intersection, Intersection.begin()),
-                          CodeGenRegister::Less());
+    std::set_intersection(
+        Memb1.begin(), Memb1.end(), Memb2.begin(), Memb2.end(),
+        std::inserter(Intersection, Intersection.begin()), deref<llvm::less>());
 
     // Skip disjoint class pairs.
     if (Intersection.empty())
@@ -1874,7 +1872,7 @@ void CodeGenRegBank::inferCommonSubClass(CodeGenRegisterClass *RC) {
 void CodeGenRegBank::inferSubClassWithSubReg(CodeGenRegisterClass *RC) {
   // Map SubRegIndex to set of registers in RC supporting that SubRegIndex.
   typedef std::map<const CodeGenSubRegIndex *, CodeGenRegister::Vec,
-                   CodeGenSubRegIndex::Less> SubReg2SetMap;
+                   deref<llvm::less>> SubReg2SetMap;
 
   // Compute the set of registers supporting each SubRegIndex.
   SubReg2SetMap SRSets;

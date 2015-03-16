@@ -123,6 +123,10 @@ bool TargetTransformInfo::isTruncateFree(Type *Ty1, Type *Ty2) const {
   return TTIImpl->isTruncateFree(Ty1, Ty2);
 }
 
+bool TargetTransformInfo::isProfitableToHoist(Instruction *I) const {
+  return TTIImpl->isProfitableToHoist(I);
+}
+
 bool TargetTransformInfo::isTypeLegal(Type *Ty) const {
   return TTIImpl->isTypeLegal(Ty);
 }
@@ -139,6 +143,10 @@ bool TargetTransformInfo::shouldBuildLookupTables() const {
   return TTIImpl->shouldBuildLookupTables();
 }
 
+bool TargetTransformInfo::enableAggressiveInterleaving(bool LoopHasReductions) const {
+  return TTIImpl->enableAggressiveInterleaving(LoopHasReductions);
+}
+
 TargetTransformInfo::PopcntSupportKind
 TargetTransformInfo::getPopcntSupport(unsigned IntTyWidthInBit) const {
   return TTIImpl->getPopcntSupport(IntTyWidthInBit);
@@ -146,6 +154,10 @@ TargetTransformInfo::getPopcntSupport(unsigned IntTyWidthInBit) const {
 
 bool TargetTransformInfo::haveFastSqrt(Type *Ty) const {
   return TTIImpl->haveFastSqrt(Ty);
+}
+
+unsigned TargetTransformInfo::getFPOpCost(Type *Ty) const {
+  return TTIImpl->getFPOpCost(Ty);
 }
 
 unsigned TargetTransformInfo::getIntImmCost(const APInt &Imm, Type *Ty) const {
@@ -269,7 +281,7 @@ TargetIRAnalysis::Result TargetIRAnalysis::run(Function &F) {
 char TargetIRAnalysis::PassID;
 
 TargetIRAnalysis::Result TargetIRAnalysis::getDefaultTTI(Function &F) {
-  return Result(F.getParent()->getDataLayout());
+  return Result(&F.getParent()->getDataLayout());
 }
 
 // Register the basic pass.

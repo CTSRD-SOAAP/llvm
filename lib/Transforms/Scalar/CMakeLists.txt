@@ -1,6 +1,7 @@
 add_llvm_library(LLVMScalarOpts
   ADCE.cpp
   AlignmentFromAssumptions.cpp
+  BDCE.cpp
   ConstantHoisting.cpp
   ConstantProp.cpp
   CorrelatedValuePropagation.cpp
@@ -17,6 +18,7 @@ add_llvm_library(LLVMScalarOpts
   LoopDeletion.cpp
   LoopIdiomRecognize.cpp
   LoopInstSimplify.cpp
+  LoopInterchange.cpp
   LoopRerollPass.cpp
   LoopRotation.cpp
   LoopStrengthReduce.cpp
@@ -27,8 +29,10 @@ add_llvm_library(LLVMScalarOpts
   MemCpyOptimizer.cpp
   MergedLoadStoreMotion.cpp
   PartiallyInlineLibCalls.cpp
+  PlaceSafepoints.cpp
   Reassociate.cpp
   Reg2Mem.cpp
+  RewriteStatepointsForGC.cpp
   SCCP.cpp
   SROA.cpp
   SampleProfile.cpp
@@ -38,8 +42,13 @@ add_llvm_library(LLVMScalarOpts
   SeparateConstOffsetFromGEP.cpp
   SimplifyCFGPass.cpp
   Sink.cpp
+  StraightLineStrengthReduce.cpp
   StructurizeCFG.cpp
   TailRecursionElimination.cpp
+
+  ADDITIONAL_HEADER_DIRS
+  ${LLVM_MAIN_INCLUDE_DIR}/llvm/Transforms
+  ${LLVM_MAIN_INCLUDE_DIR}/llvm/Transforms/Scalar
   )
 
 add_dependencies(LLVMScalarOpts intrinsics_gen)

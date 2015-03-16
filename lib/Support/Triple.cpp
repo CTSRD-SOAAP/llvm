@@ -141,6 +141,7 @@ const char *Triple::getOSTypeName(OSType Kind) {
   switch (Kind) {
   case UnknownOS: return "unknown";
 
+  case CloudABI: return "cloudabi";
   case Darwin: return "darwin";
   case DragonFly: return "dragonfly";
   case FreeBSD: return "freebsd";
@@ -275,7 +276,7 @@ static Triple::ArchType parseARMArch(StringRef ArchName) {
     .Cases("v3", "v3m", isThumb ? Triple::UnknownArch : arch)
     .Cases("v4", "v4t", arch)
     .Cases("v5", "v5e", "v5t", "v5te", "v5tej", arch)
-    .Cases("v6", "v6j", "v6k", "v6m", arch)
+    .Cases("v6", "v6j", "v6k", "v6m", "v6sm", arch)
     .Cases("v6t2", "v6z", "v6zk", arch)
     .Cases("v7", "v7a", "v7em", "v7l", arch)
     .Cases("v7m", "v7r", "v7s", arch)
@@ -345,6 +346,7 @@ static Triple::VendorType parseVendor(StringRef VendorName) {
 
 static Triple::OSType parseOS(StringRef OSName) {
   return StringSwitch<Triple::OSType>(OSName)
+    .StartsWith("cloudabi", Triple::CloudABI)
     .StartsWith("darwin", Triple::Darwin)
     .StartsWith("dragonfly", Triple::DragonFly)
     .StartsWith("freebsd", Triple::FreeBSD)
@@ -412,6 +414,7 @@ static Triple::SubArchType parseSubArch(StringRef SubArchName) {
     .EndsWith("v7s", Triple::ARMSubArch_v7s)
     .EndsWith("v6", Triple::ARMSubArch_v6)
     .EndsWith("v6m", Triple::ARMSubArch_v6m)
+    .EndsWith("v6sm", Triple::ARMSubArch_v6m)
     .EndsWith("v6t2", Triple::ARMSubArch_v6t2)
     .EndsWith("v5", Triple::ARMSubArch_v5)
     .EndsWith("v5e", Triple::ARMSubArch_v5)
@@ -713,6 +716,14 @@ void Triple::getOSVersion(unsigned &Major, unsigned &Minor,
                           unsigned &Micro) const {
   StringRef OSName = getOSName();
 
+  // For Android, we care about the Android version rather than the Linux
+  // version.
+  if (getEnvironment() == Android) {
+    OSName = getEnvironmentName().substr(strlen("android"));
+    if (OSName.startswith("eabi"))
+      OSName = OSName.substr(strlen("eabi"));
+  }
+
   // Assume that the OS portion of the triple starts with the canonical name.
   StringRef OSTypeName = getOSTypeName(getOS());
   if (OSName.startswith(OSTypeName))
@@ -815,7 +826,11 @@ void Triple::setOS(OSType Kind) {
 }
 
 void Triple::setEnvironment(EnvironmentType Kind) {
-  setEnvironmentName(getEnvironmentTypeName(Kind));
+  if (ObjectFormat == getDefaultFormat(*this))
+    return setEnvironmentName(getEnvironmentTypeName(Kind));
+
+  setEnvironmentName((getEnvironmentTypeName(Kind) + Twine("-") +
+                      getObjectFormatTypeName(ObjectFormat)).str());
 }
 
 void Triple::setObjectFormat(ObjectFormatType Kind) {
@@ -1062,7 +1077,7 @@ const char *Triple::getARMCPUForArch(StringRef MArch) const {
       .Case("v6j", "arm1136j-s")
       .Cases("v6z", "v6zk", "arm1176jzf-s")
       .Case("v6t2", "arm1156t2-s")
-      .Cases("v6m", "v6-m", "cortex-m0")
+      .Cases("v6m", "v6-m", "v6sm", "v6s-m", "cortex-m0")
       .Cases("v7", "v7a", "v7-a", "v7l", "v7-l", "cortex-a8")
       .Cases("v7s", "v7-s", "swift")
       .Cases("v7r", "v7-r", "cortex-r4")

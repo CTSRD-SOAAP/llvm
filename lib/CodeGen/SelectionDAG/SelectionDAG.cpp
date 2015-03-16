@@ -1446,13 +1446,7 @@ SDValue SelectionDAG::getCondCode(ISD::CondCode Cond) {
 // N2 to point at N1.
 static void commuteShuffle(SDValue &N1, SDValue &N2, SmallVectorImpl<int> &M) {
   std::swap(N1, N2);
-  int NElts = M.size();
-  for (int i = 0; i != NElts; ++i) {
-    if (M[i] >= NElts)
-      M[i] -= NElts;
-    else if (M[i] >= 0)
-      M[i] += NElts;
-  }
+  ShuffleVectorSDNode::commuteMask(M);
 }
 
 SDValue SelectionDAG::getVectorShuffle(EVT VT, SDLoc dl, SDValue N1,
@@ -1483,6 +1477,34 @@ SDValue SelectionDAG::getVectorShuffle(EVT VT, SDLoc dl, SDValue N1,
   // Canonicalize shuffle undef, v -> v, undef.  Commute the shuffle mask.
   if (N1.getOpcode() == ISD::UNDEF)
     commuteShuffle(N1, N2, MaskVec);
+
+  // If shuffling a splat, try to blend the splat instead. We do this here so
+  // that even when this arises during lowering we don't have to re-handle it.
+  auto BlendSplat = [&](BuildVectorSDNode *BV, int Offset) {
+    BitVector UndefElements;
+    SDValue Splat = BV->getSplatValue(&UndefElements);
+    if (!Splat)
+      return;
+
+    for (int i = 0; i < (int)NElts; ++i) {
+      if (MaskVec[i] < Offset || MaskVec[i] >= (Offset + (int)NElts))
+        continue;
+
+      // If this input comes from undef, mark it as such.
+      if (UndefElements[MaskVec[i] - Offset]) {
+        MaskVec[i] = -1;
+        continue;
+      }
+
+      // If we can blend a non-undef lane, use that instead.
+      if (!UndefElements[i])
+        MaskVec[i] = i + Offset;
+    }
+  };
+  if (auto *N1BV = dyn_cast<BuildVectorSDNode>(N1))
+    BlendSplat(N1BV, 0);
+  if (auto *N2BV = dyn_cast<BuildVectorSDNode>(N2))
+    BlendSplat(N2BV, NElts);
 
   // Canonicalize all index into lhs, -> shuffle lhs, undef
   // Canonicalize all index into rhs, -> shuffle rhs, undef
@@ -1553,24 +1575,19 @@ SDValue SelectionDAG::getVectorShuffle(EVT VT, SDLoc dl, SDValue N1,
             return N1;
       }
 
-      // If the shuffle itself creates a constant splat, build the vector
-      // directly.
+      // If the shuffle itself creates a splat, build the vector directly.
       if (AllSame && SameNumElts) {
-         const SDValue &Splatted = BV->getOperand(MaskVec[0]);
-         if (isa<ConstantSDNode>(Splatted) || isa<ConstantFPSDNode>(Splatted)) {
-           SmallVector<SDValue, 8> Ops;
-           for (unsigned i = 0; i != NElts; ++i)
-             Ops.push_back(Splatted);
+        const SDValue &Splatted = BV->getOperand(MaskVec[0]);
+        SmallVector<SDValue, 8> Ops(NElts, Splatted);
 
-           SDValue NewBV =
-               getNode(ISD::BUILD_VECTOR, dl, BV->getValueType(0), Ops);
+        EVT BuildVT = BV->getValueType(0);
+        SDValue NewBV = getNode(ISD::BUILD_VECTOR, dl, BuildVT, Ops);
 
-           // We may have jumped through bitcasts, so the type of the
-           // BUILD_VECTOR may not match the type of the shuffle.
-           if (BV->getValueType(0) != VT)
-             NewBV = getNode(ISD::BITCAST, dl, VT, NewBV);
-           return NewBV;
-         }
+        // We may have jumped through bitcasts, so the type of the
+        // BUILD_VECTOR may not match the type of the shuffle.
+        if (BuildVT != VT)
+          NewBV = getNode(ISD::BITCAST, dl, VT, NewBV);
+        return NewBV;
       }
     }
   }
@@ -1602,19 +1619,8 @@ SDValue SelectionDAG::getVectorShuffle(EVT VT, SDLoc dl, SDValue N1,
 
 SDValue SelectionDAG::getCommutedVectorShuffle(const ShuffleVectorSDNode &SV) {
   MVT VT = SV.getSimpleValueType(0);
-  unsigned NumElems = VT.getVectorNumElements();
-  SmallVector<int, 8> MaskVec;
-
-  for (unsigned i = 0; i != NumElems; ++i) {
-    int Idx = SV.getMaskElt(i);
-    if (Idx >= 0) {
-      if (Idx < (int)NumElems)
-        Idx += NumElems;
-      else
-        Idx -= NumElems;
-    }
-    MaskVec.push_back(Idx);
-  }
+  SmallVector<int, 8> MaskVec(SV.getMask().begin(), SV.getMask().end());
+  ShuffleVectorSDNode::commuteMask(MaskVec);
 
   SDValue Op0 = SV.getOperand(0);
   SDValue Op1 = SV.getOperand(1);
@@ -3971,9 +3977,7 @@ static SDValue getMemcpyLoadsAndStores(SelectionDAG &DAG, SDLoc dl,
   bool DstAlignCanChange = false;
   MachineFunction &MF = DAG.getMachineFunction();
   MachineFrameInfo *MFI = MF.getFrameInfo();
-  bool OptSize =
-    MF.getFunction()->getAttributes().
-      hasAttribute(AttributeSet::FunctionIndex, Attribute::OptimizeForSize);
+  bool OptSize = MF.getFunction()->hasFnAttribute(Attribute::OptimizeForSize);
   FrameIndexSDNode *FI = dyn_cast<FrameIndexSDNode>(Dst);
   if (FI && !MFI->isFixedObjectIndex(FI->getIndex()))
     DstAlignCanChange = true;
@@ -4086,8 +4090,7 @@ static SDValue getMemmoveLoadsAndStores(SelectionDAG &DAG, SDLoc dl,
   bool DstAlignCanChange = false;
   MachineFunction &MF = DAG.getMachineFunction();
   MachineFrameInfo *MFI = MF.getFrameInfo();
-  bool OptSize = MF.getFunction()->getAttributes().
-    hasAttribute(AttributeSet::FunctionIndex, Attribute::OptimizeForSize);
+  bool OptSize = MF.getFunction()->hasFnAttribute(Attribute::OptimizeForSize);
   FrameIndexSDNode *FI = dyn_cast<FrameIndexSDNode>(Dst);
   if (FI && !MFI->isFixedObjectIndex(FI->getIndex()))
     DstAlignCanChange = true;
@@ -4181,8 +4184,7 @@ static SDValue getMemsetStores(SelectionDAG &DAG, SDLoc dl,
   bool DstAlignCanChange = false;
   MachineFunction &MF = DAG.getMachineFunction();
   MachineFrameInfo *MFI = MF.getFrameInfo();
-  bool OptSize = MF.getFunction()->getAttributes().
-    hasAttribute(AttributeSet::FunctionIndex, Attribute::OptimizeForSize);
+  bool OptSize = MF.getFunction()->hasFnAttribute(Attribute::OptimizeForSize);
   FrameIndexSDNode *FI = dyn_cast<FrameIndexSDNode>(Dst);
   if (FI && !MFI->isFixedObjectIndex(FI->getIndex()))
     DstAlignCanChange = true;
@@ -5399,17 +5401,9 @@ UpdateNodeOperands(SDNode *N, ArrayRef<SDValue> Ops) {
   assert(N->getNumOperands() == NumOps &&
          "Update with wrong number of operands");
 
-  // Check to see if there is no change.
-  bool AnyChange = false;
-  for (unsigned i = 0; i != NumOps; ++i) {
-    if (Ops[i] != N->getOperand(i)) {
-      AnyChange = true;
-      break;
-    }
-  }
-
-  // No operands changed, just return the input node.
-  if (!AnyChange) return N;
+  // If no operands changed just return the input node.
+  if (Ops.empty() || std::equal(Ops.begin(), Ops.end(), N->op_begin()))
+    return N;
 
   // See if the modified node already exists.
   void *InsertPos = nullptr;
@@ -6654,8 +6648,8 @@ unsigned SelectionDAG::InferPtrAlignment(SDValue Ptr) const {
   if (TLI->isGAPlusOffset(Ptr.getNode(), GV, GVOffset)) {
     unsigned PtrWidth = TLI->getPointerTypeSizeInBits(GV->getType());
     APInt KnownZero(PtrWidth, 0), KnownOne(PtrWidth, 0);
-    llvm::computeKnownBits(const_cast<GlobalValue*>(GV), KnownZero, KnownOne,
-                           TLI->getDataLayout());
+    llvm::computeKnownBits(const_cast<GlobalValue *>(GV), KnownZero, KnownOne,
+                           *TLI->getDataLayout());
     unsigned AlignBits = KnownZero.countTrailingOnes();
     unsigned Align = AlignBits ? 1 << std::min(31U, AlignBits) : 0;
     if (Align)

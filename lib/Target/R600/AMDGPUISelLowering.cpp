@@ -133,6 +133,13 @@ AMDGPUTargetLowering::AMDGPUTargetLowering(TargetMachine &TM,
   setOperationAction(ISD::FREM, MVT::f32, Custom);
   setOperationAction(ISD::FREM, MVT::f64, Custom);
 
+  // v_mad_f32 does not support denormals according to some sources.
+  if (!Subtarget->hasFP32Denormals())
+    setOperationAction(ISD::FMAD, MVT::f32, Legal);
+
+  // Expand to fneg + fadd.
+  setOperationAction(ISD::FSUB, MVT::f64, Expand);
+
   // Lower floating point store/load to integer store/load to reduce the number
   // of patterns in tablegen.
   setOperationAction(ISD::STORE, MVT::f32, Promote);
@@ -140,9 +147,6 @@ AMDGPUTargetLowering::AMDGPUTargetLowering(TargetMachine &TM,
 
   setOperationAction(ISD::STORE, MVT::v2f32, Promote);
   AddPromotedToType(ISD::STORE, MVT::v2f32, MVT::v2i32);
-
-  setOperationAction(ISD::STORE, MVT::i64, Promote);
-  AddPromotedToType(ISD::STORE, MVT::i64, MVT::v2i32);
 
   setOperationAction(ISD::STORE, MVT::v4f32, Promote);
   AddPromotedToType(ISD::STORE, MVT::v4f32, MVT::v4i32);
@@ -162,9 +166,6 @@ AMDGPUTargetLowering::AMDGPUTargetLowering(TargetMachine &TM,
   // Custom lowering of vector stores is required for local address space
   // stores.
   setOperationAction(ISD::STORE, MVT::v4i32, Custom);
-  // XXX: Native v2i32 local address space stores are possible, but not
-  // currently implemented.
-  setOperationAction(ISD::STORE, MVT::v2i32, Custom);
 
   setTruncStoreAction(MVT::v2i32, MVT::v2i16, Custom);
   setTruncStoreAction(MVT::v2i32, MVT::v2i8, Custom);
@@ -389,6 +390,9 @@ AMDGPUTargetLowering::AMDGPUTargetLowering(TargetMachine &TM,
   setTargetDAGCombine(ISD::SELECT);
   setTargetDAGCombine(ISD::SELECT_CC);
   setTargetDAGCombine(ISD::STORE);
+
+  setTargetDAGCombine(ISD::FADD);
+  setTargetDAGCombine(ISD::FSUB);
 
   setBooleanContents(ZeroOrNegativeOneBooleanContent);
   setBooleanVectorContents(ZeroOrNegativeOneBooleanContent);
@@ -913,10 +917,9 @@ SDValue AMDGPUTargetLowering::LowerINTRINSIC_WO_CHAIN(SDValue Op,
     }
 
     case Intrinsic::AMDGPU_div_fmas:
-      // FIXME: Dropping bool parameter. Work is needed to support the implicit
-      // read from VCC.
       return DAG.getNode(AMDGPUISD::DIV_FMAS, DL, VT,
-                         Op.getOperand(1), Op.getOperand(2), Op.getOperand(3));
+                         Op.getOperand(1), Op.getOperand(2), Op.getOperand(3),
+                         Op.getOperand(4));
 
     case Intrinsic::AMDGPU_div_fixup:
       return DAG.getNode(AMDGPUISD::DIV_FIXUP, DL, VT,
@@ -2618,7 +2621,6 @@ const char* AMDGPUTargetLowering::getTargetNodeName(unsigned Opcode) const {
   NODE_NAME_CASE(DWORDADDR)
   NODE_NAME_CASE(FRACT)
   NODE_NAME_CASE(CLAMP)
-  NODE_NAME_CASE(MAD)
   NODE_NAME_CASE(FMAX_LEGACY)
   NODE_NAME_CASE(SMAX)
   NODE_NAME_CASE(UMAX)

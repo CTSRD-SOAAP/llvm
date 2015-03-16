@@ -18,7 +18,7 @@ include "llvm/Target/Target.td"
 //===----------------------------------------------------------------------===//
 // PowerPC Subtarget features.
 //
- 
+
 //===----------------------------------------------------------------------===//
 // CPU Directives                                                             //
 //===----------------------------------------------------------------------===//
@@ -109,10 +109,18 @@ def FeatureQPX       : SubtargetFeature<"qpx","HasQPX", "true",
 def FeatureVSX       : SubtargetFeature<"vsx","HasVSX", "true",
                                         "Enable VSX instructions",
                                         [FeatureAltivec]>;
+def FeatureP8Altivec : SubtargetFeature<"power8-altivec", "HasP8Altivec", "true",
+                                        "Enable POWER8 Altivec instructions",
+                                        [FeatureAltivec]>;
+def FeatureP8Crypto : SubtargetFeature<"crypto", "HasP8Crypto", "true",
+                                       "Enable POWER8 Crypto instructions",
+                                       [FeatureP8Altivec]>;
 def FeatureP8Vector  : SubtargetFeature<"power8-vector", "HasP8Vector", "true",
                                         "Enable POWER8 vector instructions",
-                                        [FeatureVSX, FeatureAltivec]>;
-
+                                        [FeatureVSX, FeatureP8Altivec]>;
+def FeaturePartwordAtomic : SubtargetFeature<"partword-atomics",
+                                             "HasPartwordAtomics", "true",
+                                             "Enable l[bh]arx and st[bh]cx.">;
 def FeatureInvariantFunctionDescriptors :
   SubtargetFeature<"invariant-function-descriptors",
                    "HasInvariantFunctionDescriptors", "true",
@@ -128,16 +136,6 @@ def DeprecatedDST    : SubtargetFeature<"", "DeprecatedDST", "true",
 //
 // DFP          p6, p6x, p7        decimal floating-point instructions
 // POPCNTB      p5 through p7      popcntb and related instructions
-
-//===----------------------------------------------------------------------===//
-// ABI Selection                                                              //
-//===----------------------------------------------------------------------===//
-
-def FeatureELFv1 : SubtargetFeature<"elfv1", "TargetABI", "PPC_ABI_ELFv1",
-                                    "Use the ELFv1 ABI">;
-
-def FeatureELFv2 : SubtargetFeature<"elfv2", "TargetABI", "PPC_ABI_ELFv2",
-                                    "Use the ELFv2 ABI">;
 
 //===----------------------------------------------------------------------===//
 // Classes used for relation maps.
@@ -260,14 +258,14 @@ def : Processor<"g4+", G4PlusItineraries, [Directive7400, FeatureAltivec,
 */
 def ProcessorFeatures {
     list<SubtargetFeature> Power8FeatureList =
-        [DirectivePwr8, FeatureAltivec, FeatureVSX, FeatureP8Vector,
-        FeatureMFOCRF, FeatureFCPSGN, FeatureFSqrt, FeatureFRE,
-        FeatureFRES, FeatureFRSQRTE, FeatureFRSQRTES,
+        [DirectivePwr8, FeatureAltivec, FeatureP8Altivec, FeatureVSX, 
+        FeatureP8Vector, FeatureMFOCRF, FeatureFCPSGN, FeatureFSqrt, 
+        FeatureFRE, FeatureFRES, FeatureFRSQRTE, FeatureFRSQRTES,
         FeatureRecipPrec, FeatureSTFIWX, FeatureLFIWAX,
         FeatureFPRND, FeatureFPCVT, FeatureISEL,
-        FeaturePOPCNTD, FeatureCMPB, FeatureLDBRX,
+        FeaturePOPCNTD, FeatureCMPB, FeatureLDBRX, FeatureP8Crypto,
         Feature64Bit /*, Feature64BitRegs */, FeatureICBT,
-        DeprecatedMFTB, DeprecatedDST];
+        FeaturePartwordAtomic, DeprecatedMFTB, DeprecatedDST];
 }
 
 def : ProcessorModel<"970", G5Model,
@@ -346,7 +344,7 @@ def : ProcessorModel<"pwr7", P7Model,
                    FeatureRecipPrec, FeatureSTFIWX, FeatureLFIWAX,
                    FeatureFPRND, FeatureFPCVT, FeatureISEL,
                    FeaturePOPCNTD, FeatureCMPB, FeatureLDBRX,
-                   Feature64Bit /*, Feature64BitRegs */,
+                   Feature64Bit /*, Feature64BitRegs */, FeaturePartwordAtomic,
                    DeprecatedMFTB, DeprecatedDST]>;
 def : ProcessorModel<"pwr8", P8Model, ProcessorFeatures.Power8FeatureList>;
 def : Processor<"ppc", G3Itineraries, [Directive32]>;

@@ -106,15 +106,6 @@ using namespace llvm::PatternMatch;
 STATISTIC(LoopsVectorized, "Number of loops vectorized");
 STATISTIC(LoopsAnalyzed, "Number of loops analyzed for vectorization");
 
-static cl::opt<unsigned>
-VectorizationFactor("force-vector-width", cl::init(0), cl::Hidden,
-                    cl::desc("Sets the SIMD width. Zero is autoselect."));
-
-static cl::opt<unsigned>
-VectorizationInterleave("force-vector-interleave", cl::init(0), cl::Hidden,
-                    cl::desc("Sets the vectorization interleave count. "
-                             "Zero is autoselect."));
-
 static cl::opt<bool>
 EnableIfConversion("enable-if-conversion", cl::init(true), cl::Hidden,
                    cl::desc("Enable if-conversion during vectorization."));
@@ -144,13 +135,6 @@ static cl::opt<bool> EnableMemAccessVersioning(
 
 /// We don't unroll loops with a known constant trip count below this number.
 static const unsigned TinyTripCountUnrollThreshold = 128;
-
-/// When performing memory disambiguation checks at runtime do not make more
-/// than this number of comparisons.
-static const unsigned RuntimeMemoryCheckThreshold = 8;
-
-/// Maximum simd width.
-static const unsigned MaxVectorWidth = 64;
 
 static cl::opt<unsigned> ForceTargetNumScalarRegs(
     "force-target-num-scalar-regs", cl::init(0), cl::Hidden,
@@ -219,6 +203,30 @@ class LoopVectorizationLegality;
 class LoopVectorizationCostModel;
 class LoopVectorizeHints;
 
+/// \brief This modifies LoopAccessReport to initialize message with
+/// loop-vectorizer-specific part.
+class VectorizationReport : public LoopAccessReport {
+public:
+  VectorizationReport(Instruction *I = nullptr)
+      : LoopAccessReport("loop not vectorized: ", I) {}
+
+  /// \brief This allows promotion of the loop-access analysis report into the
+  /// loop-vectorizer report.  It modifies the message to add the
+  /// loop-vectorizer-specific part of the message.
+  explicit VectorizationReport(const LoopAccessReport &R)
+      : LoopAccessReport(Twine("loop not vectorized: ") + R.str(),
+                         R.getInstr()) {}
+};
+
+/// A helper function for converting Scalar types to vector types.
+/// If the incoming type is void, we return void. If the VF is 1, we return
+/// the scalar type.
+static Type* ToVectorTy(Type *Scalar, unsigned VF) {
+  if (Scalar->isVoidTy() || VF == 1)
+    return Scalar;
+  return VectorType::get(Scalar, VF);
+}
+
 /// InnerLoopVectorizer vectorizes loops which contain only one basic
 /// block to a specified vectorization factor (VF).
 /// This class performs the widening of scalars into vectors, or multiple
@@ -236,13 +244,12 @@ class LoopVectorizeHints;
 class InnerLoopVectorizer {
 public:
   InnerLoopVectorizer(Loop *OrigLoop, ScalarEvolution *SE, LoopInfo *LI,
-                      DominatorTree *DT, const DataLayout *DL,
-                      const TargetLibraryInfo *TLI, unsigned VecWidth,
-                      unsigned UnrollFactor)
-      : OrigLoop(OrigLoop), SE(SE), LI(LI), DT(DT), DL(DL), TLI(TLI),
-        VF(VecWidth), UF(UnrollFactor), Builder(SE->getContext()),
-        Induction(nullptr), OldInduction(nullptr), WidenMap(UnrollFactor),
-        Legal(nullptr) {}
+                      DominatorTree *DT, const TargetLibraryInfo *TLI,
+                      unsigned VecWidth, unsigned UnrollFactor)
+      : OrigLoop(OrigLoop), SE(SE), LI(LI), DT(DT), TLI(TLI), VF(VecWidth),
+        UF(UnrollFactor), Builder(SE->getContext()), Induction(nullptr),
+        OldInduction(nullptr), WidenMap(UnrollFactor), Legal(nullptr),
+        AddedSafetyChecks(false) {}
 
   // Perform the actual loop widening (vectorization).
   void vectorize(LoopVectorizationLegality *L) {
@@ -254,6 +261,11 @@ public:
     vectorizeLoop();
     // Register the new loop and update the analysis passes.
     updateAnalysis();
+  }
+
+  // Return true if any runtime check is added.
+  bool IsSafetyChecksAdded() {
+    return AddedSafetyChecks;
   }
 
   virtual ~InnerLoopVectorizer() {}
@@ -270,13 +282,6 @@ protected:
   // that we don't end up with exponential recursion/IR.
   typedef DenseMap<std::pair<BasicBlock*, BasicBlock*>,
                    VectorParts> EdgeMaskCache;
-
-  /// \brief Add code that checks at runtime if the accessed arrays overlap.
-  ///
-  /// Returns a pair of instructions where the first element is the first
-  /// instruction generated in possibly a sequence of instructions and the
-  /// second value is the final comparator value or NULL if no check is needed.
-  std::pair<Instruction *, Instruction *> addRuntimeCheck(Instruction *Loc);
 
   /// \brief Add checks for strides that where assumed to be 1.
   ///
@@ -397,8 +402,6 @@ protected:
   DominatorTree *DT;
   /// Alias Analysis.
   AliasAnalysis *AA;
-  /// Data Layout.
-  const DataLayout *DL;
   /// Target Library Info.
   const TargetLibraryInfo *TLI;
 
@@ -442,14 +445,17 @@ protected:
   EdgeMaskCache MaskCache;
 
   LoopVectorizationLegality *Legal;
+
+  // Record whether runtime check is added.
+  bool AddedSafetyChecks;
 };
 
 class InnerLoopUnroller : public InnerLoopVectorizer {
 public:
   InnerLoopUnroller(Loop *OrigLoop, ScalarEvolution *SE, LoopInfo *LI,
-                    DominatorTree *DT, const DataLayout *DL,
-                    const TargetLibraryInfo *TLI, unsigned UnrollFactor) :
-    InnerLoopVectorizer(OrigLoop, SE, LI, DT, DL, TLI, 1, UnrollFactor) { }
+                    DominatorTree *DT, const TargetLibraryInfo *TLI,
+                    unsigned UnrollFactor)
+      : InnerLoopVectorizer(OrigLoop, SE, LI, DT, TLI, 1, UnrollFactor) {}
 
 private:
   void scalarizeInstruction(Instruction *Instr,
@@ -496,7 +502,7 @@ static std::string getDebugLocString(const Loop *L) {
     raw_string_ostream OS(Result);
     const DebugLoc LoopDbgLoc = L->getStartLoc();
     if (!LoopDbgLoc.isUnknown())
-      LoopDbgLoc.print(L->getHeader()->getContext(), OS);
+      LoopDbgLoc.print(OS);
     else
       // Just print the module name.
       OS << L->getHeader()->getParent()->getParent()->getModuleIdentifier();
@@ -551,17 +557,13 @@ static void propagateMetadata(SmallVectorImpl<Value *> &To, const Instruction *F
 /// induction variable and the different reduction variables.
 class LoopVectorizationLegality {
 public:
-  LoopVectorizationLegality(Loop *L, ScalarEvolution *SE, const DataLayout *DL,
-                            DominatorTree *DT, TargetLibraryInfo *TLI,
-                            AliasAnalysis *AA, Function *F,
-                            const TargetTransformInfo *TTI)
-      : NumPredStores(0), TheLoop(L), SE(SE), DL(DL), TLI(TLI), TheFunction(F),
-        TTI(TTI), Induction(nullptr), WidestIndTy(nullptr),
-        LAA(F, L, SE, DL, TLI, AA, DT,
-            LoopAccessAnalysis::VectorizerParams(
-                MaxVectorWidth, VectorizationFactor, VectorizationInterleave,
-                RuntimeMemoryCheckThreshold)),
-        HasFunNoNaNAttr(false) {}
+  LoopVectorizationLegality(Loop *L, ScalarEvolution *SE, DominatorTree *DT,
+                            TargetLibraryInfo *TLI, AliasAnalysis *AA,
+                            Function *F, const TargetTransformInfo *TTI,
+                            LoopAccessAnalysis *LAA)
+      : NumPredStores(0), TheLoop(L), SE(SE), TLI(TLI), TheFunction(F),
+        TTI(TTI), DT(DT), LAA(LAA), LAI(nullptr), Induction(nullptr),
+        WidestIndTy(nullptr), HasFunNoNaNAttr(false) {}
 
   /// This enum represents the kinds of reductions that we support.
   enum ReductionKind {
@@ -746,15 +748,19 @@ public:
   bool isUniformAfterVectorization(Instruction* I) { return Uniforms.count(I); }
 
   /// Returns the information that we collected about runtime memory check.
-  LoopAccessAnalysis::RuntimePointerCheck *getRuntimePointerCheck() {
-    return LAA.getRuntimePointerCheck();
+  const LoopAccessInfo::RuntimePointerCheck *getRuntimePointerCheck() const {
+    return LAI->getRuntimePointerCheck();
+  }
+
+  const LoopAccessInfo *getLAI() const {
+    return LAI;
   }
 
   /// This function returns the identity element (or neutral element) for
   /// the operation K.
   static Constant *getReductionIdentity(ReductionKind K, Type *Tp);
 
-  unsigned getMaxSafeDepDistBytes() { return LAA.getMaxSafeDepDistBytes(); }
+  unsigned getMaxSafeDepDistBytes() { return LAI->getMaxSafeDepDistBytes(); }
 
   bool hasStride(Value *V) { return StrideSet.count(V); }
   bool mustCheckStrides() { return !StrideSet.empty(); }
@@ -779,10 +785,10 @@ public:
     return (MaskedOp.count(I) != 0);
   }
   unsigned getNumStores() const {
-    return NumStores;
+    return LAI->getNumStores();
   }
   unsigned getNumLoads() const {
-    return NumLoads;
+    return LAI->getNumLoads();
   }
   unsigned getNumPredStores() const {
     return NumPredStores;
@@ -836,27 +842,32 @@ private:
   void collectStridedAccess(Value *LoadOrStoreInst);
 
   /// Report an analysis message to assist the user in diagnosing loops that are
-  /// not vectorized.
-  void emitAnalysis(VectorizationReport &Message) {
-    VectorizationReport::emitAnalysis(Message, TheFunction, TheLoop);
+  /// not vectorized.  These are handled as LoopAccessReport rather than
+  /// VectorizationReport because the << operator of VectorizationReport returns
+  /// LoopAccessReport.
+  void emitAnalysis(const LoopAccessReport &Message) {
+    LoopAccessReport::emitAnalysis(Message, TheFunction, TheLoop, LV_NAME);
   }
 
-  unsigned NumLoads;
-  unsigned NumStores;
   unsigned NumPredStores;
 
   /// The loop that we evaluate.
   Loop *TheLoop;
   /// Scev analysis.
   ScalarEvolution *SE;
-  /// DataLayout analysis.
-  const DataLayout *DL;
   /// Target Library Info.
   TargetLibraryInfo *TLI;
   /// Parent function
   Function *TheFunction;
   /// Target Transform Info
   const TargetTransformInfo *TTI;
+  /// Dominator Tree.
+  DominatorTree *DT;
+  // LoopAccess analysis.
+  LoopAccessAnalysis *LAA;
+  // And the loop-accesses info corresponding to this loop.  This pointer is
+  // null until canVectorizeMemory sets it up.
+  const LoopAccessInfo *LAI;
 
   //  ---  vectorization state --- //
 
@@ -878,13 +889,13 @@ private:
   /// This set holds the variables which are known to be uniform after
   /// vectorization.
   SmallPtrSet<Instruction*, 4> Uniforms;
-  LoopAccessAnalysis LAA;
+
   /// Can we assume the absence of NaNs.
   bool HasFunNoNaNAttr;
 
   ValueToValueMap Strides;
   SmallPtrSet<Value *, 8> StrideSet;
-  
+
   /// While vectorizing these instructions we have to generate a
   /// call to the appropriate masked intrinsic
   SmallPtrSet<const Instruction*, 8> MaskedOp;
@@ -902,10 +913,9 @@ public:
   LoopVectorizationCostModel(Loop *L, ScalarEvolution *SE, LoopInfo *LI,
                              LoopVectorizationLegality *Legal,
                              const TargetTransformInfo &TTI,
-                             const DataLayout *DL, const TargetLibraryInfo *TLI,
-                             AssumptionCache *AC, const Function *F,
-                             const LoopVectorizeHints *Hints)
-      : TheLoop(L), SE(SE), LI(LI), Legal(Legal), TTI(TTI), DL(DL), TLI(TLI),
+                             const TargetLibraryInfo *TLI, AssumptionCache *AC,
+                             const Function *F, const LoopVectorizeHints *Hints)
+      : TheLoop(L), SE(SE), LI(LI), Legal(Legal), TTI(TTI), TLI(TLI),
         TheFunction(F), Hints(Hints) {
     CodeMetrics::collectEphemeralValues(L, AC, EphValues);
   }
@@ -958,19 +968,16 @@ private:
   /// width. Vector width of one means scalar.
   unsigned getInstructionCost(Instruction *I, unsigned VF);
 
-  /// A helper function for converting Scalar types to vector types.
-  /// If the incoming type is void, we return void. If the VF is 1, we return
-  /// the scalar type.
-  static Type* ToVectorTy(Type *Scalar, unsigned VF);
-
   /// Returns whether the instruction is a load or store and will be a emitted
   /// as a vector operation.
   bool isConsecutiveLoadOrStore(Instruction *I);
 
   /// Report an analysis message to assist the user in diagnosing loops that are
-  /// not vectorized.
-  void emitAnalysis(VectorizationReport &Message) {
-    VectorizationReport::emitAnalysis(Message, TheFunction, TheLoop);
+  /// not vectorized.  These are handled as LoopAccessReport rather than
+  /// VectorizationReport because the << operator of VectorizationReport returns
+  /// LoopAccessReport.
+  void emitAnalysis(const LoopAccessReport &Message) {
+    LoopAccessReport::emitAnalysis(Message, TheFunction, TheLoop, LV_NAME);
   }
 
   /// Values used only by @llvm.assume calls.
@@ -986,8 +993,6 @@ private:
   LoopVectorizationLegality *Legal;
   /// Vector target information.
   const TargetTransformInfo &TTI;
-  /// Target data layout information.
-  const DataLayout *DL;
   /// Target Library Info.
   const TargetLibraryInfo *TLI;
   const Function *TheFunction;
@@ -1023,7 +1028,7 @@ class LoopVectorizeHints {
     bool validate(unsigned Val) {
       switch (Kind) {
       case HK_WIDTH:
-        return isPowerOf2_32(Val) && Val <= MaxVectorWidth;
+        return isPowerOf2_32(Val) && Val <= VectorizerParams::MaxVectorWidth;
       case HK_UNROLL:
         return isPowerOf2_32(Val) && Val <= MaxInterleaveFactor;
       case HK_FORCE:
@@ -1051,7 +1056,8 @@ public:
   };
 
   LoopVectorizeHints(const Loop *L, bool DisableInterleaving)
-      : Width("vectorize.width", VectorizationFactor, HK_WIDTH),
+      : Width("vectorize.width", VectorizerParams::VectorizationFactor,
+              HK_WIDTH),
         Interleave("interleave.count", DisableInterleaving, HK_UNROLL),
         Force("vectorize.enable", FK_Undefined, HK_FORCE),
         TheLoop(L) {
@@ -1059,8 +1065,8 @@ public:
     getHintsFromMetadata();
 
     // force-vector-interleave overrides DisableInterleaving.
-    if (VectorizationInterleave.getNumOccurrences() > 0)
-      Interleave.Value = VectorizationInterleave;
+    if (VectorizerParams::isInterleaveForced())
+      Interleave.Value = VectorizerParams::VectorizationInterleave;
 
     DEBUG(if (DisableInterleaving && Interleave.Value == 1) dbgs()
           << "LV: Interleaving disabled by the pass manager\n");
@@ -1251,7 +1257,6 @@ struct LoopVectorize : public FunctionPass {
   }
 
   ScalarEvolution *SE;
-  const DataLayout *DL;
   LoopInfo *LI;
   TargetTransformInfo *TTI;
   DominatorTree *DT;
@@ -1259,6 +1264,7 @@ struct LoopVectorize : public FunctionPass {
   TargetLibraryInfo *TLI;
   AliasAnalysis *AA;
   AssumptionCache *AC;
+  LoopAccessAnalysis *LAA;
   bool DisableUnrolling;
   bool AlwaysVectorize;
 
@@ -1266,8 +1272,6 @@ struct LoopVectorize : public FunctionPass {
 
   bool runOnFunction(Function &F) override {
     SE = &getAnalysis<ScalarEvolution>();
-    DataLayoutPass *DLP = getAnalysisIfAvailable<DataLayoutPass>();
-    DL = DLP ? &DLP->getDataLayout() : nullptr;
     LI = &getAnalysis<LoopInfoWrapperPass>().getLoopInfo();
     TTI = &getAnalysis<TargetTransformInfoWrapperPass>().getTTI(F);
     DT = &getAnalysis<DominatorTreeWrapperPass>().getDomTree();
@@ -1276,6 +1280,7 @@ struct LoopVectorize : public FunctionPass {
     TLI = TLIP ? &TLIP->getTLI() : nullptr;
     AA = &getAnalysis<AliasAnalysis>();
     AC = &getAnalysis<AssumptionCacheTracker>().getAssumptionCache(F);
+    LAA = &getAnalysis<LoopAccessAnalysis>();
 
     // Compute some weights outside of the loop over the loops. Compute this
     // using a BranchProbability to re-use its scaling math.
@@ -1286,12 +1291,6 @@ struct LoopVectorize : public FunctionPass {
     // vectorization.
     if (!TTI->getNumberOfRegisters(true))
       return false;
-
-    if (!DL) {
-      DEBUG(dbgs() << "\nLV: Not vectorizing " << F.getName()
-                   << ": Missing data layout\n");
-      return false;
-    }
 
     // Build up a worklist of inner-loops to vectorize. This is necessary as
     // the act of vectorizing or partially unrolling a loop creates new loops
@@ -1310,6 +1309,40 @@ struct LoopVectorize : public FunctionPass {
 
     // Process each loop nest in the function.
     return Changed;
+  }
+
+  static void AddRuntimeUnrollDisableMetaData(Loop *L) {
+    SmallVector<Metadata *, 4> MDs;
+    // Reserve first location for self reference to the LoopID metadata node.
+    MDs.push_back(nullptr);
+    bool IsUnrollMetadata = false;
+    MDNode *LoopID = L->getLoopID();
+    if (LoopID) {
+      // First find existing loop unrolling disable metadata.
+      for (unsigned i = 1, ie = LoopID->getNumOperands(); i < ie; ++i) {
+        MDNode *MD = dyn_cast<MDNode>(LoopID->getOperand(i));
+        if (MD) {
+          const MDString *S = dyn_cast<MDString>(MD->getOperand(0));
+          IsUnrollMetadata =
+              S && S->getString().startswith("llvm.loop.unroll.disable");
+        }
+        MDs.push_back(LoopID->getOperand(i));
+      }
+    }
+
+    if (!IsUnrollMetadata) {
+      // Add runtime unroll disable metadata.
+      LLVMContext &Context = L->getHeader()->getContext();
+      SmallVector<Metadata *, 1> DisableOperands;
+      DisableOperands.push_back(
+          MDString::get(Context, "llvm.loop.unroll.runtime.disable"));
+      MDNode *DisableNode = MDNode::get(Context, DisableOperands);
+      MDs.push_back(DisableNode);
+      MDNode *NewLoopID = MDNode::get(Context, MDs);
+      // Set operand 0 to refer to the loop id itself.
+      NewLoopID->replaceOperandWith(0, NewLoopID);
+      L->setLoopID(NewLoopID);
+    }
   }
 
   bool processLoop(Loop *L) {
@@ -1386,7 +1419,7 @@ struct LoopVectorize : public FunctionPass {
     }
 
     // Check if it is legal to vectorize the loop.
-    LoopVectorizationLegality LVL(L, SE, DL, DT, TLI, AA, F, TTI);
+    LoopVectorizationLegality LVL(L, SE, DT, TLI, AA, F, TTI, LAA);
     if (!LVL.canVectorize()) {
       DEBUG(dbgs() << "LV: Not vectorizing: Cannot prove legality.\n");
       emitMissedWarning(F, L, Hints);
@@ -1394,8 +1427,7 @@ struct LoopVectorize : public FunctionPass {
     }
 
     // Use the cost model.
-    LoopVectorizationCostModel CM(L, SE, LI, &LVL, *TTI, DL, TLI, AC, F,
-                                  &Hints);
+    LoopVectorizationCostModel CM(L, SE, LI, &LVL, *TTI, TLI, AC, F, &Hints);
 
     // Check the function attributes to find out if this function should be
     // optimized for size.
@@ -1459,13 +1491,19 @@ struct LoopVectorize : public FunctionPass {
 
       // We decided not to vectorize, but we may want to unroll.
 
-      InnerLoopUnroller Unroller(L, SE, LI, DT, DL, TLI, UF);
+      InnerLoopUnroller Unroller(L, SE, LI, DT, TLI, UF);
       Unroller.vectorize(&LVL);
     } else {
       // If we decided that it is *legal* to vectorize the loop then do it.
-      InnerLoopVectorizer LB(L, SE, LI, DT, DL, TLI, VF.Width, UF);
+      InnerLoopVectorizer LB(L, SE, LI, DT, TLI, VF.Width, UF);
       LB.vectorize(&LVL);
       ++LoopsVectorized;
+
+      // Add metadata to disable runtime unrolling scalar loop when there's no
+      // runtime check about strides and memory. Because at this situation,
+      // scalar loop is rarely used not worthy to be unrolled.
+      if (!LB.IsSafetyChecksAdded())
+        AddRuntimeUnrollDisableMetaData(L);
 
       // Report the vectorization decision.
       emitOptimizationRemark(
@@ -1491,6 +1529,7 @@ struct LoopVectorize : public FunctionPass {
     AU.addRequired<ScalarEvolution>();
     AU.addRequired<TargetTransformInfoWrapperPass>();
     AU.addRequired<AliasAnalysis>();
+    AU.addRequired<LoopAccessAnalysis>();
     AU.addPreserved<LoopInfoWrapperPass>();
     AU.addPreserved<DominatorTreeWrapperPass>();
     AU.addPreserved<AliasAnalysis>();
@@ -1555,10 +1594,10 @@ Value *InnerLoopVectorizer::getStepVector(Value *Val, int StartIdx,
 /// \brief Find the operand of the GEP that should be checked for consecutive
 /// stores. This ignores trailing indices that have no effect on the final
 /// pointer.
-static unsigned getGEPInductionOperand(const DataLayout *DL,
-                                       const GetElementPtrInst *Gep) {
+static unsigned getGEPInductionOperand(const GetElementPtrInst *Gep) {
+  const DataLayout &DL = Gep->getModule()->getDataLayout();
   unsigned LastOperand = Gep->getNumOperands() - 1;
-  unsigned GEPAllocSize = DL->getTypeAllocSize(
+  unsigned GEPAllocSize = DL.getTypeAllocSize(
       cast<PointerType>(Gep->getType()->getScalarType())->getElementType());
 
   // Walk backwards and try to peel off zeros.
@@ -1569,7 +1608,7 @@ static unsigned getGEPInductionOperand(const DataLayout *DL,
 
     // If it's a type with the same allocation size as the result of the GEP we
     // can peel off the zero index.
-    if (DL->getTypeAllocSize(*GEPTI) != GEPAllocSize)
+    if (DL.getTypeAllocSize(*GEPTI) != GEPAllocSize)
       break;
     --LastOperand;
   }
@@ -1615,7 +1654,7 @@ int LoopVectorizationLegality::isConsecutivePtr(Value *Ptr) {
     return II.getConsecutiveDirection();
   }
 
-  unsigned InductionOperand = getGEPInductionOperand(DL, Gep);
+  unsigned InductionOperand = getGEPInductionOperand(Gep);
 
   // Check that all of the gep indices are uniform except for our induction
   // operand.
@@ -1662,7 +1701,7 @@ int LoopVectorizationLegality::isConsecutivePtr(Value *Ptr) {
 }
 
 bool LoopVectorizationLegality::isUniform(Value *V) {
-  return LAA.isUniform(V);
+  return LAI->isUniform(V);
 }
 
 InnerLoopVectorizer::VectorParts&
@@ -1708,11 +1747,12 @@ void InnerLoopVectorizer::vectorizeMemoryInstruction(Instruction *Instr) {
   unsigned Alignment = LI ? LI->getAlignment() : SI->getAlignment();
   // An alignment of 0 means target abi alignment. We need to use the scalar's
   // target abi alignment in such a case.
+  const DataLayout &DL = Instr->getModule()->getDataLayout();
   if (!Alignment)
-    Alignment = DL->getABITypeAlignment(ScalarDataTy);
+    Alignment = DL.getABITypeAlignment(ScalarDataTy);
   unsigned AddressSpace = Ptr->getType()->getPointerAddressSpace();
-  unsigned ScalarAllocatedSize = DL->getTypeAllocSize(ScalarDataTy);
-  unsigned VectorElementSize = DL->getTypeStoreSize(DataTy)/VF;
+  unsigned ScalarAllocatedSize = DL.getTypeAllocSize(ScalarDataTy);
+  unsigned VectorElementSize = DL.getTypeStoreSize(DataTy) / VF;
 
   if (SI && Legal->blockNeedsPredication(SI->getParent()) &&
       !Legal->isMaskRequired(SI))
@@ -1753,7 +1793,7 @@ void InnerLoopVectorizer::vectorizeMemoryInstruction(Instruction *Instr) {
     // The last index does not have to be the induction. It can be
     // consecutive and be a function of the index. For example A[I+1];
     unsigned NumOperands = Gep->getNumOperands();
-    unsigned InductionOperand = getGEPInductionOperand(DL, Gep);
+    unsigned InductionOperand = getGEPInductionOperand(Gep);
     // Create the new GEP with the new induction variable.
     GetElementPtrInst *Gep2 = cast<GetElementPtrInst>(Gep->clone());
 
@@ -2010,102 +2050,6 @@ InnerLoopVectorizer::addStrideCheck(Instruction *Loc) {
   return std::make_pair(FirstInst, TheCheck);
 }
 
-std::pair<Instruction *, Instruction *>
-InnerLoopVectorizer::addRuntimeCheck(Instruction *Loc) {
-  LoopAccessAnalysis::RuntimePointerCheck *PtrRtCheck =
-    Legal->getRuntimePointerCheck();
-
-  Instruction *tnullptr = nullptr;
-  if (!PtrRtCheck->Need)
-    return std::pair<Instruction *, Instruction *>(tnullptr, tnullptr);
-
-  unsigned NumPointers = PtrRtCheck->Pointers.size();
-  SmallVector<TrackingVH<Value> , 2> Starts;
-  SmallVector<TrackingVH<Value> , 2> Ends;
-
-  LLVMContext &Ctx = Loc->getContext();
-  SCEVExpander Exp(*SE, "induction");
-  Instruction *FirstInst = nullptr;
-
-  for (unsigned i = 0; i < NumPointers; ++i) {
-    Value *Ptr = PtrRtCheck->Pointers[i];
-    const SCEV *Sc = SE->getSCEV(Ptr);
-
-    if (SE->isLoopInvariant(Sc, OrigLoop)) {
-      DEBUG(dbgs() << "LV: Adding RT check for a loop invariant ptr:" <<
-            *Ptr <<"\n");
-      Starts.push_back(Ptr);
-      Ends.push_back(Ptr);
-    } else {
-      DEBUG(dbgs() << "LV: Adding RT check for range:" << *Ptr << '\n');
-      unsigned AS = Ptr->getType()->getPointerAddressSpace();
-
-      // Use this type for pointer arithmetic.
-      Type *PtrArithTy = Type::getInt8PtrTy(Ctx, AS);
-
-      Value *Start = Exp.expandCodeFor(PtrRtCheck->Starts[i], PtrArithTy, Loc);
-      Value *End = Exp.expandCodeFor(PtrRtCheck->Ends[i], PtrArithTy, Loc);
-      Starts.push_back(Start);
-      Ends.push_back(End);
-    }
-  }
-
-  IRBuilder<> ChkBuilder(Loc);
-  // Our instructions might fold to a constant.
-  Value *MemoryRuntimeCheck = nullptr;
-  for (unsigned i = 0; i < NumPointers; ++i) {
-    for (unsigned j = i+1; j < NumPointers; ++j) {
-      // No need to check if two readonly pointers intersect.
-      if (!PtrRtCheck->IsWritePtr[i] && !PtrRtCheck->IsWritePtr[j])
-        continue;
-
-      // Only need to check pointers between two different dependency sets.
-      if (PtrRtCheck->DependencySetId[i] == PtrRtCheck->DependencySetId[j])
-       continue;
-      // Only need to check pointers in the same alias set.
-      if (PtrRtCheck->AliasSetId[i] != PtrRtCheck->AliasSetId[j])
-        continue;
-
-      unsigned AS0 = Starts[i]->getType()->getPointerAddressSpace();
-      unsigned AS1 = Starts[j]->getType()->getPointerAddressSpace();
-
-      assert((AS0 == Ends[j]->getType()->getPointerAddressSpace()) &&
-             (AS1 == Ends[i]->getType()->getPointerAddressSpace()) &&
-             "Trying to bounds check pointers with different address spaces");
-
-      Type *PtrArithTy0 = Type::getInt8PtrTy(Ctx, AS0);
-      Type *PtrArithTy1 = Type::getInt8PtrTy(Ctx, AS1);
-
-      Value *Start0 = ChkBuilder.CreateBitCast(Starts[i], PtrArithTy0, "bc");
-      Value *Start1 = ChkBuilder.CreateBitCast(Starts[j], PtrArithTy1, "bc");
-      Value *End0 =   ChkBuilder.CreateBitCast(Ends[i],   PtrArithTy1, "bc");
-      Value *End1 =   ChkBuilder.CreateBitCast(Ends[j],   PtrArithTy0, "bc");
-
-      Value *Cmp0 = ChkBuilder.CreateICmpULE(Start0, End1, "bound0");
-      FirstInst = getFirstInst(FirstInst, Cmp0, Loc);
-      Value *Cmp1 = ChkBuilder.CreateICmpULE(Start1, End0, "bound1");
-      FirstInst = getFirstInst(FirstInst, Cmp1, Loc);
-      Value *IsConflict = ChkBuilder.CreateAnd(Cmp0, Cmp1, "found.conflict");
-      FirstInst = getFirstInst(FirstInst, IsConflict, Loc);
-      if (MemoryRuntimeCheck) {
-        IsConflict = ChkBuilder.CreateOr(MemoryRuntimeCheck, IsConflict,
-                                         "conflict.rdx");
-        FirstInst = getFirstInst(FirstInst, IsConflict, Loc);
-      }
-      MemoryRuntimeCheck = IsConflict;
-    }
-  }
-
-  // We have to do this trickery because the IRBuilder might fold the check to a
-  // constant expression in which case there is no Instruction anchored in a
-  // the block.
-  Instruction *Check = BinaryOperator::CreateAnd(MemoryRuntimeCheck,
-                                                 ConstantInt::getTrue(Ctx));
-  ChkBuilder.Insert(Check, "memcheck.conflict");
-  FirstInst = getFirstInst(FirstInst, Check, Loc);
-  return std::make_pair(FirstInst, Check);
-}
-
 void InnerLoopVectorizer::createEmptyLoop() {
   /*
    In this function we generate a new loop. The new loop will contain
@@ -2170,9 +2114,11 @@ void InnerLoopVectorizer::createEmptyLoop() {
   ExitCount = SE->getAddExpr(BackedgeTakeCount,
                              SE->getConstant(BackedgeTakeCount->getType(), 1));
 
+  const DataLayout &DL = OldBasicBlock->getModule()->getDataLayout();
+
   // Expand the trip count and place the new instructions in the preheader.
   // Notice that the pre-header does not change, only the loop body.
-  SCEVExpander Exp(*SE, "induction");
+  SCEVExpander Exp(*SE, DL, "induction");
 
   // We need to test whether the backedge-taken count is uint##_max. Adding one
   // to it will cause overflow and an incorrect loop trip count in the vector
@@ -2308,6 +2254,7 @@ void InnerLoopVectorizer::createEmptyLoop() {
   std::tie(FirstCheckInst, StrideCheck) =
       addStrideCheck(LastBypassBlock->getTerminator());
   if (StrideCheck) {
+    AddedSafetyChecks = true;
     // Create a new block containing the stride check.
     BasicBlock *CheckBlock =
         LastBypassBlock->splitBasicBlock(FirstCheckInst, "vector.stridecheck");
@@ -2330,11 +2277,12 @@ void InnerLoopVectorizer::createEmptyLoop() {
   // faster.
   Instruction *MemRuntimeCheck;
   std::tie(FirstCheckInst, MemRuntimeCheck) =
-      addRuntimeCheck(LastBypassBlock->getTerminator());
+    Legal->getLAI()->addRuntimeCheck(LastBypassBlock->getTerminator());
   if (MemRuntimeCheck) {
+    AddedSafetyChecks = true;
     // Create a new block containing the memory check.
     BasicBlock *CheckBlock =
-        LastBypassBlock->splitBasicBlock(MemRuntimeCheck, "vector.memcheck");
+        LastBypassBlock->splitBasicBlock(FirstCheckInst, "vector.memcheck");
     if (ParentLoop)
       ParentLoop->addBasicBlockToLoop(CheckBlock, *LI);
     LoopBypassBlocks.push_back(CheckBlock);
@@ -2570,10 +2518,9 @@ getReductionBinOp(LoopVectorizationLegality::ReductionKind Kind) {
   }
 }
 
-Value *createMinMaxOp(IRBuilder<> &Builder,
-                      LoopVectorizationLegality::MinMaxReductionKind RK,
-                      Value *Left,
-                      Value *Right) {
+static Value *createMinMaxOp(IRBuilder<> &Builder,
+                             LoopVectorizationLegality::MinMaxReductionKind RK,
+                             Value *Left, Value *Right) {
   CmpInst::Predicate P = CmpInst::ICMP_NE;
   switch (RK) {
   default:
@@ -3498,7 +3445,7 @@ bool LoopVectorizationLegality::canVectorize() {
   collectLoopUniforms();
 
   DEBUG(dbgs() << "LV: We can vectorize this loop" <<
-        (LAA.getRuntimePointerCheck()->Need ? " (with a runtime bound check)" :
+        (LAI->getRuntimePointerCheck()->Need ? " (with a runtime bound check)" :
          "")
         <<"!\n");
 
@@ -3553,10 +3500,10 @@ bool LoopVectorizationLegality::canVectorizeInstrs() {
 
   // Look for the attribute signaling the absence of NaNs.
   Function &F = *Header->getParent();
+  const DataLayout &DL = F.getParent()->getDataLayout();
   if (F.hasFnAttribute("no-nans-fp-math"))
-    HasFunNoNaNAttr = F.getAttributes().getAttribute(
-      AttributeSet::FunctionIndex,
-      "no-nans-fp-math").getValueAsString() == "true";
+    HasFunNoNaNAttr =
+        F.getFnAttribute("no-nans-fp-math").getValueAsString() == "true";
 
   // For each block in the loop.
   for (Loop::block_iterator bb = TheLoop->block_begin(),
@@ -3609,9 +3556,9 @@ bool LoopVectorizationLegality::canVectorizeInstrs() {
         if (IK_NoInduction != IK) {
           // Get the widest type.
           if (!WidestIndTy)
-            WidestIndTy = convertPointerToIntegerType(*DL, PhiTy);
+            WidestIndTy = convertPointerToIntegerType(DL, PhiTy);
           else
-            WidestIndTy = getWiderType(*DL, PhiTy, WidestIndTy);
+            WidestIndTy = getWiderType(DL, PhiTy, WidestIndTy);
 
           // Int inductions are special because we only allow one IV.
           if (IK == IK_IntInduction && StepValue->isOne()) {
@@ -3756,13 +3703,12 @@ bool LoopVectorizationLegality::canVectorizeInstrs() {
 
 ///\brief Remove GEPs whose indices but the last one are loop invariant and
 /// return the induction operand of the gep pointer.
-static Value *stripGetElementPtr(Value *Ptr, ScalarEvolution *SE,
-                                 const DataLayout *DL, Loop *Lp) {
+static Value *stripGetElementPtr(Value *Ptr, ScalarEvolution *SE, Loop *Lp) {
   GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(Ptr);
   if (!GEP)
     return Ptr;
 
-  unsigned InductionOperand = getGEPInductionOperand(DL, GEP);
+  unsigned InductionOperand = getGEPInductionOperand(GEP);
 
   // Check that all of the gep indices are uniform except for our induction
   // operand.
@@ -3791,8 +3737,7 @@ static Value *getUniqueCastUse(Value *Ptr, Loop *Lp, Type *Ty) {
 ///\brief Get the stride of a pointer access in a loop.
 /// Looks for symbolic strides "a[i*stride]". Returns the symbolic stride as a
 /// pointer to the Value, or null otherwise.
-static Value *getStrideFromPointer(Value *Ptr, ScalarEvolution *SE,
-                                   const DataLayout *DL, Loop *Lp) {
+static Value *getStrideFromPointer(Value *Ptr, ScalarEvolution *SE, Loop *Lp) {
   const PointerType *PtrTy = dyn_cast<PointerType>(Ptr->getType());
   if (!PtrTy || PtrTy->isAggregateType())
     return nullptr;
@@ -3805,7 +3750,7 @@ static Value *getStrideFromPointer(Value *Ptr, ScalarEvolution *SE,
   // The size of the pointer access.
   int64_t PtrAccessSize = 1;
 
-  Ptr = stripGetElementPtr(Ptr, SE, DL, Lp);
+  Ptr = stripGetElementPtr(Ptr, SE, Lp);
   const SCEV *V = SE->getSCEV(Ptr);
 
   if (Ptr != OrigPtr)
@@ -3824,7 +3769,8 @@ static Value *getStrideFromPointer(Value *Ptr, ScalarEvolution *SE,
   // Strip off the size of access multiplication if we are still analyzing the
   // pointer.
   if (OrigPtr == Ptr) {
-    DL->getTypeAllocSize(PtrTy->getElementType());
+    const DataLayout &DL = Lp->getHeader()->getModule()->getDataLayout();
+    DL.getTypeAllocSize(PtrTy->getElementType());
     if (const SCEVMulExpr *M = dyn_cast<SCEVMulExpr>(V)) {
       if (M->getOperand(0)->getSCEVType() != scConstant)
         return nullptr;
@@ -3876,7 +3822,7 @@ void LoopVectorizationLegality::collectStridedAccess(Value *MemAccess) {
   else
     return;
 
-  Value *Stride = getStrideFromPointer(Ptr, SE, DL, TheLoop);
+  Value *Stride = getStrideFromPointer(Ptr, SE, TheLoop);
   if (!Stride)
     return;
 
@@ -3924,7 +3870,23 @@ void LoopVectorizationLegality::collectLoopUniforms() {
 }
 
 bool LoopVectorizationLegality::canVectorizeMemory() {
-  return LAA.canVectorizeMemory(Strides);
+  LAI = &LAA->getInfo(TheLoop, Strides);
+  auto &OptionalReport = LAI->getReport();
+  if (OptionalReport)
+    emitAnalysis(VectorizationReport(*OptionalReport));
+  if (!LAI->canVectorizeMemory())
+    return false;
+
+  if (LAI->getNumRuntimePointerChecks() >
+      VectorizerParams::RuntimeMemoryCheckThreshold) {
+    emitAnalysis(VectorizationReport()
+                 << LAI->getNumRuntimePointerChecks() << " exceeds limit of "
+                 << VectorizerParams::RuntimeMemoryCheckThreshold
+                 << " dependent memory operations checked at runtime");
+    DEBUG(dbgs() << "LV: Too many memory checks needed.\n");
+    return false;
+  }
+  return true;
 }
 
 static bool hasMultipleUsesOf(Instruction *I,
@@ -4250,7 +4212,8 @@ LoopVectorizationLegality::isInductionVariable(PHINode *Phi,
   if (!PointerElementType->isSized())
     return IK_NoInduction;
 
-  int64_t Size = static_cast<int64_t>(DL->getTypeAllocSize(PointerElementType));
+  const DataLayout &DL = Phi->getModule()->getDataLayout();
+  int64_t Size = static_cast<int64_t>(DL.getTypeAllocSize(PointerElementType));
   int64_t CVSize = CV->getSExtValue();
   if (CVSize % Size)
     return IK_NoInduction;
@@ -4268,7 +4231,7 @@ bool LoopVectorizationLegality::isInductionVariable(const Value *V) {
 }
 
 bool LoopVectorizationLegality::blockNeedsPredication(BasicBlock *BB)  {
-  return LAA.blockNeedsPredication(BB);
+  return LoopAccessInfo::blockNeedsPredication(BB, TheLoop, DT);
 }
 
 bool LoopVectorizationLegality::blockCanBePredicated(BasicBlock *BB,
@@ -4462,6 +4425,7 @@ LoopVectorizationCostModel::selectVectorizationFactor(bool OptForSize) {
 
 unsigned LoopVectorizationCostModel::getWidestType() {
   unsigned MaxWidth = 8;
+  const DataLayout &DL = TheFunction->getParent()->getDataLayout();
 
   // For each block.
   for (Loop::block_iterator bb = TheLoop->block_begin(),
@@ -4496,7 +4460,7 @@ unsigned LoopVectorizationCostModel::getWidestType() {
         continue;
 
       MaxWidth = std::max(MaxWidth,
-                          (unsigned)DL->getTypeSizeInBits(T->getScalarType()));
+                          (unsigned)DL.getTypeSizeInBits(T->getScalarType()));
     }
   }
 
@@ -4646,6 +4610,14 @@ LoopVectorizationCostModel::selectUnrollFactor(bool OptForSize,
 
     DEBUG(dbgs() << "LV: Unrolling to reduce branch cost.\n");
     return SmallUF;
+  }
+
+  // Unroll if this is a large loop (small loops are already dealt with by this
+  // point) that could benefit from interleaved unrolling.
+  bool HasReductions = (Legal->getReductionVars()->size() > 0);
+  if (TTI.enableAggressiveInterleaving(HasReductions)) {
+    DEBUG(dbgs() << "LV: Unrolling to expose ILP.\n");
+    return UF;
   }
 
   DEBUG(dbgs() << "LV: Not Unrolling.\n");
@@ -4985,8 +4957,9 @@ LoopVectorizationCostModel::getInstructionCost(Instruction *I, unsigned VF) {
     // Scalarized loads/stores.
     int ConsecutiveStride = Legal->isConsecutivePtr(Ptr);
     bool Reverse = ConsecutiveStride < 0;
-    unsigned ScalarAllocatedSize = DL->getTypeAllocSize(ValTy);
-    unsigned VectorElementSize = DL->getTypeStoreSize(VectorTy)/VF;
+    const DataLayout &DL = I->getModule()->getDataLayout();
+    unsigned ScalarAllocatedSize = DL.getTypeAllocSize(ValTy);
+    unsigned VectorElementSize = DL.getTypeStoreSize(VectorTy) / VF;
     if (!ConsecutiveStride || ScalarAllocatedSize != VectorElementSize) {
       bool IsComplexComputation =
         isLikelyComplexAddressComputation(Ptr, Legal, SE, TheLoop);
@@ -5013,7 +4986,11 @@ LoopVectorizationCostModel::getInstructionCost(Instruction *I, unsigned VF) {
 
     // Wide load/stores.
     unsigned Cost = TTI.getAddressComputationCost(VectorTy);
-    Cost += TTI.getMemoryOpCost(I->getOpcode(), VectorTy, Alignment, AS);
+    if (Legal->isMaskRequired(I))
+      Cost += TTI.getMaskedMemoryOpCost(I->getOpcode(), VectorTy, Alignment,
+                                        AS);
+    else
+      Cost += TTI.getMemoryOpCost(I->getOpcode(), VectorTy, Alignment, AS);
 
     if (Reverse)
       Cost += TTI.getShuffleCost(TargetTransformInfo::SK_Reverse,
@@ -5077,12 +5054,6 @@ LoopVectorizationCostModel::getInstructionCost(Instruction *I, unsigned VF) {
   }// end of switch.
 }
 
-Type* LoopVectorizationCostModel::ToVectorTy(Type *Scalar, unsigned VF) {
-  if (Scalar->isVoidTy() || VF == 1)
-    return Scalar;
-  return VectorType::get(Scalar, VF);
-}
-
 char LoopVectorize::ID = 0;
 static const char lv_name[] = "Loop Vectorization";
 INITIALIZE_PASS_BEGIN(LoopVectorize, LV_NAME, lv_name, false, false)
@@ -5095,6 +5066,7 @@ INITIALIZE_PASS_DEPENDENCY(ScalarEvolution)
 INITIALIZE_PASS_DEPENDENCY(LCSSA)
 INITIALIZE_PASS_DEPENDENCY(LoopInfoWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(LoopSimplify)
+INITIALIZE_PASS_DEPENDENCY(LoopAccessAnalysis)
 INITIALIZE_PASS_END(LoopVectorize, LV_NAME, lv_name, false, false)
 
 namespace llvm {

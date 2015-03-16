@@ -18,8 +18,8 @@
 #include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/IR/CallSite.h"
 #include "llvm/IR/DataLayout.h"
-#include "llvm/IR/Operator.h"
 #include "llvm/IR/Function.h"
+#include "llvm/IR/Operator.h"
 #include "llvm/IR/Type.h"
 
 namespace llvm {
@@ -225,6 +225,8 @@ public:
 
   bool isTruncateFree(Type *Ty1, Type *Ty2) { return false; }
 
+  bool isProfitableToHoist(Instruction *I) { return true; }
+
   bool isTypeLegal(Type *Ty) { return false; }
 
   unsigned getJumpBufAlignment() { return 0; }
@@ -233,11 +235,15 @@ public:
 
   bool shouldBuildLookupTables() { return true; }
 
+  bool enableAggressiveInterleaving(bool LoopHasReductions) { return false; }
+
   TTI::PopcntSupportKind getPopcntSupport(unsigned IntTyWidthInBit) {
     return TTI::PSK_Software;
   }
 
   bool haveFastSqrt(Type *Ty) { return false; }
+
+  unsigned getFPOpCost(Type *Ty) { return TargetTransformInfo::TCC_Basic; }
 
   unsigned getIntImmCost(const APInt &Imm, Type *Ty) { return TTI::TCC_Basic; }
 
@@ -419,8 +425,7 @@ public:
         return TTI::TCC_Free;
     }
 
-    // Otherwise delegate to the fully generic implementations.
-    return getOperationCost(
+    return static_cast<T *>(this)->getOperationCost(
         Operator::getOpcode(U), U->getType(),
         U->getNumOperands() == 1 ? U->getOperand(0)->getType() : nullptr);
   }

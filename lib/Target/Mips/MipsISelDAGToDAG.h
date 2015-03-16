@@ -73,6 +73,9 @@ private:
   virtual bool selectIntAddrMM(SDValue Addr, SDValue &Base,
                                SDValue &Offset) const;
 
+  virtual bool selectIntAddrLSL2MM(SDValue Addr, SDValue &Base,
+                                   SDValue &Offset) const;
+
   /// Match addr+simm10 and addr
   virtual bool selectIntAddrMSA(SDValue Addr, SDValue &Base,
                                 SDValue &Offset) const;
@@ -122,7 +125,7 @@ private:
   virtual void processFunctionAfterISel(MachineFunction &MF) = 0;
 
   bool SelectInlineAsmMemoryOperand(const SDValue &Op,
-                                    char ConstraintCode,
+                                    unsigned ConstraintID,
                                     std::vector<SDValue> &OutOps) override;
 };
 }

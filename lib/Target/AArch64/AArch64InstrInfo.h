@@ -34,16 +34,10 @@ class AArch64InstrInfo : public AArch64GenInstrInfo {
     MOSuppressPair = 1
   };
 
-  const AArch64RegisterInfo RI;
   const AArch64Subtarget &Subtarget;
 
 public:
   explicit AArch64InstrInfo(const AArch64Subtarget &STI);
-
-  /// getRegisterInfo - TargetInstrInfo is a superset of MRegister info.  As
-  /// such, whenever a client has an instance of instruction info, it should
-  /// always be able to get register info as well (through this method).
-  const AArch64RegisterInfo &getRegisterInfo() const { return RI; }
 
   unsigned GetInstSizeInBytes(const MachineInstr *MI) const;
 
@@ -129,10 +123,9 @@ public:
                             const TargetRegisterInfo *TRI) const override;
 
   using TargetInstrInfo::foldMemoryOperandImpl;
-  MachineInstr *
-  foldMemoryOperandImpl(MachineFunction &MF, MachineInstr *MI,
-                        const SmallVectorImpl<unsigned> &Ops,
-                        int FrameIndex) const override;
+  MachineInstr *foldMemoryOperandImpl(MachineFunction &MF, MachineInstr *MI,
+                                      ArrayRef<unsigned> Ops,
+                                      int FrameIndex) const override;
 
   bool AnalyzeBranch(MachineBasicBlock &MBB, MachineBasicBlock *&TBB,
                      MachineBasicBlock *&FBB,

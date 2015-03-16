@@ -500,6 +500,7 @@ bool llvm::UnrollLoop(Loop *L, unsigned Count, unsigned TripCount,
   // At this point, the code is well formed.  We now do a quick sweep over the
   // inserted code, doing constant propagation and dead code elimination as we
   // go.
+  const DataLayout &DL = Header->getModule()->getDataLayout();
   const std::vector<BasicBlock*> &NewLoopBlocks = L->getBlocks();
   for (std::vector<BasicBlock*>::const_iterator BB = NewLoopBlocks.begin(),
        BBE = NewLoopBlocks.end(); BB != BBE; ++BB)
@@ -508,7 +509,7 @@ bool llvm::UnrollLoop(Loop *L, unsigned Count, unsigned TripCount,
 
       if (isInstructionTriviallyDead(Inst))
         (*BB)->getInstList().erase(Inst);
-      else if (Value *V = SimplifyInstruction(Inst))
+      else if (Value *V = SimplifyInstruction(Inst, DL))
         if (LI->replacementPreservesLCSSAForm(Inst, V)) {
           Inst->replaceAllUsesWith(V);
           (*BB)->getInstList().erase(Inst);
@@ -531,9 +532,7 @@ bool llvm::UnrollLoop(Loop *L, unsigned Count, unsigned TripCount,
     if (!OuterL && !CompletelyUnroll)
       OuterL = L;
     if (OuterL) {
-      DataLayoutPass *DLP = PP->getAnalysisIfAvailable<DataLayoutPass>();
-      const DataLayout *DL = DLP ? &DLP->getDataLayout() : nullptr;
-      simplifyLoop(OuterL, DT, LI, PP, /*AliasAnalysis*/ nullptr, SE, DL, AC);
+      simplifyLoop(OuterL, DT, LI, PP, /*AliasAnalysis*/ nullptr, SE, AC);
 
       // LCSSA must be performed on the outermost affected loop. The unrolled
       // loop's last loop latch is guaranteed to be in the outermost loop after
@@ -553,16 +552,17 @@ bool llvm::UnrollLoop(Loop *L, unsigned Count, unsigned TripCount,
 /// Given an llvm.loop loop id metadata node, returns the loop hint metadata
 /// node with the given name (for example, "llvm.loop.unroll.count"). If no
 /// such metadata node exists, then nullptr is returned.
-const MDNode *llvm::GetUnrollMetadata(const MDNode *LoopID, StringRef Name) {
+MDNode *llvm::GetUnrollMetadata(MDNode *LoopID, StringRef Name) {
   // First operand should refer to the loop id itself.
   assert(LoopID->getNumOperands() > 0 && "requires at least one operand");
+  assert(LoopID->getOperand(0) == LoopID && "invalid loop id");
 
   for (unsigned i = 1, e = LoopID->getNumOperands(); i < e; ++i) {
-    const MDNode *MD = dyn_cast<MDNode>(LoopID->getOperand(i));
+    MDNode *MD = dyn_cast<MDNode>(LoopID->getOperand(i));
     if (!MD)
       continue;
 
-    const MDString *S = dyn_cast<MDString>(MD->getOperand(0));
+    MDString *S = dyn_cast<MDString>(MD->getOperand(0));
     if (!S)
       continue;
 

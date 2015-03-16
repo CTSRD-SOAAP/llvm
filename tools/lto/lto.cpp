@@ -13,6 +13,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm-c/lto.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/CodeGen/CommandFlags.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/LTO/LTOCodeGenerator.h"
@@ -248,6 +249,10 @@ bool lto_codegen_add_module(lto_code_gen_t cg, lto_module_t mod) {
   return !unwrap(cg)->addModule(unwrap(mod));
 }
 
+void lto_codegen_set_module(lto_code_gen_t cg, lto_module_t mod) {
+  unwrap(cg)->setModule(unwrap(mod));
+}
+
 bool lto_codegen_set_debug_model(lto_code_gen_t cg, lto_debug_model debug) {
   unwrap(cg)->setDebugInfo(debug);
   return false;
@@ -296,6 +301,26 @@ const void *lto_codegen_compile(lto_code_gen_t cg, size_t *length) {
                              sLastErrorString);
 }
 
+bool lto_codegen_optimize(lto_code_gen_t cg) {
+  if (!parsedOptions) {
+    unwrap(cg)->parseCodeGenDebugOptions();
+    lto_add_attrs(cg);
+    parsedOptions = true;
+  }
+  return !unwrap(cg)->optimize(DisableOpt, DisableInline,
+                               DisableGVNLoadPRE, DisableLTOVectorization,
+                               sLastErrorString);
+}
+
+const void *lto_codegen_compile_optimized(lto_code_gen_t cg, size_t *length) {
+  if (!parsedOptions) {
+    unwrap(cg)->parseCodeGenDebugOptions();
+    lto_add_attrs(cg);
+    parsedOptions = true;
+  }
+  return unwrap(cg)->compileOptimized(length, sLastErrorString);
+}
+
 bool lto_codegen_compile_to_file(lto_code_gen_t cg, const char **name) {
   if (!parsedOptions) {
     unwrap(cg)->parseCodeGenDebugOptions();
@@ -310,3 +335,5 @@ bool lto_codegen_compile_to_file(lto_code_gen_t cg, const char **name) {
 void lto_codegen_debug_options(lto_code_gen_t cg, const char *opt) {
   unwrap(cg)->setCodeGenDebugOptions(opt);
 }
+
+unsigned int lto_api_version() { return LTO_API_VERSION; }

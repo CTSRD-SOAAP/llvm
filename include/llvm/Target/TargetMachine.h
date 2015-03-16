@@ -15,6 +15,7 @@
 #define LLVM_TARGET_TARGETMACHINE_H
 
 #include "llvm/ADT/StringRef.h"
+#include "llvm/IR/DataLayout.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/CodeGen.h"
 #include "llvm/Target/TargetOptions.h"
@@ -59,14 +60,18 @@ using legacy::PassManagerBase;
 /// through this interface.
 ///
 class TargetMachine {
-  TargetMachine(const TargetMachine &) LLVM_DELETED_FUNCTION;
-  void operator=(const TargetMachine &) LLVM_DELETED_FUNCTION;
+  TargetMachine(const TargetMachine &) = delete;
+  void operator=(const TargetMachine &) = delete;
 protected: // Can only create subclasses.
-  TargetMachine(const Target &T, StringRef TargetTriple,
-                StringRef CPU, StringRef FS, const TargetOptions &Options);
+  TargetMachine(const Target &T, StringRef DataLayoutString,
+                StringRef TargetTriple, StringRef CPU, StringRef FS,
+                const TargetOptions &Options);
 
   /// TheTarget - The Target that this machine was created for.
   const Target &TheTarget;
+
+  /// DataLayout - For ABI type size and alignment.
+  const DataLayout DL;
 
   /// TargetTriple, TargetCPU, TargetFS - Triple string, CPU name, and target
   /// feature strings the TargetMachine instance is created with.
@@ -113,15 +118,13 @@ public:
   template<typename STC> const STC &getSubtarget() const {
     return *static_cast<const STC*>(getSubtargetImpl());
   }
-  template <typename STC> const STC &getSubtarget(const Function *) const {
+  template <typename STC> const STC &getSubtarget(const Function &) const {
     return *static_cast<const STC*>(getSubtargetImpl());
   }
 
   /// getDataLayout - This method returns a pointer to the DataLayout for
   /// the target. It should be unchanging for every subtarget.
-  virtual const DataLayout *getDataLayout() const {
-    return nullptr;
-  }
+  const DataLayout *getDataLayout() const { return &DL; }
 
   /// \brief Reset the target options based on the function's attributes.
   // FIXME: Remove TargetOptions that affect per-function code generation
@@ -165,28 +168,25 @@ public:
 
   bool shouldPrintMachineCode() const { return Options.PrintMachineCode; }
 
-  /// getAsmVerbosityDefault - Returns the default value of asm verbosity.
+  /// Returns the default value of asm verbosity.
   ///
-  bool getAsmVerbosityDefault() const ;
+  bool getAsmVerbosityDefault() const {
+    return Options.MCOptions.AsmVerbose;
+  }
 
-  /// setAsmVerbosityDefault - Set the default value of asm verbosity. Default
-  /// is false.
-  void setAsmVerbosityDefault(bool);
+  bool getUniqueSectionNames() const { return Options.UniqueSectionNames; }
 
-  /// getDataSections - Return true if data objects should be emitted into their
-  /// own section, corresponds to -fdata-sections.
-  bool getDataSections() const;
+  /// Return true if data objects should be emitted into their own section,
+  /// corresponds to -fdata-sections.
+  bool getDataSections() const {
+    return Options.DataSections;
+  }
 
-  /// getFunctionSections - Return true if functions should be emitted into
-  /// their own section, corresponding to -ffunction-sections.
-  bool getFunctionSections() const;
-
-  /// setDataSections - Set if the data are emit into separate sections.
-  void setDataSections(bool);
-
-  /// setFunctionSections - Set if the functions are emit into separate
-  /// sections.
-  void setFunctionSections(bool);
+  /// Return true if functions should be emitted into their own section,
+  /// corresponding to -ffunction-sections.
+  bool getFunctionSections() const {
+    return Options.FunctionSections;
+  }
 
   /// \brief Get a \c TargetIRAnalysis appropriate for the target.
   ///
@@ -239,9 +239,9 @@ public:
 ///
 class LLVMTargetMachine : public TargetMachine {
 protected: // Can only create subclasses.
-  LLVMTargetMachine(const Target &T, StringRef TargetTriple,
-                    StringRef CPU, StringRef FS, TargetOptions Options,
-                    Reloc::Model RM, CodeModel::Model CM,
+  LLVMTargetMachine(const Target &T, StringRef DataLayoutString,
+                    StringRef TargetTriple, StringRef CPU, StringRef FS,
+                    TargetOptions Options, Reloc::Model RM, CodeModel::Model CM,
                     CodeGenOpt::Level OL);
 
   void initAsmInfo();

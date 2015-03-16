@@ -23,6 +23,7 @@
 #include "MCTargetDesc/ARMAddressingModes.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/ADT/StringSwitch.h"
 #include "llvm/CodeGen/CallingConvLower.h"
 #include "llvm/CodeGen/IntrinsicLowering.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
@@ -568,14 +569,12 @@ ARMTargetLowering::ARMTargetLowering(const TargetMachine &TM,
     setTargetDAGCombine(ISD::LOAD);
 
     // It is legal to extload from v4i8 to v4i16 or v4i32.
-    MVT Tys[6] = {MVT::v8i8, MVT::v4i8, MVT::v2i8,
-                  MVT::v4i16, MVT::v2i16,
-                  MVT::v2i32};
-    for (unsigned i = 0; i < 6; ++i) {
+    for (MVT Ty : {MVT::v8i8, MVT::v4i8, MVT::v2i8, MVT::v4i16, MVT::v2i16,
+                   MVT::v2i32}) {
       for (MVT VT : MVT::integer_vector_valuetypes()) {
-        setLoadExtAction(ISD::EXTLOAD, VT, Tys[i], Legal);
-        setLoadExtAction(ISD::ZEXTLOAD, VT, Tys[i], Legal);
-        setLoadExtAction(ISD::SEXTLOAD, VT, Tys[i], Legal);
+        setLoadExtAction(ISD::EXTLOAD, VT, Ty, Legal);
+        setLoadExtAction(ISD::ZEXTLOAD, VT, Ty, Legal);
+        setLoadExtAction(ISD::SEXTLOAD, VT, Ty, Legal);
       }
     }
   }
@@ -618,7 +617,7 @@ ARMTargetLowering::ARMTargetLowering(const TargetMachine &TM,
     setOperationAction(ISD::FP_EXTEND,  MVT::f64, Custom);
   }
 
-  computeRegisterProperties();
+  computeRegisterProperties(Subtarget->getRegisterInfo());
 
   // ARM does not have floating-point extending loads.
   for (MVT VT : MVT::fp_valuetypes()) {
@@ -967,13 +966,14 @@ ARMTargetLowering::ARMTargetLowering(const TargetMachine &TM,
 // of the difficulty prior to coalescing of modeling operand register classes
 // due to the common occurrence of cross class copies and subregister insertions
 // and extractions.
-std::pair<const TargetRegisterClass*, uint8_t>
-ARMTargetLowering::findRepresentativeClass(MVT VT) const{
+std::pair<const TargetRegisterClass *, uint8_t>
+ARMTargetLowering::findRepresentativeClass(const TargetRegisterInfo *TRI,
+                                           MVT VT) const {
   const TargetRegisterClass *RRC = nullptr;
   uint8_t Cost = 1;
   switch (VT.SimpleTy) {
   default:
-    return TargetLowering::findRepresentativeClass(VT);
+    return TargetLowering::findRepresentativeClass(TRI, VT);
   // Use DPR as representative register class for all floating point
   // and vector types. Since there are 32 SPR registers and 32 DPR registers so
   // the cost is 1 for both f32 and f64.
@@ -1168,12 +1168,6 @@ FastISel *
 ARMTargetLowering::createFastISel(FunctionLoweringInfo &funcInfo,
                                   const TargetLibraryInfo *libInfo) const {
   return ARM::createFastISel(funcInfo, libInfo);
-}
-
-/// getMaximalGlobalOffset - Returns the maximal possible offset which can
-/// be used for loads / stores from the global.
-unsigned ARMTargetLowering::getMaximalGlobalOffset() const {
-  return (Subtarget->isThumb1Only() ? 127 : 4095);
 }
 
 Sched::Preference ARMTargetLowering::getSchedulingPreference(SDNode *N) const {
@@ -1786,8 +1780,7 @@ ARMTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
 
   // FIXME: handle tail calls differently.
   unsigned CallOpc;
-  bool HasMinSizeAttr = MF.getFunction()->getAttributes().hasAttribute(
-      AttributeSet::FunctionIndex, Attribute::MinSize);
+  bool HasMinSizeAttr = MF.getFunction()->hasFnAttribute(Attribute::MinSize);
   if (Subtarget->isThumb()) {
     if ((!isDirect || isARMFunc) && !Subtarget->hasV5TOps())
       CallOpc = ARMISD::CALL_NOLINK;
@@ -1821,16 +1814,16 @@ ARMTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
     const ARMBaseRegisterInfo *ARI = Subtarget->getRegisterInfo();
     if (isThisReturn) {
       // For 'this' returns, use the R0-preserving mask if applicable
-      Mask = ARI->getThisReturnPreservedMask(CallConv);
+      Mask = ARI->getThisReturnPreservedMask(MF, CallConv);
       if (!Mask) {
         // Set isThisReturn to false if the calling convention is not one that
         // allows 'returned' to be modeled in this way, so LowerCallResult does
         // not try to pass 'this' straight through
         isThisReturn = false;
-        Mask = ARI->getCallPreservedMask(CallConv);
+        Mask = ARI->getCallPreservedMask(MF, CallConv);
       }
     } else
-      Mask = ARI->getCallPreservedMask(CallConv);
+      Mask = ARI->getCallPreservedMask(MF, CallConv);
 
     assert(Mask && "Missing call preserved mask for calling convention");
     Ops.push_back(DAG.getRegisterMask(Mask));
@@ -1863,59 +1856,60 @@ ARMTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
 /// on the stack.  Remember the next parameter register to allocate,
 /// and then confiscate the rest of the parameter registers to insure
 /// this.
-void
-ARMTargetLowering::HandleByVal(
-    CCState *State, unsigned &size, unsigned Align) const {
-  unsigned reg = State->AllocateReg(GPRArgRegs, 4);
+void ARMTargetLowering::HandleByVal(CCState *State, unsigned &Size,
+                                    unsigned Align) const {
   assert((State->getCallOrPrologue() == Prologue ||
           State->getCallOrPrologue() == Call) &&
          "unhandled ParmContext");
 
-  if ((ARM::R0 <= reg) && (reg <= ARM::R3)) {
-    if (Subtarget->isAAPCS_ABI() && Align > 4) {
-      unsigned AlignInRegs = Align / 4;
-      unsigned Waste = (ARM::R4 - reg) % AlignInRegs;
-      for (unsigned i = 0; i < Waste; ++i)
-        reg = State->AllocateReg(GPRArgRegs, 4);
-    }
-    if (reg != 0) {
-      unsigned excess = 4 * (ARM::R4 - reg);
+  // Byval (as with any stack) slots are always at least 4 byte aligned.
+  Align = std::max(Align, 4U);
 
-      // Special case when NSAA != SP and parameter size greater than size of
-      // all remained GPR regs. In that case we can't split parameter, we must
-      // send it to stack. We also must set NCRN to R4, so waste all
-      // remained registers.
-      const unsigned NSAAOffset = State->getNextStackOffset();
-      if (Subtarget->isAAPCS_ABI() && NSAAOffset != 0 && size > excess) {
-        while (State->AllocateReg(GPRArgRegs, 4))
-          ;
-        return;
-      }
+  unsigned Reg = State->AllocateReg(GPRArgRegs);
+  if (!Reg)
+    return;
 
-      // First register for byval parameter is the first register that wasn't
-      // allocated before this method call, so it would be "reg".
-      // If parameter is small enough to be saved in range [reg, r4), then
-      // the end (first after last) register would be reg + param-size-in-regs,
-      // else parameter would be splitted between registers and stack,
-      // end register would be r4 in this case.
-      unsigned ByValRegBegin = reg;
-      unsigned ByValRegEnd = (size < excess) ? reg + size/4 : (unsigned)ARM::R4;
-      State->addInRegsParamInfo(ByValRegBegin, ByValRegEnd);
-      // Note, first register is allocated in the beginning of function already,
-      // allocate remained amount of registers we need.
-      for (unsigned i = reg+1; i != ByValRegEnd; ++i)
-        State->AllocateReg(GPRArgRegs, 4);
-      // A byval parameter that is split between registers and memory needs its
-      // size truncated here.
-      // In the case where the entire structure fits in registers, we set the
-      // size in memory to zero.
-      if (size < excess)
-        size = 0;
-      else
-        size -= excess;
-    }
+  unsigned AlignInRegs = Align / 4;
+  unsigned Waste = (ARM::R4 - Reg) % AlignInRegs;
+  for (unsigned i = 0; i < Waste; ++i)
+    Reg = State->AllocateReg(GPRArgRegs);
+
+  if (!Reg)
+    return;
+
+  unsigned Excess = 4 * (ARM::R4 - Reg);
+
+  // Special case when NSAA != SP and parameter size greater than size of
+  // all remained GPR regs. In that case we can't split parameter, we must
+  // send it to stack. We also must set NCRN to R4, so waste all
+  // remained registers.
+  const unsigned NSAAOffset = State->getNextStackOffset();
+  if (NSAAOffset != 0 && Size > Excess) {
+    while (State->AllocateReg(GPRArgRegs))
+      ;
+    return;
   }
+
+  // First register for byval parameter is the first register that wasn't
+  // allocated before this method call, so it would be "reg".
+  // If parameter is small enough to be saved in range [reg, r4), then
+  // the end (first after last) register would be reg + param-size-in-regs,
+  // else parameter would be splitted between registers and stack,
+  // end register would be r4 in this case.
+  unsigned ByValRegBegin = Reg;
+  unsigned ByValRegEnd = std::min<unsigned>(Reg + Size / 4, ARM::R4);
+  State->addInRegsParamInfo(ByValRegBegin, ByValRegEnd);
+  // Note, first register is allocated in the beginning of function already,
+  // allocate remained amount of registers we need.
+  for (unsigned i = Reg + 1; i != ByValRegEnd; ++i)
+    State->AllocateReg(GPRArgRegs);
+  // A byval parameter that is split between registers and memory needs its
+  // size truncated here.
+  // In the case where the entire structure fits in registers, we set the
+  // size in memory to zero.
+  Size = std::max<int>(Size - Excess, 0);
 }
+
 
 /// MatchingStackOffset - Return true if the given stack call argument is
 /// already available in the same position (relatively) of the caller's
@@ -1997,7 +1991,7 @@ ARMTargetLowering::IsEligibleForTailCallOptimization(SDValue Callee,
   if (isCalleeStructRet || isCallerStructRet)
     return false;
 
-  // FIXME: Completely disable sibcall for Thumb1 since Thumb1RegisterInfo::
+  // FIXME: Completely disable sibcall for Thumb1 since ThumbRegisterInfo::
   // emitEpilogue is not ready for them. Thumb tail calls also use t2B, as
   // the Thumb1 16-bit unconditional branch doesn't have sufficient relocation
   // support in the assembler and linker to be used. This would need to be
@@ -2825,52 +2819,6 @@ ARMTargetLowering::GetF64FormalArgument(CCValAssign &VA, CCValAssign &NextVA,
   return DAG.getNode(ARMISD::VMOVDRR, dl, MVT::f64, ArgValue, ArgValue2);
 }
 
-void
-ARMTargetLowering::computeRegArea(CCState &CCInfo, MachineFunction &MF,
-                                  unsigned InRegsParamRecordIdx,
-                                  unsigned ArgSize,
-                                  unsigned &ArgRegsSize,
-                                  unsigned &ArgRegsSaveSize)
-  const {
-  unsigned NumGPRs;
-  if (InRegsParamRecordIdx < CCInfo.getInRegsParamsCount()) {
-    unsigned RBegin, REnd;
-    CCInfo.getInRegsParamInfo(InRegsParamRecordIdx, RBegin, REnd);
-    NumGPRs = REnd - RBegin;
-  } else {
-    unsigned int firstUnalloced;
-    firstUnalloced = CCInfo.getFirstUnallocated(GPRArgRegs,
-                                                sizeof(GPRArgRegs) /
-                                                sizeof(GPRArgRegs[0]));
-    NumGPRs = (firstUnalloced <= 3) ? (4 - firstUnalloced) : 0;
-  }
-
-  unsigned Align = Subtarget->getFrameLowering()->getStackAlignment();
-  ArgRegsSize = NumGPRs * 4;
-
-  // If parameter is split between stack and GPRs...
-  if (NumGPRs && Align > 4 &&
-      (ArgRegsSize < ArgSize ||
-        InRegsParamRecordIdx >= CCInfo.getInRegsParamsCount())) {
-    // Add padding for part of param recovered from GPRs.  For example,
-    // if Align == 8, its last byte must be at address K*8 - 1.
-    // We need to do it, since remained (stack) part of parameter has
-    // stack alignment, and we need to "attach" "GPRs head" without gaps
-    // to it:
-    // Stack:
-    // |---- 8 bytes block ----| |---- 8 bytes block ----| |---- 8 bytes...
-    // [ [padding] [GPRs head] ] [        Tail passed via stack       ....
-    //
-    ARMFunctionInfo *AFI = MF.getInfo<ARMFunctionInfo>();
-    unsigned Padding =
-        OffsetToAlignment(ArgRegsSize + AFI->getArgRegsSaveSize(), Align);
-    ArgRegsSaveSize = ArgRegsSize + Padding;
-  } else
-    // We don't need to extend regs save size for byval parameters if they
-    // are passed via GPRs only.
-    ArgRegsSaveSize = ArgRegsSize;
-}
-
 // The remaining GPRs hold either the beginning of variable-argument
 // data, or the beginning of an aggregate passed by value (usually
 // byval).  Either way, we allocate stack slots adjacent to the data
@@ -2884,13 +2832,8 @@ ARMTargetLowering::StoreByValRegs(CCState &CCInfo, SelectionDAG &DAG,
                                   SDLoc dl, SDValue &Chain,
                                   const Value *OrigArg,
                                   unsigned InRegsParamRecordIdx,
-                                  unsigned OffsetFromOrigArg,
-                                  unsigned ArgOffset,
-                                  unsigned ArgSize,
-                                  bool ForceMutable,
-                                  unsigned ByValStoreOffset,
-                                  unsigned TotalArgRegsSaveSize) const {
-
+                                  int ArgOffset,
+                                  unsigned ArgSize) const {
   // Currently, two use-cases possible:
   // Case #1. Non-var-args function, and we meet first byval parameter.
   //          Setup first unallocated register as first byval register;
@@ -2905,83 +2848,39 @@ ARMTargetLowering::StoreByValRegs(CCState &CCInfo, SelectionDAG &DAG,
   MachineFunction &MF = DAG.getMachineFunction();
   MachineFrameInfo *MFI = MF.getFrameInfo();
   ARMFunctionInfo *AFI = MF.getInfo<ARMFunctionInfo>();
-  unsigned firstRegToSaveIndex, lastRegToSaveIndex;
   unsigned RBegin, REnd;
   if (InRegsParamRecordIdx < CCInfo.getInRegsParamsCount()) {
     CCInfo.getInRegsParamInfo(InRegsParamRecordIdx, RBegin, REnd);
-    firstRegToSaveIndex = RBegin - ARM::R0;
-    lastRegToSaveIndex = REnd - ARM::R0;
   } else {
-    firstRegToSaveIndex = CCInfo.getFirstUnallocated
-      (GPRArgRegs, array_lengthof(GPRArgRegs));
-    lastRegToSaveIndex = 4;
+    unsigned RBeginIdx = CCInfo.getFirstUnallocated(GPRArgRegs);
+    RBegin = RBeginIdx == 4 ? (unsigned)ARM::R4 : GPRArgRegs[RBeginIdx];
+    REnd = ARM::R4;
   }
 
-  unsigned ArgRegsSize, ArgRegsSaveSize;
-  computeRegArea(CCInfo, MF, InRegsParamRecordIdx, ArgSize,
-                 ArgRegsSize, ArgRegsSaveSize);
+  if (REnd != RBegin)
+    ArgOffset = -4 * (ARM::R4 - RBegin);
 
-  // Store any by-val regs to their spots on the stack so that they may be
-  // loaded by deferencing the result of formal parameter pointer or va_next.
-  // Note: once stack area for byval/varargs registers
-  // was initialized, it can't be initialized again.
-  if (ArgRegsSaveSize) {
-    unsigned Padding = ArgRegsSaveSize - ArgRegsSize;
+  int FrameIndex = MFI->CreateFixedObject(ArgSize, ArgOffset, false);
+  SDValue FIN = DAG.getFrameIndex(FrameIndex, getPointerTy());
 
-    if (Padding) {
-      assert(AFI->getStoredByValParamsPadding() == 0 &&
-             "The only parameter may be padded.");
-      AFI->setStoredByValParamsPadding(Padding);
-    }
+  SmallVector<SDValue, 4> MemOps;
+  const TargetRegisterClass *RC =
+      AFI->isThumb1OnlyFunction() ? &ARM::tGPRRegClass : &ARM::GPRRegClass;
 
-    int FrameIndex = MFI->CreateFixedObject(ArgRegsSaveSize,
-                                            Padding +
-                                              ByValStoreOffset -
-                                              (int64_t)TotalArgRegsSaveSize,
-                                            false);
-    SDValue FIN = DAG.getFrameIndex(FrameIndex, getPointerTy());
-    if (Padding) {
-       MFI->CreateFixedObject(Padding,
-                              ArgOffset + ByValStoreOffset -
-                                (int64_t)ArgRegsSaveSize,
-                              false);
-    }
-
-    SmallVector<SDValue, 4> MemOps;
-    for (unsigned i = 0; firstRegToSaveIndex < lastRegToSaveIndex;
-         ++firstRegToSaveIndex, ++i) {
-      const TargetRegisterClass *RC;
-      if (AFI->isThumb1OnlyFunction())
-        RC = &ARM::tGPRRegClass;
-      else
-        RC = &ARM::GPRRegClass;
-
-      unsigned VReg = MF.addLiveIn(GPRArgRegs[firstRegToSaveIndex], RC);
-      SDValue Val = DAG.getCopyFromReg(Chain, dl, VReg, MVT::i32);
-      SDValue Store =
+  for (unsigned Reg = RBegin, i = 0; Reg < REnd; ++Reg, ++i) {
+    unsigned VReg = MF.addLiveIn(Reg, RC);
+    SDValue Val = DAG.getCopyFromReg(Chain, dl, VReg, MVT::i32);
+    SDValue Store =
         DAG.getStore(Val.getValue(1), dl, Val, FIN,
-                     MachinePointerInfo(OrigArg, OffsetFromOrigArg + 4*i),
-                     false, false, 0);
-      MemOps.push_back(Store);
-      FIN = DAG.getNode(ISD::ADD, dl, getPointerTy(), FIN,
-                        DAG.getConstant(4, getPointerTy()));
-    }
-
-    AFI->setArgRegsSaveSize(ArgRegsSaveSize + AFI->getArgRegsSaveSize());
-
-    if (!MemOps.empty())
-      Chain = DAG.getNode(ISD::TokenFactor, dl, MVT::Other, MemOps);
-    return FrameIndex;
-  } else {
-    if (ArgSize == 0) {
-      // We cannot allocate a zero-byte object for the first variadic argument,
-      // so just make up a size.
-      ArgSize = 4;
-    }
-    // This will point to the next argument passed via stack.
-    return MFI->CreateFixedObject(
-      ArgSize, ArgOffset, !ForceMutable);
+                     MachinePointerInfo(OrigArg, 4 * i), false, false, 0);
+    MemOps.push_back(Store);
+    FIN = DAG.getNode(ISD::ADD, dl, getPointerTy(), FIN,
+                      DAG.getConstant(4, getPointerTy()));
   }
+
+  if (!MemOps.empty())
+    Chain = DAG.getNode(ISD::TokenFactor, dl, MVT::Other, MemOps);
+  return FrameIndex;
 }
 
 // Setup stack frame, the va_list pointer will start from.
@@ -2999,11 +2898,9 @@ ARMTargetLowering::VarArgStyleRegisters(CCState &CCInfo, SelectionDAG &DAG,
   // the result of va_next.
   // If there is no regs to be stored, just point address after last
   // argument passed via stack.
-  int FrameIndex =
-    StoreByValRegs(CCInfo, DAG, dl, Chain, nullptr,
-                   CCInfo.getInRegsParamsCount(), 0, ArgOffset, 0, ForceMutable,
-                   0, TotalArgRegsSaveSize);
-
+  int FrameIndex = StoreByValRegs(CCInfo, DAG, dl, Chain, nullptr,
+                                  CCInfo.getInRegsParamsCount(),
+                                  CCInfo.getNextStackOffset(), 4);
   AFI->setVarArgsFrameIndex(FrameIndex);
 }
 
@@ -3029,7 +2926,6 @@ ARMTargetLowering::LowerFormalArguments(SDValue Chain,
                                                   isVarArg));
 
   SmallVector<SDValue, 16> ArgValues;
-  int lastInsIndex = -1;
   SDValue ArgValue;
   Function::const_arg_iterator CurOrigArg = MF.getFunction()->arg_begin();
   unsigned CurArgIdx = 0;
@@ -3039,55 +2935,48 @@ ARMTargetLowering::LowerFormalArguments(SDValue Chain,
   // We also increase this value in case of varargs function.
   AFI->setArgRegsSaveSize(0);
 
-  unsigned ByValStoreOffset = 0;
-  unsigned TotalArgRegsSaveSize = 0;
-  unsigned ArgRegsSaveSizeMaxAlign = 4;
-
   // Calculate the amount of stack space that we need to allocate to store
   // byval and variadic arguments that are passed in registers.
   // We need to know this before we allocate the first byval or variadic
   // argument, as they will be allocated a stack slot below the CFA (Canonical
   // Frame Address, the stack pointer at entry to the function).
+  unsigned ArgRegBegin = ARM::R4;
   for (unsigned i = 0, e = ArgLocs.size(); i != e; ++i) {
-    CCValAssign &VA = ArgLocs[i];
-    if (VA.isMemLoc()) {
-      int index = VA.getValNo();
-      if (index != lastInsIndex) {
-        ISD::ArgFlagsTy Flags = Ins[index].Flags;
-        if (Flags.isByVal()) {
-          unsigned ExtraArgRegsSize;
-          unsigned ExtraArgRegsSaveSize;
-          computeRegArea(CCInfo, MF, CCInfo.getInRegsParamsProcessed(),
-                         Flags.getByValSize(),
-                         ExtraArgRegsSize, ExtraArgRegsSaveSize);
+    if (CCInfo.getInRegsParamsProcessed() >= CCInfo.getInRegsParamsCount())
+      break;
 
-          TotalArgRegsSaveSize += ExtraArgRegsSaveSize;
-          if (Flags.getByValAlign() > ArgRegsSaveSizeMaxAlign)
-              ArgRegsSaveSizeMaxAlign = Flags.getByValAlign();
-          CCInfo.nextInRegsParam();
-        }
-        lastInsIndex = index;
-      }
-    }
+    CCValAssign &VA = ArgLocs[i];
+    unsigned Index = VA.getValNo();
+    ISD::ArgFlagsTy Flags = Ins[Index].Flags;
+    if (!Flags.isByVal())
+      continue;
+
+    assert(VA.isMemLoc() && "unexpected byval pointer in reg");
+    unsigned RBegin, REnd;
+    CCInfo.getInRegsParamInfo(CCInfo.getInRegsParamsProcessed(), RBegin, REnd);
+    ArgRegBegin = std::min(ArgRegBegin, RBegin);
+
+    CCInfo.nextInRegsParam();
   }
   CCInfo.rewindByValRegsInfo();
-  lastInsIndex = -1;
+
+  int lastInsIndex = -1;
   if (isVarArg && MFI->hasVAStart()) {
-    unsigned ExtraArgRegsSize;
-    unsigned ExtraArgRegsSaveSize;
-    computeRegArea(CCInfo, MF, CCInfo.getInRegsParamsCount(), 0,
-                   ExtraArgRegsSize, ExtraArgRegsSaveSize);
-    TotalArgRegsSaveSize += ExtraArgRegsSaveSize;
+    unsigned RegIdx = CCInfo.getFirstUnallocated(GPRArgRegs);
+    if (RegIdx != array_lengthof(GPRArgRegs))
+      ArgRegBegin = std::min(ArgRegBegin, (unsigned)GPRArgRegs[RegIdx]);
   }
-  // If the arg regs save area contains N-byte aligned values, the
-  // bottom of it must be at least N-byte aligned.
-  TotalArgRegsSaveSize = RoundUpToAlignment(TotalArgRegsSaveSize, ArgRegsSaveSizeMaxAlign);
-  TotalArgRegsSaveSize = std::min(TotalArgRegsSaveSize, 16U);
+
+  unsigned TotalArgRegsSaveSize = 4 * (ARM::R4 - ArgRegBegin);
+  AFI->setArgRegsSaveSize(TotalArgRegsSaveSize);
 
   for (unsigned i = 0, e = ArgLocs.size(); i != e; ++i) {
     CCValAssign &VA = ArgLocs[i];
-    std::advance(CurOrigArg, Ins[VA.getValNo()].OrigArgIndex - CurArgIdx);
-    CurArgIdx = Ins[VA.getValNo()].OrigArgIndex;
+    if (Ins[VA.getValNo()].isOrigArg()) {
+      std::advance(CurOrigArg,
+                   Ins[VA.getValNo()].getOrigArgIndex() - CurArgIdx);
+      CurArgIdx = Ins[VA.getValNo()].getOrigArgIndex();
+    }
     // Arguments stored in registers.
     if (VA.isRegLoc()) {
       EVT RegVT = VA.getLocVT();
@@ -3167,7 +3056,7 @@ ARMTargetLowering::LowerFormalArguments(SDValue Chain,
       assert(VA.isMemLoc());
       assert(VA.getValVT() != MVT::i64 && "i64 should already be lowered");
 
-      int index = ArgLocs[i].getValNo();
+      int index = VA.getValNo();
 
       // Some Ins[] entries become multiple ArgLoc[] entries.
       // Process them only once.
@@ -3180,20 +3069,13 @@ ARMTargetLowering::LowerFormalArguments(SDValue Chain,
           // Since they could be overwritten by lowering of arguments in case of
           // a tail call.
           if (Flags.isByVal()) {
+            assert(Ins[index].isOrigArg() &&
+                   "Byval arguments cannot be implicit");
             unsigned CurByValIndex = CCInfo.getInRegsParamsProcessed();
 
-            ByValStoreOffset = RoundUpToAlignment(ByValStoreOffset, Flags.getByValAlign());
-            int FrameIndex = StoreByValRegs(
-                CCInfo, DAG, dl, Chain, CurOrigArg,
-                CurByValIndex,
-                Ins[VA.getValNo()].PartOffset,
-                VA.getLocMemOffset(),
-                Flags.getByValSize(),
-                true /*force mutable frames*/,
-                ByValStoreOffset,
-                TotalArgRegsSaveSize);
-            ByValStoreOffset += Flags.getByValSize();
-            ByValStoreOffset = std::min(ByValStoreOffset, 16U);
+            int FrameIndex = StoreByValRegs(CCInfo, DAG, dl, Chain, CurOrigArg,
+                                            CurByValIndex, VA.getLocMemOffset(),
+                                            Flags.getByValSize());
             InVals.push_back(DAG.getFrameIndex(FrameIndex, getPointerTy()));
             CCInfo.nextInRegsParam();
           } else {
@@ -4481,6 +4363,7 @@ static SDValue LowerVSETCC(SDValue Op, SelectionDAG &DAG) {
   SDValue Op0 = Op.getOperand(0);
   SDValue Op1 = Op.getOperand(1);
   SDValue CC = Op.getOperand(2);
+  EVT CmpVT = Op0.getValueType().changeVectorElementTypeToInteger();
   EVT VT = Op.getValueType();
   ISD::CondCode SetCCOpcode = cast<CondCodeSDNode>(CC)->get();
   SDLoc dl(Op);
@@ -4510,8 +4393,8 @@ static SDValue LowerVSETCC(SDValue Op, SelectionDAG &DAG) {
       TmpOp0 = Op0;
       TmpOp1 = Op1;
       Opc = ISD::OR;
-      Op0 = DAG.getNode(ARMISD::VCGT, dl, VT, TmpOp1, TmpOp0);
-      Op1 = DAG.getNode(ARMISD::VCGT, dl, VT, TmpOp0, TmpOp1);
+      Op0 = DAG.getNode(ARMISD::VCGT, dl, CmpVT, TmpOp1, TmpOp0);
+      Op1 = DAG.getNode(ARMISD::VCGT, dl, CmpVT, TmpOp0, TmpOp1);
       break;
     case ISD::SETUO: Invert = true; // Fallthrough
     case ISD::SETO:
@@ -4519,8 +4402,8 @@ static SDValue LowerVSETCC(SDValue Op, SelectionDAG &DAG) {
       TmpOp0 = Op0;
       TmpOp1 = Op1;
       Opc = ISD::OR;
-      Op0 = DAG.getNode(ARMISD::VCGT, dl, VT, TmpOp1, TmpOp0);
-      Op1 = DAG.getNode(ARMISD::VCGE, dl, VT, TmpOp0, TmpOp1);
+      Op0 = DAG.getNode(ARMISD::VCGT, dl, CmpVT, TmpOp1, TmpOp0);
+      Op1 = DAG.getNode(ARMISD::VCGE, dl, CmpVT, TmpOp0, TmpOp1);
       break;
     }
   } else {
@@ -4554,8 +4437,8 @@ static SDValue LowerVSETCC(SDValue Op, SelectionDAG &DAG) {
 
       if (AndOp.getNode() && AndOp.getOpcode() == ISD::AND) {
         Opc = ARMISD::VTST;
-        Op0 = DAG.getNode(ISD::BITCAST, dl, VT, AndOp.getOperand(0));
-        Op1 = DAG.getNode(ISD::BITCAST, dl, VT, AndOp.getOperand(1));
+        Op0 = DAG.getNode(ISD::BITCAST, dl, CmpVT, AndOp.getOperand(0));
+        Op1 = DAG.getNode(ISD::BITCAST, dl, CmpVT, AndOp.getOperand(1));
         Invert = !Invert;
       }
     }
@@ -4581,21 +4464,23 @@ static SDValue LowerVSETCC(SDValue Op, SelectionDAG &DAG) {
   if (SingleOp.getNode()) {
     switch (Opc) {
     case ARMISD::VCEQ:
-      Result = DAG.getNode(ARMISD::VCEQZ, dl, VT, SingleOp); break;
+      Result = DAG.getNode(ARMISD::VCEQZ, dl, CmpVT, SingleOp); break;
     case ARMISD::VCGE:
-      Result = DAG.getNode(ARMISD::VCGEZ, dl, VT, SingleOp); break;
+      Result = DAG.getNode(ARMISD::VCGEZ, dl, CmpVT, SingleOp); break;
     case ARMISD::VCLEZ:
-      Result = DAG.getNode(ARMISD::VCLEZ, dl, VT, SingleOp); break;
+      Result = DAG.getNode(ARMISD::VCLEZ, dl, CmpVT, SingleOp); break;
     case ARMISD::VCGT:
-      Result = DAG.getNode(ARMISD::VCGTZ, dl, VT, SingleOp); break;
+      Result = DAG.getNode(ARMISD::VCGTZ, dl, CmpVT, SingleOp); break;
     case ARMISD::VCLTZ:
-      Result = DAG.getNode(ARMISD::VCLTZ, dl, VT, SingleOp); break;
+      Result = DAG.getNode(ARMISD::VCLTZ, dl, CmpVT, SingleOp); break;
     default:
-      Result = DAG.getNode(Opc, dl, VT, Op0, Op1);
+      Result = DAG.getNode(Opc, dl, CmpVT, Op0, Op1);
     }
   } else {
-     Result = DAG.getNode(Opc, dl, VT, Op0, Op1);
+     Result = DAG.getNode(Opc, dl, CmpVT, Op0, Op1);
   }
+
+  Result = DAG.getSExtOrTrunc(Result, dl, VT);
 
   if (Invert)
     Result = DAG.getNOT(dl, Result, VT);
@@ -7149,9 +7034,7 @@ ARMTargetLowering::EmitStructByval(MachineInstr *MI,
     UnitSize = 2;
   } else {
     // Check whether we can use NEON instructions.
-    if (!MF->getFunction()->getAttributes().
-          hasAttribute(AttributeSet::FunctionIndex,
-                       Attribute::NoImplicitFloat) &&
+    if (!MF->getFunction()->hasFnAttribute(Attribute::NoImplicitFloat) &&
         Subtarget->hasNEON()) {
       if ((Align % 16 == 0) && SizeVal >= 16)
         UnitSize = 16;
@@ -8876,11 +8759,12 @@ static SDValue PerformVECTOR_SHUFFLECombine(SDNode *N, SelectionDAG &DAG) {
 static SDValue CombineBaseUpdate(SDNode *N,
                                  TargetLowering::DAGCombinerInfo &DCI) {
   SelectionDAG &DAG = DCI.DAG;
-  bool isIntrinsic = (N->getOpcode() == ISD::INTRINSIC_VOID ||
-                      N->getOpcode() == ISD::INTRINSIC_W_CHAIN);
-  bool isStore = N->getOpcode() == ISD::STORE;
-  unsigned AddrOpIdx = ((isIntrinsic || isStore) ? 2 : 1);
+  const bool isIntrinsic = (N->getOpcode() == ISD::INTRINSIC_VOID ||
+                            N->getOpcode() == ISD::INTRINSIC_W_CHAIN);
+  const bool isStore = N->getOpcode() == ISD::STORE;
+  const unsigned AddrOpIdx = ((isIntrinsic || isStore) ? 2 : 1);
   SDValue Addr = N->getOperand(AddrOpIdx);
+  MemSDNode *MemN = cast<MemSDNode>(N);
 
   // Search for a use of the address operand that is an increment.
   for (SDNode::use_iterator UI = Addr.getNode()->use_begin(),
@@ -8896,7 +8780,7 @@ static SDValue CombineBaseUpdate(SDNode *N,
       continue;
 
     // Find the new opcode for the updating load/store.
-    bool isLoad = true;
+    bool isLoadOp = true;
     bool isLaneOp = false;
     unsigned NewOpc = 0;
     unsigned NumVecs = 0;
@@ -8919,19 +8803,19 @@ static SDValue CombineBaseUpdate(SDNode *N,
       case Intrinsic::arm_neon_vld4lane: NewOpc = ARMISD::VLD4LN_UPD;
         NumVecs = 4; isLaneOp = true; break;
       case Intrinsic::arm_neon_vst1:     NewOpc = ARMISD::VST1_UPD;
-        NumVecs = 1; isLoad = false; break;
+        NumVecs = 1; isLoadOp = false; break;
       case Intrinsic::arm_neon_vst2:     NewOpc = ARMISD::VST2_UPD;
-        NumVecs = 2; isLoad = false; break;
+        NumVecs = 2; isLoadOp = false; break;
       case Intrinsic::arm_neon_vst3:     NewOpc = ARMISD::VST3_UPD;
-        NumVecs = 3; isLoad = false; break;
+        NumVecs = 3; isLoadOp = false; break;
       case Intrinsic::arm_neon_vst4:     NewOpc = ARMISD::VST4_UPD;
-        NumVecs = 4; isLoad = false; break;
+        NumVecs = 4; isLoadOp = false; break;
       case Intrinsic::arm_neon_vst2lane: NewOpc = ARMISD::VST2LN_UPD;
-        NumVecs = 2; isLoad = false; isLaneOp = true; break;
+        NumVecs = 2; isLoadOp = false; isLaneOp = true; break;
       case Intrinsic::arm_neon_vst3lane: NewOpc = ARMISD::VST3LN_UPD;
-        NumVecs = 3; isLoad = false; isLaneOp = true; break;
+        NumVecs = 3; isLoadOp = false; isLaneOp = true; break;
       case Intrinsic::arm_neon_vst4lane: NewOpc = ARMISD::VST4LN_UPD;
-        NumVecs = 4; isLoad = false; isLaneOp = true; break;
+        NumVecs = 4; isLoadOp = false; isLaneOp = true; break;
       }
     } else {
       isLaneOp = true;
@@ -8943,18 +8827,20 @@ static SDValue CombineBaseUpdate(SDNode *N,
       case ISD::LOAD:       NewOpc = ARMISD::VLD1_UPD;
         NumVecs = 1; isLaneOp = false; break;
       case ISD::STORE:      NewOpc = ARMISD::VST1_UPD;
-        NumVecs = 1; isLoad = false; isLaneOp = false; break;
+        NumVecs = 1; isLaneOp = false; isLoadOp = false; break;
       }
     }
 
     // Find the size of memory referenced by the load/store.
     EVT VecTy;
-    if (isLoad)
+    if (isLoadOp) {
       VecTy = N->getValueType(0);
-    else if (isIntrinsic)
+    } else if (isIntrinsic) {
       VecTy = N->getOperand(AddrOpIdx+1).getValueType();
-    else
+    } else {
+      assert(isStore && "Node has to be a load, a store, or an intrinsic!");
       VecTy = N->getOperand(1).getValueType();
+    }
 
     unsigned NumBytes = NumVecs * VecTy.getSizeInBits() / 8;
     if (isLaneOp)
@@ -8972,7 +8858,11 @@ static SDValue CombineBaseUpdate(SDNode *N,
       continue;
     }
 
+    // OK, we found an ADD we can fold into the base update.
+    // Now, create a _UPD node, taking care of not breaking alignment.
+
     EVT AlignedVecTy = VecTy;
+    unsigned Alignment = MemN->getAlignment();
 
     // If this is a less-than-standard-aligned load/store, change the type to
     // match the standard alignment.
@@ -8988,8 +8878,7 @@ static SDValue CombineBaseUpdate(SDNode *N,
     //   of the memory type (like the intrisics).  We need to change the
     //   memory type to match the explicit alignment.  That way, we don't
     //   generate non-standard-aligned ARMISD::VLDx nodes.
-    if (LSBaseSDNode *LSN = dyn_cast<LSBaseSDNode>(N)) {
-      unsigned Alignment = LSN->getAlignment();
+    if (isa<LSBaseSDNode>(N)) {
       if (Alignment == 0)
         Alignment = 1;
       if (Alignment < VecTy.getScalarSizeInBits() / 8) {
@@ -8999,12 +8888,20 @@ static SDValue CombineBaseUpdate(SDNode *N,
         unsigned NumElts = NumBytes / (EltTy.getSizeInBits() / 8);
         AlignedVecTy = MVT::getVectorVT(EltTy, NumElts);
       }
+      // Don't set an explicit alignment on regular load/stores that we want
+      // to transform to VLD/VST 1_UPD nodes.
+      // This matches the behavior of regular load/stores, which only get an
+      // explicit alignment if the MMO alignment is larger than the standard
+      // alignment of the memory type.
+      // Intrinsics, however, always get an explicit alignment, set to the
+      // alignment of the MMO.
+      Alignment = 1;
     }
 
     // Create the new updating load/store node.
     // First, create an SDVTList for the new updating node's results.
     EVT Tys[6];
-    unsigned NumResultVecs = (isLoad ? NumVecs : 0);
+    unsigned NumResultVecs = (isLoadOp ? NumVecs : 0);
     unsigned n;
     for (n = 0; n < NumResultVecs; ++n)
       Tys[n] = AlignedVecTy;
@@ -9017,34 +8914,37 @@ static SDValue CombineBaseUpdate(SDNode *N,
     Ops.push_back(N->getOperand(0)); // incoming chain
     Ops.push_back(N->getOperand(AddrOpIdx));
     Ops.push_back(Inc);
+
     if (StoreSDNode *StN = dyn_cast<StoreSDNode>(N)) {
       // Try to match the intrinsic's signature
       Ops.push_back(StN->getValue());
-      Ops.push_back(DAG.getConstant(StN->getAlignment(), MVT::i32));
     } else {
-      for (unsigned i = AddrOpIdx + 1; i < N->getNumOperands(); ++i)
+      // Loads (and of course intrinsics) match the intrinsics' signature,
+      // so just add all but the alignment operand.
+      for (unsigned i = AddrOpIdx + 1; i < N->getNumOperands() - 1; ++i)
         Ops.push_back(N->getOperand(i));
     }
 
-    // If this is a non-standard-aligned store, the penultimate operand is the
+    // For all node types, the alignment operand is always the last one.
+    Ops.push_back(DAG.getConstant(Alignment, MVT::i32));
+
+    // If this is a non-standard-aligned STORE, the penultimate operand is the
     // stored value.  Bitcast it to the aligned type.
     if (AlignedVecTy != VecTy && N->getOpcode() == ISD::STORE) {
       SDValue &StVal = Ops[Ops.size()-2];
       StVal = DAG.getNode(ISD::BITCAST, SDLoc(N), AlignedVecTy, StVal);
     }
 
-    MemSDNode *MemInt = cast<MemSDNode>(N);
     SDValue UpdN = DAG.getMemIntrinsicNode(NewOpc, SDLoc(N), SDTys,
                                            Ops, AlignedVecTy,
-                                           MemInt->getMemOperand());
+                                           MemN->getMemOperand());
 
     // Update the uses.
-    std::vector<SDValue> NewResults;
-    for (unsigned i = 0; i < NumResultVecs; ++i) {
+    SmallVector<SDValue, 5> NewResults;
+    for (unsigned i = 0; i < NumResultVecs; ++i)
       NewResults.push_back(SDValue(UpdN.getNode(), i));
-    }
 
-    // If this is an non-standard-aligned load, the first result is the loaded
+    // If this is an non-standard-aligned LOAD, the first result is the loaded
     // value.  Bitcast it to the expected result type.
     if (AlignedVecTy != VecTy && N->getOpcode() == ISD::LOAD) {
       SDValue &LdVal = NewResults[0];
@@ -10016,10 +9916,8 @@ EVT ARMTargetLowering::getOptimalMemOpType(uint64_t Size,
   const Function *F = MF.getFunction();
 
   // See if we can use NEON instructions for this...
-  if ((!IsMemset || ZeroMemset) &&
-      Subtarget->hasNEON() &&
-      !F->getAttributes().hasAttribute(AttributeSet::FunctionIndex,
-                                       Attribute::NoImplicitFloat)) {
+  if ((!IsMemset || ZeroMemset) && Subtarget->hasNEON() &&
+      !F->hasFnAttribute(Attribute::NoImplicitFloat)) {
     bool Fast;
     if (Size >= 16 &&
         (memOpAlign(SrcAlign, DstAlign, 16) ||
@@ -10062,6 +9960,28 @@ bool ARMTargetLowering::isZExtFree(SDValue Val, EVT VT2) const {
   }
 
   return false;
+}
+
+bool ARMTargetLowering::isVectorLoadExtDesirable(SDValue ExtVal) const {
+  EVT VT = ExtVal.getValueType();
+
+  if (!isTypeLegal(VT))
+    return false;
+
+  // Don't create a loadext if we can fold the extension into a wide/long
+  // instruction.
+  // If there's more than one user instruction, the loadext is desirable no
+  // matter what.  There can be two uses by the same instruction.
+  if (ExtVal->use_empty() ||
+      !ExtVal->use_begin()->isOnlyUserOf(ExtVal.getNode()))
+    return true;
+
+  SDNode *U = *ExtVal->use_begin();
+  if ((U->getOpcode() == ISD::ADD || U->getOpcode() == ISD::SUB ||
+       U->getOpcode() == ISD::SHL || U->getOpcode() == ARMISD::VSHL))
+    return false;
+
+  return true;
 }
 
 bool ARMTargetLowering::allowTruncateForTailCall(Type *Ty1, Type *Ty2) const {
@@ -10277,9 +10197,9 @@ bool ARMTargetLowering::isLegalAddressingMode(const AddrMode &AM,
 bool ARMTargetLowering::isLegalICmpImmediate(int64_t Imm) const {
   // Thumb2 and ARM modes can use cmn for negative immediates.
   if (!Subtarget->isThumb())
-    return ARM_AM::getSOImmVal(llvm::abs64(Imm)) != -1;
+    return ARM_AM::getSOImmVal(std::abs(Imm)) != -1;
   if (Subtarget->isThumb2())
-    return ARM_AM::getT2SOImmVal(llvm::abs64(Imm)) != -1;
+    return ARM_AM::getT2SOImmVal(std::abs(Imm)) != -1;
   // Thumb1 doesn't have cmn, and only 8-bit immediates.
   return Imm >= 0 && Imm <= 255;
 }
@@ -10290,7 +10210,7 @@ bool ARMTargetLowering::isLegalICmpImmediate(int64_t Imm) const {
 /// immediate into a register.
 bool ARMTargetLowering::isLegalAddImmediate(int64_t Imm) const {
   // Same encoding for add/sub, just flip the sign.
-  int64_t AbsImm = llvm::abs64(Imm);
+  int64_t AbsImm = std::abs(Imm);
   if (!Subtarget->isThumb())
     return ARM_AM::getSOImmVal(AbsImm) != -1;
   if (Subtarget->isThumb2())
@@ -10617,7 +10537,8 @@ ARMTargetLowering::getSingleConstraintMatchWeight(
 
 typedef std::pair<unsigned, const TargetRegisterClass*> RCPair;
 RCPair
-ARMTargetLowering::getRegForInlineAsmConstraint(const std::string &Constraint,
+ARMTargetLowering::getRegForInlineAsmConstraint(const TargetRegisterInfo *TRI,
+                                                const std::string &Constraint,
                                                 MVT VT) const {
   if (Constraint.size() == 1) {
     // GCC ARM Constraint Letters
@@ -10663,7 +10584,7 @@ ARMTargetLowering::getRegForInlineAsmConstraint(const std::string &Constraint,
   if (StringRef("{cc}").equals_lower(Constraint))
     return std::make_pair(unsigned(ARM::CPSR), &ARM::CCRRegClass);
 
-  return TargetLowering::getRegForInlineAsmConstraint(Constraint, VT);
+  return TargetLowering::getRegForInlineAsmConstraint(TRI, Constraint, VT);
 }
 
 /// LowerAsmOperandForConstraint - Lower the specified operand into the Ops
@@ -10943,11 +10864,7 @@ bool ARM::isBitFieldInvertedMask(unsigned v) {
 
   // there can be 1's on either or both "outsides", all the "inside"
   // bits must be 0's
-  unsigned TO = CountTrailingOnes_32(v);
-  unsigned LO = CountLeadingOnes_32(v);
-  v = (v >> TO) << TO;
-  v = (v << LO) >> LO;
-  return v == 0;
+  return isShiftedMask_32(~v);
 }
 
 /// isFPImmLegal - Returns true if the target can instruction select the
@@ -11189,9 +11106,12 @@ bool ARMTargetLowering::shouldExpandAtomicLoadInIR(LoadInst *LI) const {
 
 // For the real atomic operations, we have ldrex/strex up to 32 bits,
 // and up to 64 bits on the non-M profiles
-bool ARMTargetLowering::shouldExpandAtomicRMWInIR(AtomicRMWInst *AI) const {
+TargetLoweringBase::AtomicRMWExpansionKind
+ARMTargetLowering::shouldExpandAtomicRMWInIR(AtomicRMWInst *AI) const {
   unsigned Size = AI->getType()->getPrimitiveSizeInBits();
-  return Size <= (Subtarget->isMClass() ? 32U : 64U);
+  return (Size <= (Subtarget->isMClass() ? 32U : 64U))
+             ? AtomicRMWExpansionKind::LLSC
+             : AtomicRMWExpansionKind::None;
 }
 
 // This has so far only been implemented for MachO.
@@ -11356,7 +11276,9 @@ static bool isHomogeneousAggregate(Type *Ty, HABaseType &Base,
   return (Members > 0 && Members <= 4);
 }
 
-/// \brief Return true if a type is an AAPCS-VFP homogeneous aggregate.
+/// \brief Return true if a type is an AAPCS-VFP homogeneous aggregate or one of
+/// [N x i32] or [N x i64]. This allows front-ends to skip emitting padding when
+/// passing according to AAPCS rules.
 bool ARMTargetLowering::functionArgumentNeedsConsecutiveRegisters(
     Type *Ty, CallingConv::ID CallConv, bool isVarArg) const {
   if (getEffectiveCallingConv(CallConv, isVarArg) !=
@@ -11365,7 +11287,9 @@ bool ARMTargetLowering::functionArgumentNeedsConsecutiveRegisters(
 
   HABaseType Base = HA_UNKNOWN;
   uint64_t Members = 0;
-  bool result = isHomogeneousAggregate(Ty, Base, Members);
-  DEBUG(dbgs() << "isHA: " << result << " "; Ty->dump());
-  return result;
+  bool IsHA = isHomogeneousAggregate(Ty, Base, Members);
+  DEBUG(dbgs() << "isHA: " << IsHA << " "; Ty->dump());
+
+  bool IsIntArray = Ty->isArrayTy() && Ty->getArrayElementType()->isIntegerTy();
+  return IsHA || IsIntArray;
 }

@@ -1,4 +1,5 @@
 def addrimm12 : ComplexPattern<iPTR, 2, "selectIntAddrMM", [frameindex]>;
+def addrimm4lsl2 : ComplexPattern<iPTR, 2, "selectIntAddrLSL2MM", [frameindex]>;
 
 def simm4 : Operand<i32> {
   let DecoderMethod = "DecodeSimm4";
@@ -65,7 +66,7 @@ def MicroMipsMemGPRMM16AsmOperand : AsmOperandClass {
 
 class mem_mm_4_generic : Operand<i32> {
   let PrintMethod = "printMemOperand";
-  let MIOperandInfo = (ops ptr_rc, simm4);
+  let MIOperandInfo = (ops GPRMM16, simm4);
   let OperandType = "OPERAND_MEMORY";
   let ParserMatchClass = MicroMipsMemGPRMM16AsmOperand;
 }
@@ -189,6 +190,28 @@ class StoreLeftRightMM<string opstr, SDNode OpNode, RegisterOperand RO,
          !strconcat(opstr, "\t$rt, $addr"),
          [(OpNode RO:$rt, addrimm12:$addr)], NoItinerary, FrmI> {
   let DecoderMethod = "DecodeMemMMImm12";
+}
+
+/// A register pair used by movep instruction.
+def MovePRegPairAsmOperand : AsmOperandClass {
+  let Name = "MovePRegPair";
+  let ParserMethod = "parseMovePRegPair";
+  let PredicateMethod = "isMovePRegPair";
+}
+
+def movep_regpair : Operand<i32> {
+  let EncoderMethod = "getMovePRegPairOpValue";
+  let ParserMatchClass = MovePRegPairAsmOperand;
+  let PrintMethod = "printRegisterList";
+  let DecoderMethod = "DecodeMovePRegPair";
+  let MIOperandInfo = (ops GPR32Opnd, GPR32Opnd);
+}
+
+class MovePMM16<string opstr, RegisterOperand RO> :
+MicroMipsInst16<(outs movep_regpair:$dst_regs), (ins RO:$rs, RO:$rt),
+                 !strconcat(opstr, "\t$dst_regs, $rs, $rt"), [],
+                 NoItinerary, FrmR> {
+  let isReMaterializable = 1;
 }
 
 /// A register pair used by load/store pair instructions.
@@ -504,6 +527,7 @@ class StoreMultMM16<string opstr,
                     ComplexPattern Addr = addr> :
   MicroMipsInst16<(outs), (ins reglist16:$rt, mem_mm_4sp:$addr),
                   !strconcat(opstr, "\t$rt, $addr"), [], Itin, FrmI> {
+  let DecoderMethod = "DecodeMemMMReglistImm4Lsl2";
   let mayStore = 1;
 }
 
@@ -512,6 +536,7 @@ class LoadMultMM16<string opstr,
                    ComplexPattern Addr = addr> :
   MicroMipsInst16<(outs reglist16:$rt), (ins mem_mm_4sp:$addr),
                   !strconcat(opstr, "\t$rt, $addr"), [], Itin, FrmI> {
+  let DecoderMethod = "DecodeMemMMReglistImm4Lsl2";
   let mayLoad = 1;
 }
 
@@ -569,6 +594,7 @@ def ADDIUSP_MM : AddImmUSP<"addiusp">, ADDIUSP_FM_MM16;
 def MFHI16_MM : MoveFromHILOMM<"mfhi", GPR32Opnd, AC0>, MFHILO_FM_MM16<0x10>;
 def MFLO16_MM : MoveFromHILOMM<"mflo", GPR32Opnd, AC0>, MFHILO_FM_MM16<0x12>;
 def MOVE16_MM : MoveMM16<"move", GPR32Opnd>, MOVE_FM_MM16<0x03>;
+def MOVEP_MM : MovePMM16<"movep", GPRMM16OpndMoveP>, MOVEP_FM_MM16;
 def LI16_MM : LoadImmMM16<"li16", li_simm7, GPRMM16Opnd>, LI_FM_MM16,
               IsAsCheapAsAMove;
 def JALR16_MM : JumpLinkRegMM16<"jalr", GPR32Opnd>, JALR_FM_MM16<0x0e>;
@@ -616,8 +642,10 @@ let DecoderNamespace = "MicroMips", Predicates = [InMicroMips] in {
                      LW_FM_MM<0xc>;
 
   /// Arithmetic Instructions (3-Operand, R-Type)
-  def ADDu_MM  : MMRel, ArithLogicR<"addu", GPR32Opnd>, ADD_FM_MM<0, 0x150>;
-  def SUBu_MM  : MMRel, ArithLogicR<"subu", GPR32Opnd>, ADD_FM_MM<0, 0x1d0>;
+  def ADDu_MM  : MMRel, ArithLogicR<"addu", GPR32Opnd, 1, II_ADDU, add>,
+                 ADD_FM_MM<0, 0x150>;
+  def SUBu_MM  : MMRel, ArithLogicR<"subu", GPR32Opnd, 0, II_SUBU, sub>,
+                 ADD_FM_MM<0, 0x1d0>;
   def MUL_MM   : MMRel, ArithLogicR<"mul", GPR32Opnd>, ADD_FM_MM<0, 0x210>;
   def ADD_MM   : MMRel, ArithLogicR<"add", GPR32Opnd>, ADD_FM_MM<0, 0x110>;
   def SUB_MM   : MMRel, ArithLogicR<"sub", GPR32Opnd>, ADD_FM_MM<0, 0x190>;
@@ -762,6 +790,7 @@ let DecoderNamespace = "MicroMips", Predicates = [InMicroMips] in {
     def J_MM        : MMRel, JumpFJ<jmptarget_mm, "j", br, bb, "j">,
                       J_FM_MM<0x35>;
     def JAL_MM      : MMRel, JumpLink<"jal", calltarget_mm>, J_FM_MM<0x3d>;
+    def JALX_MM     : MMRel, JumpLink<"jalx", calltarget>, J_FM_MM<0x3c>;
   }
   def JR_MM   : MMRel, IndirectBranch<"jr", GPR32Opnd>, JR_FM_MM<0x3c>;
   def JALR_MM : JumpLinkReg<"jalr", GPR32Opnd>, JALR_FM_MM<0x03c>;
@@ -856,6 +885,8 @@ def : MipsPat<(i32 immSExt16:$imm),
               (ADDiu_MM ZERO, immSExt16:$imm)>;
 def : MipsPat<(i32 immZExt16:$imm),
               (ORi_MM ZERO, immZExt16:$imm)>;
+def : MipsPat<(not GPR32:$in),
+              (NOR_MM GPR32Opnd:$in, ZERO)>;
 
 def : MipsPat<(add GPRMM16:$src, immSExtAddiur2:$imm),
               (ADDIUR2_MM GPRMM16:$src, immSExtAddiur2:$imm)>;
@@ -878,6 +909,16 @@ def : MipsPat<(srl GPRMM16:$src, immZExt2Shift:$imm),
               (SRL16_MM GPRMM16:$src, immZExt2Shift:$imm)>;
 def : MipsPat<(srl GPR32:$src, immZExt5:$imm),
               (SRL_MM GPR32:$src, immZExt5:$imm)>;
+
+def : MipsPat<(store GPRMM16:$src, addrimm4lsl2:$addr),
+              (SW16_MM GPRMM16:$src, addrimm4lsl2:$addr)>;
+def : MipsPat<(store GPR32:$src, addr:$addr),
+              (SW_MM GPR32:$src, addr:$addr)>;
+
+def : MipsPat<(load addrimm4lsl2:$addr),
+              (LW16_MM addrimm4lsl2:$addr)>;
+def : MipsPat<(load addr:$addr),
+              (LW_MM addr:$addr)>;
 
 //===----------------------------------------------------------------------===//
 // MicroMips instruction aliases

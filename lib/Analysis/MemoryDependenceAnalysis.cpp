@@ -82,8 +82,6 @@ void MemoryDependenceAnalysis::releaseMemory() {
   PredCache->clear();
 }
 
-
-
 /// getAnalysisUsage - Does not modify anything.  It uses Alias Analysis.
 ///
 void MemoryDependenceAnalysis::getAnalysisUsage(AnalysisUsage &AU) const {
@@ -95,8 +93,6 @@ void MemoryDependenceAnalysis::getAnalysisUsage(AnalysisUsage &AU) const {
 bool MemoryDependenceAnalysis::runOnFunction(Function &F) {
   AA = &getAnalysis<AliasAnalysis>();
   AC = &getAnalysis<AssumptionCacheTracker>().getAssumptionCache(F);
-  DataLayoutPass *DLP = getAnalysisIfAvailable<DataLayoutPass>();
-  DL = DLP ? &DLP->getDataLayout() : nullptr;
   DominatorTreeWrapperPass *DTWP =
       getAnalysisIfAvailable<DominatorTreeWrapperPass>();
   DT = DTWP ? &DTWP->getDomTree() : nullptr;
@@ -265,22 +261,17 @@ getCallSiteDependencyFrom(CallSite CS, bool isReadOnlyCall,
 ///
 /// MemLocBase, MemLocOffset are lazily computed here the first time the
 /// base/offs of memloc is needed.
-static bool
-isLoadLoadClobberIfExtendedToFullWidth(const AliasAnalysis::Location &MemLoc,
-                                       const Value *&MemLocBase,
-                                       int64_t &MemLocOffs,
-                                       const LoadInst *LI,
-                                       const DataLayout *DL) {
-  // If we have no target data, we can't do this.
-  if (!DL) return false;
+static bool isLoadLoadClobberIfExtendedToFullWidth(
+    const AliasAnalysis::Location &MemLoc, const Value *&MemLocBase,
+    int64_t &MemLocOffs, const LoadInst *LI) {
+  const DataLayout &DL = LI->getModule()->getDataLayout();
 
   // If we haven't already computed the base/offset of MemLoc, do so now.
   if (!MemLocBase)
     MemLocBase = GetPointerBaseWithConstantOffset(MemLoc.Ptr, MemLocOffs, DL);
 
-  unsigned Size = MemoryDependenceAnalysis::
-    getLoadLoadClobberFullWidthSize(MemLocBase, MemLocOffs, MemLoc.Size,
-                                    LI, *DL);
+  unsigned Size = MemoryDependenceAnalysis::getLoadLoadClobberFullWidthSize(
+      MemLocBase, MemLocOffs, MemLoc.Size, LI);
   return Size != 0;
 }
 
@@ -291,23 +282,23 @@ isLoadLoadClobberIfExtendedToFullWidth(const AliasAnalysis::Location &MemLoc,
 /// 2) safe for the target, and 3) would provide the specified memory
 /// location value, then this function returns the size in bytes of the
 /// load width to use.  If not, this returns zero.
-unsigned MemoryDependenceAnalysis::
-getLoadLoadClobberFullWidthSize(const Value *MemLocBase, int64_t MemLocOffs,
-                                unsigned MemLocSize, const LoadInst *LI,
-                                const DataLayout &DL) {
+unsigned MemoryDependenceAnalysis::getLoadLoadClobberFullWidthSize(
+    const Value *MemLocBase, int64_t MemLocOffs, unsigned MemLocSize,
+    const LoadInst *LI) {
   // We can only extend simple integer loads.
   if (!isa<IntegerType>(LI->getType()) || !LI->isSimple()) return 0;
 
   // Load widening is hostile to ThreadSanitizer: it may cause false positives
   // or make the reports more cryptic (access sizes are wrong).
-  if (LI->getParent()->getParent()->getAttributes().
-      hasAttribute(AttributeSet::FunctionIndex, Attribute::SanitizeThread))
+  if (LI->getParent()->getParent()->hasFnAttribute(Attribute::SanitizeThread))
     return 0;
+
+  const DataLayout &DL = LI->getModule()->getDataLayout();
 
   // Get the base of this load.
   int64_t LIOffs = 0;
   const Value *LIBase =
-    GetPointerBaseWithConstantOffset(LI->getPointerOperand(), LIOffs, &DL);
+      GetPointerBaseWithConstantOffset(LI->getPointerOperand(), LIOffs, DL);
 
   // If the two pointers are not based on the same pointer, we can't tell that
   // they are related.
@@ -346,9 +337,9 @@ getLoadLoadClobberFullWidthSize(const Value *MemLocBase, int64_t MemLocOffs,
         !DL.fitsInLegalInteger(NewLoadByteSize*8))
       return 0;
 
-    if (LIOffs+NewLoadByteSize > MemLocEnd &&
-        LI->getParent()->getParent()->getAttributes().
-          hasAttribute(AttributeSet::FunctionIndex, Attribute::SanitizeAddress))
+    if (LIOffs + NewLoadByteSize > MemLocEnd &&
+        LI->getParent()->getParent()->hasFnAttribute(
+            Attribute::SanitizeAddress))
       // We will be reading past the location accessed by the original program.
       // While this is safe in a regular build, Address Safety analysis tools
       // may start reporting false warnings. So, don't do widening.
@@ -423,6 +414,8 @@ getPointerDependencyFrom(const AliasAnalysis::Location &MemLoc, bool isLoad,
     if (LI && LI->getMetadata(LLVMContext::MD_invariant_load) != nullptr)
       isInvariantLoad = true;
   }
+
+  const DataLayout &DL = BB->getModule()->getDataLayout();
 
   // Walk backwards through the basic block, looking for dependencies.
   while (ScanIt != BB->begin()) {
@@ -508,12 +501,12 @@ getPointerDependencyFrom(const AliasAnalysis::Location &MemLoc, bool isLoad,
           // location is 1 byte at P+1).  If so, return it as a load/load
           // clobber result, allowing the client to decide to widen the load if
           // it wants to.
-          if (IntegerType *ITy = dyn_cast<IntegerType>(LI->getType()))
-            if (LI->getAlignment()*8 > ITy->getPrimitiveSizeInBits() &&
+          if (IntegerType *ITy = dyn_cast<IntegerType>(LI->getType())) {
+            if (LI->getAlignment() * 8 > ITy->getPrimitiveSizeInBits() &&
                 isLoadLoadClobberIfExtendedToFullWidth(MemLoc, MemLocBase,
-                                                       MemLocOffset, LI, DL))
+                                                       MemLocOffset, LI))
               return MemDepResult::getClobber(Inst);
-
+          }
           continue;
         }
 
@@ -926,8 +919,7 @@ getNonLocalPointerDependency(Instruction *QueryInst,
                                        const_cast<Value *>(Loc.Ptr)));
     return;
   }
-
-
+  const DataLayout &DL = FromBB->getModule()->getDataLayout();
   PHITransAddr Address(const_cast<Value *>(Loc.Ptr), DL, AC);
 
   // This is the set of blocks we've inspected, and the pointer we consider in

@@ -47,6 +47,7 @@ namespace llvm {
   class MCRelocationInfo;
   class MCTargetAsmParser;
   class MCTargetOptions;
+  class MCTargetStreamer;
   class TargetMachine;
   class TargetOptions;
   class raw_ostream;
@@ -124,7 +125,6 @@ namespace llvm {
                                                   const MCSubtargetInfo &STI);
     typedef MCCodeEmitter *(*MCCodeEmitterCtorTy)(const MCInstrInfo &II,
                                                   const MCRegisterInfo &MRI,
-                                                  const MCSubtargetInfo &STI,
                                                   MCContext &Ctx);
     typedef MCStreamer *(*MCObjectStreamerCtorTy)(
         const Target &T, StringRef TT, MCContext &Ctx, MCAsmBackend &TAB,
@@ -138,7 +138,7 @@ namespace llvm {
                                              MCCodeEmitter *CE,
                                              MCAsmBackend *TAB,
                                              bool ShowInst);
-    typedef MCStreamer *(*NullStreamerCtorTy)(MCContext &Ctx);
+    typedef MCTargetStreamer *(*NullTargetStreamerCtorTy)(MCStreamer &S);
     typedef MCRelocationInfo *(*MCRelocationInfoCtorTy)(StringRef TT,
                                                         MCContext &Ctx);
     typedef MCSymbolizer *(*MCSymbolizerCtorTy)(
@@ -223,9 +223,9 @@ namespace llvm {
     /// AsmStreamer, if registered (default = llvm::createAsmStreamer).
     AsmStreamerCtorTy AsmStreamerCtorFn;
 
-    /// Construction function for this target's NullStreamer, if registered
-    /// (default = llvm::createNullStreamer).
-    NullStreamerCtorTy NullStreamerCtorFn;
+    /// Construction function for this target's null TargetStreamer, if
+    /// registered (default = nullptr).
+    NullTargetStreamerCtorTy NullTargetStreamerCtorFn;
 
     /// MCRelocationInfoCtorFn - Construction function for this target's
     /// MCRelocationInfo, if registered (default = llvm::createMCRelocationInfo)
@@ -237,8 +237,8 @@ namespace llvm {
 
   public:
     Target()
-        : AsmStreamerCtorFn(nullptr), NullStreamerCtorFn(nullptr),
-          MCRelocationInfoCtorFn(nullptr), MCSymbolizerCtorFn(nullptr) {}
+        : AsmStreamerCtorFn(nullptr), MCRelocationInfoCtorFn(nullptr),
+          MCSymbolizerCtorFn(nullptr) {}
 
     /// @name Target Information
     /// @{
@@ -405,11 +405,10 @@ namespace llvm {
     /// createMCCodeEmitter - Create a target specific code emitter.
     MCCodeEmitter *createMCCodeEmitter(const MCInstrInfo &II,
                                        const MCRegisterInfo &MRI,
-                                       const MCSubtargetInfo &STI,
                                        MCContext &Ctx) const {
       if (!MCCodeEmitterCtorFn)
         return nullptr;
-      return MCCodeEmitterCtorFn(II, MRI, STI, Ctx);
+      return MCCodeEmitterCtorFn(II, MRI, Ctx);
     }
 
     /// createMCObjectStreamer - Create a target specific MCStreamer.
@@ -448,9 +447,15 @@ namespace llvm {
     }
 
     MCStreamer *createNullStreamer(MCContext &Ctx) const {
-      if (NullStreamerCtorFn)
-        return NullStreamerCtorFn(Ctx);
-      return llvm::createNullStreamer(Ctx);
+      MCStreamer *S = llvm::createNullStreamer(Ctx);
+      createNullTargetStreamer(*S);
+      return S;
+    }
+
+    MCTargetStreamer *createNullTargetStreamer(MCStreamer &S) const {
+      if (NullTargetStreamerCtorFn)
+        return NullTargetStreamerCtorFn(S);
+      return nullptr;
     }
 
     /// createMCRelocationInfo - Create a target specific MCRelocationInfo.
@@ -779,8 +784,9 @@ namespace llvm {
       T.AsmStreamerCtorFn = Fn;
     }
 
-    static void RegisterNullStreamer(Target &T, Target::NullStreamerCtorTy Fn) {
-      T.NullStreamerCtorFn = Fn;
+    static void
+    RegisterNullTargetStreamer(Target &T, Target::NullTargetStreamerCtorTy Fn) {
+      T.NullTargetStreamerCtorFn = Fn;
     }
 
     /// RegisterMCRelocationInfo - Register an MCRelocationInfo
@@ -1144,10 +1150,9 @@ namespace llvm {
     }
 
   private:
-    static MCCodeEmitter *Allocator(const MCInstrInfo &/*II*/,
-                                    const MCRegisterInfo &/*MRI*/,
-                                    const MCSubtargetInfo &/*STI*/,
-                                    MCContext &/*Ctx*/) {
+    static MCCodeEmitter *Allocator(const MCInstrInfo & /*II*/,
+                                    const MCRegisterInfo & /*MRI*/,
+                                    MCContext & /*Ctx*/) {
       return new MCCodeEmitterImpl();
     }
   };

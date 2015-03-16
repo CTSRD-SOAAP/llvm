@@ -23,10 +23,11 @@
 #define LLVM_ANALYSIS_TARGETTRANSFORMINFO_H
 
 #include "llvm/ADT/Optional.h"
-#include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/IntrinsicInst.h"
+#include "llvm/IR/Intrinsics.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/DataTypes.h"
+#include <functional>
 
 namespace llvm {
 
@@ -217,6 +218,13 @@ public:
     /// exceed this cost. Set this to UINT_MAX to disable the loop body cost
     /// restriction.
     unsigned Threshold;
+    /// If complete unrolling could help other optimizations (e.g. InstSimplify)
+    /// to remove N% of instructions, then we can go beyond unroll threshold.
+    /// This value set the minimal percent for allowing that.
+    unsigned MinPercentOfOptimized;
+    /// The absolute cost threshold. We won't go beyond this even if complete
+    /// unrolling could result in optimizing out 90% of instructions.
+    unsigned AbsoluteThreshold;
     /// The cost threshold for the unrolled loop when optimizing for size (set
     /// to UINT_MAX to disable).
     unsigned OptSizeThreshold;
@@ -306,6 +314,10 @@ public:
   /// by referencing its sub-register AX.
   bool isTruncateFree(Type *Ty1, Type *Ty2) const;
 
+  /// \brief Return true if it is profitable to hoist instruction in the
+  /// then/else to before if.
+  bool isProfitableToHoist(Instruction *I) const;
+
   /// \brief Return true if this type is legal.
   bool isTypeLegal(Type *Ty) const;
 
@@ -319,11 +331,18 @@ public:
   /// target.
   bool shouldBuildLookupTables() const;
 
+  /// \brief Don't restrict interleaved unrolling to small loops.
+  bool enableAggressiveInterleaving(bool LoopHasReductions) const;
+
   /// \brief Return hardware support for population count.
   PopcntSupportKind getPopcntSupport(unsigned IntTyWidthInBit) const;
 
   /// \brief Return true if the hardware has a fast square-root instruction.
   bool haveFastSqrt(Type *Ty) const;
+
+  /// \brief Return the expected cost of supporting the floating point operation
+  /// of the specified type.
+  unsigned getFPOpCost(Type *Ty) const;
 
   /// \brief Return the expected cost of materializing for the given integer
   /// immediate of the specified type.
@@ -510,12 +529,15 @@ public:
                                    int64_t BaseOffset, bool HasBaseReg,
                                    int64_t Scale) = 0;
   virtual bool isTruncateFree(Type *Ty1, Type *Ty2) = 0;
+  virtual bool isProfitableToHoist(Instruction *I) = 0;
   virtual bool isTypeLegal(Type *Ty) = 0;
   virtual unsigned getJumpBufAlignment() = 0;
   virtual unsigned getJumpBufSize() = 0;
   virtual bool shouldBuildLookupTables() = 0;
+  virtual bool enableAggressiveInterleaving(bool LoopHasReductions) = 0;
   virtual PopcntSupportKind getPopcntSupport(unsigned IntTyWidthInBit) = 0;
   virtual bool haveFastSqrt(Type *Ty) = 0;
+  virtual unsigned getFPOpCost(Type *Ty) = 0;
   virtual unsigned getIntImmCost(const APInt &Imm, Type *Ty) = 0;
   virtual unsigned getIntImmCost(unsigned Opc, unsigned Idx, const APInt &Imm,
                                  Type *Ty) = 0;
@@ -621,16 +643,27 @@ public:
   bool isTruncateFree(Type *Ty1, Type *Ty2) override {
     return Impl.isTruncateFree(Ty1, Ty2);
   }
+  bool isProfitableToHoist(Instruction *I) override {
+    return Impl.isProfitableToHoist(I);
+  }
   bool isTypeLegal(Type *Ty) override { return Impl.isTypeLegal(Ty); }
   unsigned getJumpBufAlignment() override { return Impl.getJumpBufAlignment(); }
   unsigned getJumpBufSize() override { return Impl.getJumpBufSize(); }
   bool shouldBuildLookupTables() override {
     return Impl.shouldBuildLookupTables();
   }
+  bool enableAggressiveInterleaving(bool LoopHasReductions) override {
+    return Impl.enableAggressiveInterleaving(LoopHasReductions);
+  }
   PopcntSupportKind getPopcntSupport(unsigned IntTyWidthInBit) override {
     return Impl.getPopcntSupport(IntTyWidthInBit);
   }
   bool haveFastSqrt(Type *Ty) override { return Impl.haveFastSqrt(Ty); }
+
+  unsigned getFPOpCost(Type *Ty) override {
+    return Impl.getFPOpCost(Ty);
+  }
+
   unsigned getIntImmCost(const APInt &Imm, Type *Ty) override {
     return Impl.getIntImmCost(Imm, Ty);
   }

@@ -62,10 +62,8 @@ const int Hexagon_MEMB_AUTOINC_MIN = -8;
 void HexagonInstrInfo::anchor() {}
 
 HexagonInstrInfo::HexagonInstrInfo(HexagonSubtarget &ST)
-  : HexagonGenInstrInfo(Hexagon::ADJCALLSTACKDOWN, Hexagon::ADJCALLSTACKUP),
-    RI(ST), Subtarget(ST) {
-}
-
+    : HexagonGenInstrInfo(Hexagon::ADJCALLSTACKDOWN, Hexagon::ADJCALLSTACKUP),
+      RI(), Subtarget(ST) {}
 
 /// isLoadFromStackSlot - If the specified machine instruction is a direct
 /// load from a stack slot, return the virtual or physical register number of
@@ -211,9 +209,11 @@ bool HexagonInstrInfo::AnalyzeBranch(MachineBasicBlock &MBB,
       return false;
     --I;
   }
-
+  
+  bool JumpToBlock = I->getOpcode() == Hexagon::J2_jump &&
+                     I->getOperand(0).isMBB();
   // Delete the JMP if it's equivalent to a fall-through.
-  if (AllowModify && I->getOpcode() == Hexagon::J2_jump &&
+  if (AllowModify && JumpToBlock &&
       MBB.isLayoutSuccessor(I->getOperand(0).getMBB())) {
     DEBUG(dbgs()<< "\nErasing the jump to successor block\n";);
     I->eraseFromParent();
@@ -243,6 +243,14 @@ bool HexagonInstrInfo::AnalyzeBranch(MachineBasicBlock &MBB,
   } while(I);
 
   int LastOpcode = LastInst->getOpcode();
+  int SecLastOpcode = SecondLastInst ? SecondLastInst->getOpcode() : 0;
+  // If the branch target is not a basic block, it could be a tail call.
+  // (It is, if the target is a function.)
+  if (LastOpcode == Hexagon::J2_jump && !LastInst->getOperand(0).isMBB())
+    return true;
+  if (SecLastOpcode == Hexagon::J2_jump &&
+      !SecondLastInst->getOperand(0).isMBB())
+    return true;
 
   bool LastOpcodeHasJMP_c = PredOpcodeHasJMP_c(LastOpcode);
   bool LastOpcodeHasNot = PredOpcodeHasNot(LastOpcode);
@@ -269,8 +277,6 @@ bool HexagonInstrInfo::AnalyzeBranch(MachineBasicBlock &MBB,
     // Otherwise, don't know what this is.
     return true;
   }
-
-  int SecLastOpcode = SecondLastInst->getOpcode();
 
   bool SecLastOpcodeHasJMP_c = PredOpcodeHasJMP_c(SecLastOpcode);
   bool SecLastOpcodeHasNot = PredOpcodeHasNot(SecLastOpcode);
@@ -549,12 +555,26 @@ void HexagonInstrInfo::loadRegFromAddr(MachineFunction &MF, unsigned DestReg,
                                  SmallVectorImpl<MachineInstr*> &NewMIs) const {
   llvm_unreachable("Unimplemented");
 }
+bool
+HexagonInstrInfo::expandPostRAPseudo(MachineBasicBlock::iterator MI) const {
+  unsigned Opc = MI->getOpcode();
 
+  switch (Opc) {
+    case Hexagon::TCRETURNi:
+      MI->setDesc(get(Hexagon::J2_jump));
+      return true;
+    case Hexagon::TCRETURNr:
+      MI->setDesc(get(Hexagon::J2_jumpr));
+      return true;
+  }
+
+  return false;
+}
 
 MachineInstr *HexagonInstrInfo::foldMemoryOperandImpl(MachineFunction &MF,
-                                                    MachineInstr* MI,
-                                          const SmallVectorImpl<unsigned> &Ops,
-                                                    int FI) const {
+                                                      MachineInstr *MI,
+                                                      ArrayRef<unsigned> Ops,
+                                                      int FI) const {
   // Hexagon_TODO: Implement.
   return nullptr;
 }
@@ -578,10 +598,6 @@ unsigned HexagonInstrInfo::createVR(MachineFunction* MF, MVT VT) const {
 }
 
 bool HexagonInstrInfo::isExtendable(const MachineInstr *MI) const {
-  // Constant extenders are allowed only for V4 and above.
-  if (!Subtarget.hasV4TOps())
-    return false;
-
   const MCInstrDesc &MID = MI->getDesc();
   const uint64_t F = MID.TSFlags;
   if ((F >> HexagonII::ExtendablePos) & HexagonII::ExtendableMask)
@@ -645,7 +661,7 @@ bool HexagonInstrInfo::isPredicable(MachineInstr *MI) const {
 
   switch(Opc) {
   case Hexagon::A2_tfrsi:
-    return isInt<12>(MI->getOperand(1).getImm());
+    return (isOperandExtended(MI, 1) && isConstExtended(MI)) || isInt<12>(MI->getOperand(1).getImm());
 
   case Hexagon::S2_storerd_io:
     return isShiftedUInt<6,3>(MI->getOperand(1).getImm());
@@ -696,7 +712,7 @@ bool HexagonInstrInfo::isPredicable(MachineInstr *MI) const {
     return (isUInt<6>(MI->getOperand(1).getImm()) &&
             isInt<6>(MI->getOperand(2).getImm()));
 
-  case Hexagon::ADD_ri:
+  case Hexagon::A2_addi:
     return isInt<8>(MI->getOperand(2).getImm());
 
   case Hexagon::A2_aslh:
@@ -705,7 +721,7 @@ bool HexagonInstrInfo::isPredicable(MachineInstr *MI) const {
   case Hexagon::A2_sxth:
   case Hexagon::A2_zxtb:
   case Hexagon::A2_zxth:
-    return Subtarget.hasV4TOps();
+    return true;
   }
 
   return true;
@@ -1002,12 +1018,10 @@ bool HexagonInstrInfo::isPredicatedNew(unsigned Opcode) const {
 
 // Returns true, if a ST insn can be promoted to a new-value store.
 bool HexagonInstrInfo::mayBeNewStore(const MachineInstr *MI) const {
-  const HexagonRegisterInfo& QRI = getRegisterInfo();
   const uint64_t F = MI->getDesc().TSFlags;
 
   return ((F >> HexagonII::mayNVStorePos) &
-           HexagonII::mayNVStoreMask &
-           QRI.Subtarget.hasV4TOps());
+           HexagonII::mayNVStoreMask);
 }
 
 bool
@@ -1107,7 +1121,7 @@ isValidOffset(const int Opcode, const int Offset) const {
     return (Offset >= Hexagon_MEMB_OFFSET_MIN) &&
       (Offset <= Hexagon_MEMB_OFFSET_MAX);
 
-  case Hexagon::ADD_ri:
+  case Hexagon::A2_addi:
   case Hexagon::TFR_FI:
     return (Offset >= Hexagon_ADDI_OFFSET_MIN) &&
       (Offset <= Hexagon_ADDI_OFFSET_MAX);
@@ -1308,8 +1322,8 @@ bool HexagonInstrInfo::isConditionalALU32 (const MachineInstr* MI) const {
     case Hexagon::A4_pzxthfnew:
     case Hexagon::A4_pzxtht:
     case Hexagon::A4_pzxthtnew:
-    case Hexagon::ADD_ri_cPt:
-    case Hexagon::ADD_ri_cNotPt:
+    case Hexagon::A2_paddit:
+    case Hexagon::A2_paddif:
     case Hexagon::C2_ccombinewt:
     case Hexagon::C2_ccombinewf:
       return true;
@@ -1318,7 +1332,6 @@ bool HexagonInstrInfo::isConditionalALU32 (const MachineInstr* MI) const {
 
 bool HexagonInstrInfo::
 isConditionalLoad (const MachineInstr* MI) const {
-  const HexagonRegisterInfo& QRI = getRegisterInfo();
   switch (MI->getOpcode())
   {
     default: return false;
@@ -1334,7 +1347,6 @@ isConditionalLoad (const MachineInstr* MI) const {
     case Hexagon::L2_ploadruhf_io:
     case Hexagon::L2_ploadrubt_io:
     case Hexagon::L2_ploadrubf_io:
-      return true;
     case Hexagon::L2_ploadrdt_pi:
     case Hexagon::L2_ploadrdf_pi:
     case Hexagon::L2_ploadrit_pi:
@@ -1347,7 +1359,6 @@ isConditionalLoad (const MachineInstr* MI) const {
     case Hexagon::L2_ploadruhf_pi:
     case Hexagon::L2_ploadrubt_pi:
     case Hexagon::L2_ploadrubf_pi:
-      return QRI.Subtarget.hasV4TOps();
     case Hexagon::L4_ploadrdt_rr:
     case Hexagon::L4_ploadrdf_rr:
     case Hexagon::L4_ploadrbt_rr:
@@ -1360,7 +1371,7 @@ isConditionalLoad (const MachineInstr* MI) const {
     case Hexagon::L4_ploadruhf_rr:
     case Hexagon::L4_ploadrit_rr:
     case Hexagon::L4_ploadrif_rr:
-      return QRI.Subtarget.hasV4TOps();
+      return true;
   }
 }
 
@@ -1400,7 +1411,6 @@ isConditionalLoad (const MachineInstr* MI) const {
 // is not valid for new-value stores.
 bool HexagonInstrInfo::
 isConditionalStore (const MachineInstr* MI) const {
-  const HexagonRegisterInfo& QRI = getRegisterInfo();
   switch (MI->getOpcode())
   {
     default: return false;
@@ -1434,7 +1444,6 @@ isConditionalStore (const MachineInstr* MI) const {
     case Hexagon::S4_pstorerif_rr:
     case Hexagon::S2_pstorerit_pi:
     case Hexagon::S2_pstorerif_pi:
-      return QRI.Subtarget.hasV4TOps();
 
     // V4 global address store before promoting to dot new.
     case Hexagon::S4_pstorerdt_abs:
@@ -1445,7 +1454,7 @@ isConditionalStore (const MachineInstr* MI) const {
     case Hexagon::S4_pstorerhf_abs:
     case Hexagon::S4_pstorerit_abs:
     case Hexagon::S4_pstorerif_abs:
-      return QRI.Subtarget.hasV4TOps();
+      return true;
 
     // Predicated new value stores (i.e. if (p0) memw(..)=r0.new) are excluded
     // from the "Conditional Store" list. Because a predicated new value store
@@ -1533,14 +1542,14 @@ int HexagonInstrInfo::GetDotNewOp(const MachineInstr* MI) const {
   switch (MI->getOpcode()) {
   default: llvm_unreachable("Unknown .new type");
   // store new value byte
-  case Hexagon::STrib_shl_V4:
-    return Hexagon::STrib_shl_nv_V4;
+  case Hexagon::S4_storerb_ur:
+    return Hexagon::S4_storerbnew_ur;
 
-  case Hexagon::STrih_shl_V4:
-    return Hexagon::STrih_shl_nv_V4;
+  case Hexagon::S4_storerh_ur:
+    return Hexagon::S4_storerhnew_ur;
 
-  case Hexagon::STriw_shl_V4:
-    return Hexagon::STriw_shl_nv_V4;
+  case Hexagon::S4_storeri_ur:
+    return Hexagon::S4_storerinew_ur;
 
   }
   return 0;
@@ -1631,11 +1640,6 @@ bool HexagonInstrInfo::isSchedulingBoundary(const MachineInstr *MI,
 }
 
 bool HexagonInstrInfo::isConstExtended(MachineInstr *MI) const {
-
-  // Constant extenders are allowed only for V4 and above.
-  if (!Subtarget.hasV4TOps())
-    return false;
-
   const uint64_t F = MI->getDesc().TSFlags;
   unsigned isExtended = (F >> HexagonII::ExtendedPos) & HexagonII::ExtendedMask;
   if (isExtended) // Instruction must be extended.
@@ -1663,7 +1667,7 @@ bool HexagonInstrInfo::isConstExtended(MachineInstr *MI) const {
   // We currently only handle isGlobal() because it is the only kind of
   // object we are going to end up with here for now.
   // In the future we probably should add isSymbol(), etc.
-  if (MO.isGlobal() || MO.isSymbol())
+  if (MO.isGlobal() || MO.isSymbol() || MO.isBlockAddress())
     return true;
 
   // If the extendable operand is not 'Immediate' type, the instruction should
@@ -1708,10 +1712,6 @@ HexagonInstrInfo::getDotNewPredJumpOp(MachineInstr *MI,
 // Returns true if a particular operand is extendable for an instruction.
 bool HexagonInstrInfo::isOperandExtended(const MachineInstr *MI,
                                          unsigned short OperandNum) const {
-  // Constant extenders are allowed only for V4 and above.
-  if (!Subtarget.hasV4TOps())
-    return false;
-
   const uint64_t F = MI->getDesc().TSFlags;
 
   return ((F >> HexagonII::ExtendableOpPos) & HexagonII::ExtendableOpMask)

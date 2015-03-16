@@ -17,7 +17,7 @@
 #include "X86TargetTransformInfo.h"
 #include "llvm/CodeGen/Passes.h"
 #include "llvm/IR/Function.h"
-#include "llvm/PassManager.h"
+#include "llvm/IR/LegacyPassManager.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FormattedStream.h"
 #include "llvm/Support/TargetRegistry.h"
@@ -37,10 +37,10 @@ static std::unique_ptr<TargetLoweringObjectFile> createTLOF(const Triple &TT) {
     return make_unique<TargetLoweringObjectFileMachO>();
   }
 
-  if (TT.isOSLinux())
-    return make_unique<X86LinuxTargetObjectFile>();
+  if (TT.isOSLinux() || TT.isOSNaCl())
+    return make_unique<X86LinuxNaClTargetObjectFile>();
   if (TT.isOSBinFormatELF())
-    return make_unique<TargetLoweringObjectFileELF>();
+    return make_unique<X86ELFTargetObjectFile>();
   if (TT.isKnownWindowsMSVCEnvironment())
     return make_unique<X86WindowsTargetObjectFile>();
   if (TT.isOSBinFormatCOFF())
@@ -94,9 +94,9 @@ X86TargetMachine::X86TargetMachine(const Target &T, StringRef TT, StringRef CPU,
                                    StringRef FS, const TargetOptions &Options,
                                    Reloc::Model RM, CodeModel::Model CM,
                                    CodeGenOpt::Level OL)
-    : LLVMTargetMachine(T, TT, CPU, FS, Options, RM, CM, OL),
+    : LLVMTargetMachine(T, computeDataLayout(Triple(TT)), TT, CPU, FS, Options,
+                        RM, CM, OL),
       TLOF(createTLOF(Triple(getTargetTriple()))),
-      DL(computeDataLayout(Triple(TT))),
       Subtarget(TT, CPU, FS, *this, Options.StackAlignmentOverride) {
   // default to hard float ABI
   if (Options.FloatABIType == FloatABI::Default)
@@ -116,11 +116,8 @@ X86TargetMachine::~X86TargetMachine() {}
 
 const X86Subtarget *
 X86TargetMachine::getSubtargetImpl(const Function &F) const {
-  AttributeSet FnAttrs = F.getAttributes();
-  Attribute CPUAttr =
-      FnAttrs.getAttribute(AttributeSet::FunctionIndex, "target-cpu");
-  Attribute FSAttr =
-      FnAttrs.getAttribute(AttributeSet::FunctionIndex, "target-features");
+  Attribute CPUAttr = F.getFnAttribute("target-cpu");
+  Attribute FSAttr = F.getFnAttribute("target-features");
 
   std::string CPU = !CPUAttr.hasAttribute(Attribute::None)
                         ? CPUAttr.getValueAsString().str()
@@ -134,8 +131,7 @@ X86TargetMachine::getSubtargetImpl(const Function &F) const {
   // function before we can generate a subtarget. We also need to use
   // it as a key for the subtarget since that can be the only difference
   // between two functions.
-  Attribute SFAttr =
-      FnAttrs.getAttribute(AttributeSet::FunctionIndex, "use-soft-float");
+  Attribute SFAttr = F.getFnAttribute("use-soft-float");
   bool SoftFloat = !SFAttr.hasAttribute(Attribute::None)
                        ? SFAttr.getValueAsString() == "true"
                        : Options.UseSoftFloat;
@@ -186,10 +182,6 @@ public:
     return getTM<X86TargetMachine>();
   }
 
-  const X86Subtarget &getX86Subtarget() const {
-    return *getX86TargetMachine().getSubtargetImpl();
-  }
-
   void addIRPasses() override;
   bool addInstSelector() override;
   bool addILPOpts() override;
@@ -214,7 +206,8 @@ bool X86PassConfig::addInstSelector() {
   addPass(createX86ISelDag(getX86TargetMachine(), getOptLevel()));
 
   // For ELF, cleanup any local-dynamic TLS accesses.
-  if (getX86Subtarget().isTargetELF() && getOptLevel() != CodeGenOpt::None)
+  if (Triple(TM->getTargetTriple()).isOSBinFormatELF() &&
+      getOptLevel() != CodeGenOpt::None)
     addPass(createCleanupLocalDynamicTLSPass());
 
   addPass(createX86GlobalBaseRegPass());
@@ -236,7 +229,7 @@ void X86PassConfig::addPostRegAlloc() {
 }
 
 void X86PassConfig::addPreEmitPass() {
-  if (getOptLevel() != CodeGenOpt::None && getX86Subtarget().hasSSE2())
+  if (getOptLevel() != CodeGenOpt::None)
     addPass(createExecutionDependencyFixPass(&X86::VR128RegClass));
 
   if (UseVZeroUpper)

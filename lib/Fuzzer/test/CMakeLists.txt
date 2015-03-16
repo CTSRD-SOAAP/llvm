@@ -5,6 +5,8 @@
 set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O0 -fsanitize-coverage=4")
 
 set(Tests
+  CounterTest
+  FourIndependentBranchesTest
   FullCoverageSetTest
   InfiniteTest
   NullDerefTest
@@ -56,5 +58,5 @@ set_target_properties(${TestBinaries}
 
 add_lit_testsuite(check-fuzzer "Running Fuzzer tests"
     ${CMAKE_CURRENT_BINARY_DIR}
-    DEPENDS ${TestBinaries}
+    DEPENDS ${TestBinaries} FileCheck not
     )

@@ -14,6 +14,7 @@
 #ifndef LLVM_EXECUTIONENGINE_ORC_OBJECTLINKINGLAYER_H
 #define LLVM_EXECUTIONENGINE_ORC_OBJECTLINKINGLAYER_H
 
+#include "JITSymbol.h"
 #include "LookasideRTDyldMM.h"
 #include "llvm/ExecutionEngine/ExecutionEngine.h"
 #include "llvm/ExecutionEngine/SectionMemoryManager.h"
@@ -21,9 +22,11 @@
 #include <memory>
 
 namespace llvm {
+namespace orc {
 
 class ObjectLinkingLayerBase {
 protected:
+
   /// @brief Holds a set of objects to be allocated/linked as a unit in the JIT.
   ///
   /// An instance of this class will be created for each set of objects added
@@ -32,8 +35,8 @@ protected:
   /// had been provided by this instance. Higher level layers are responsible
   /// for taking any action required to handle the missing symbols.
   class LinkedObjectSet {
-    LinkedObjectSet(const LinkedObjectSet&) LLVM_DELETED_FUNCTION;
-    void operator=(const LinkedObjectSet&) LLVM_DELETED_FUNCTION;
+    LinkedObjectSet(const LinkedObjectSet&) = delete;
+    void operator=(const LinkedObjectSet&) = delete;
   public:
     LinkedObjectSet(std::unique_ptr<RTDyldMemoryManager> MM)
         : MM(std::move(MM)), RTDyld(llvm::make_unique<RuntimeDyld>(&*this->MM)),
@@ -48,10 +51,8 @@ protected:
       return RTDyld->loadObject(Obj);
     }
 
-    uint64_t getSymbolAddress(StringRef Name, bool ExportedSymbolsOnly) {
-      if (ExportedSymbolsOnly)
-        return RTDyld->getExportedSymbolLoadAddress(Name);
-      return RTDyld->getSymbolLoadAddress(Name);
+    RuntimeDyld::SymbolInfo getSymbol(StringRef Name) const {
+      return RTDyld->getSymbol(Name);
     }
 
     bool NeedsFinalization() const { return (State == Raw); }
@@ -65,10 +66,10 @@ protected:
       State = Finalized;
     }
 
-    void mapSectionAddress(const void *LocalAddress, uint64_t TargetAddress) {
+    void mapSectionAddress(const void *LocalAddress, TargetAddress TargetAddr) {
       assert((State != Finalized) &&
              "Attempting to remap sections for finalized objects.");
-      RTDyld->mapSectionAddress(LocalAddress, TargetAddress);
+      RTDyld->mapSectionAddress(LocalAddress, TargetAddr);
     }
 
     void takeOwnershipOfBuffer(std::unique_ptr<MemoryBuffer> B) {
@@ -176,12 +177,6 @@ public:
     return Handle;
   }
 
-  /// @brief Map section addresses for the objects associated with the handle H.
-  void mapSectionAddress(ObjSetHandleT H, const void *LocalAddress,
-                         uint64_t TargetAddress) {
-    H->mapSectionAddress(LocalAddress, TargetAddress);
-  }
-
   /// @brief Remove the set of objects associated with handle H.
   ///
   ///   All memory allocated for the objects will be freed, and the sections and
@@ -195,42 +190,70 @@ public:
     LinkedObjSetList.erase(H);
   }
 
-  /// @brief Get the address of a loaded symbol.
-  ///
-  /// @return The address in the target process's address space of the named
-  ///         symbol. Null if no such symbol is known.
-  ///
-  ///   This method will trigger the finalization of the linked object set
-  /// containing the definition of the given symbol, if it is found.
-  uint64_t getSymbolAddress(StringRef Name, bool ExportedSymbolsOnly) {
+  /// @brief Search for the given named symbol.
+  /// @param Name The name of the symbol to search for.
+  /// @param ExportedSymbolsOnly If true, search only for exported symbols.
+  /// @return A handle for the given named symbol, if it exists.
+  JITSymbol findSymbol(StringRef Name, bool ExportedSymbolsOnly) {
     for (auto I = LinkedObjSetList.begin(), E = LinkedObjSetList.end(); I != E;
          ++I)
-      if (uint64_t Addr = lookupSymbolAddressIn(I, Name, ExportedSymbolsOnly))
-        return Addr;
+      if (auto Symbol = findSymbolIn(I, Name, ExportedSymbolsOnly))
+        return Symbol;
 
-    return 0;
+    return nullptr;
   }
 
-  /// @brief Search for a given symbol in the context of the set of loaded
-  ///        objects represented by the handle H.
-  ///
-  /// @return The address in the target process's address space of the named
-  ///         symbol. Null if the given object set does not contain a definition
-  ///         of this symbol.
-  ///
-  ///   This method will trigger the finalization of the linked object set
-  /// represented by the handle H if that set contains the requested symbol.
-  uint64_t lookupSymbolAddressIn(ObjSetHandleT H, StringRef Name,
-                                 bool ExportedSymbolsOnly) {
-    if (uint64_t Addr = H->getSymbolAddress(Name, ExportedSymbolsOnly)) {
-      if (H->NeedsFinalization()) {
-        H->Finalize();
-        if (NotifyFinalized)
-          NotifyFinalized(H);
+  /// @brief Search for the given named symbol in the context of the set of
+  ///        loaded objects represented by the handle H.
+  /// @param H The handle for the object set to search in.
+  /// @param Name The name of the symbol to search for.
+  /// @param ExportedSymbolsOnly If true, search only for exported symbols.
+  /// @return A handle for the given named symbol, if it is found in the
+  ///         given object set.
+  JITSymbol findSymbolIn(ObjSetHandleT H, StringRef Name,
+                         bool ExportedSymbolsOnly) {
+    if (auto Sym = H->getSymbol(Name)) {
+      if (Sym.isExported() || !ExportedSymbolsOnly) {
+        auto Addr = Sym.getAddress();
+        auto Flags = Sym.getFlags();
+        if (!H->NeedsFinalization()) {
+          // If this instance has already been finalized then we can just return
+          // the address.
+          return JITSymbol(Addr, Flags);
+        } else {
+          // If this instance needs finalization return a functor that will do
+          // it. The functor still needs to double-check whether finalization is
+          // required, in case someone else finalizes this set before the
+          // functor is called.
+          auto GetAddress = 
+            [this, Addr, H]() {
+              if (H->NeedsFinalization()) {
+                H->Finalize();
+                if (NotifyFinalized)
+                  NotifyFinalized(H);
+              }
+              return Addr;
+            };
+          return JITSymbol(std::move(GetAddress), Flags);
+        }
       }
-      return Addr;
     }
-    return 0;
+    return nullptr;
+  }
+
+  /// @brief Map section addresses for the objects associated with the handle H.
+  void mapSectionAddress(ObjSetHandleT H, const void *LocalAddress,
+                         TargetAddress TargetAddr) {
+    H->mapSectionAddress(LocalAddress, TargetAddr);
+  }
+
+  /// @brief Immediately emit and finalize the object set represented by the
+  ///        given handle.
+  /// @param H Handle for object set to emit/finalize.
+  void emitAndFinalize(ObjSetHandleT H) {
+    H->Finalize();
+    if (NotifyFinalized)
+      NotifyFinalized(H);
   }
 
 private:
@@ -240,6 +263,7 @@ private:
   CreateRTDyldMMFtor CreateMemoryManager;
 };
 
-} // end namespace llvm
+} // End namespace orc.
+} // End namespace llvm
 
 #endif // LLVM_EXECUTIONENGINE_ORC_OBJECTLINKINGLAYER_H
