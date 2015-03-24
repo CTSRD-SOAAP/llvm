@@ -148,7 +148,11 @@ int main(int argc, char **argv) {
   llvm_shutdown_obj Y;  // Call llvm_shutdown() on exit.
   cl::ParseCommandLineOptions(argc, argv, "llvm linker\n");
 
-  auto Composite = make_unique<Module>("llvm-link", Context);
+  std::string ModuleID = "llvm-link";
+  if (OutputFilename != "-") {
+    ModuleID = sys::path::filename(OutputFilename);
+  }
+  auto Composite = make_unique<Module>(ModuleID, Context);
   Linker L(Composite.get(), diagnosticHandler);
 
   for (unsigned i = 0; i < InputFilenames.size(); ++i) {
