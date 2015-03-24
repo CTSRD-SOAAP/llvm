@@ -58,6 +58,8 @@ static cl::opt<bool>
 SuppressWarnings("suppress-warnings", cl::desc("Suppress all linking warnings"),
                  cl::init(false));
 
+static MDNode* LibraryMetadata = nullptr;
+
 // Read the specified bitcode file in and return it. This routine searches the
 // link path for the specified file to try to find it...
 //
@@ -93,6 +95,50 @@ static void diagnosticHandler(const DiagnosticInfo &DI) {
   errs() << '\n';
 }
 
+// Link together llvm.libs named metadata. This is an array of MDTuples each of
+// the form !{"library_name.bc", !compilation_units} and represents a
+// collection of the compilation units that were compiled together into the
+// library IR file "library_name.bc".  If SrcM doesn't have an llvm.libs
+// NamedMDNode, its compilation units are considered part of the library DstM.
+void linkInLibraryMetadata(Module* SrcM, Module* DstM) {
+  // If srcM doesn't have the named metadata node llvm.libs, then add srcM's
+  // compilation units to DstM's list of direct compilation units, otherwise
+  // normal link process will have merge the llvm.libs
+  LLVMContext& Context = DstM->getContext();
+  MDTuple* CUs;
+  if (LibraryMetadata == NULL) {
+    CUs = MDTuple::get(Context, ArrayRef<Metadata*>());
+    SmallVector<Metadata*, 3> args;
+    args.push_back(MDString::get(Context, DstM->getName()));
+    args.push_back(CUs);
+    LibraryMetadata = MDTuple::get(Context, args);
+    if (NamedMDNode* NMD = DstM->getOrInsertNamedMetadata("llvm.libs")) {
+      NMD->addOperand(LibraryMetadata);
+    }
+  }
+  else {
+    CUs = cast<MDTuple>(LibraryMetadata->getOperand(1).get());
+  }
+
+  if (!SrcM->getNamedMetadata("llvm.libs")) {
+    // Add SrcM's compilation units to those in LibraryMetadata
+    // take care to use the linked-in CUs to avoid duplicating
+    // debug metadata nodes
+    SmallVector<Metadata*, 16> SrcCUMDs;
+    if (NamedMDNode* SrcCUs = SrcM->getNamedMetadata("llvm.dbg.cu")) {
+      if (NamedMDNode* DstCUs = DstM->getNamedMetadata("llvm.dbg.cu")) {
+        unsigned int linkedCUsStartingIdx = DstCUs->getNumOperands() - SrcCUs->getNumOperands();
+        for (unsigned int i = linkedCUsStartingIdx; i < DstCUs->getNumOperands(); i++) {
+          MDNode* CU = DstCUs->getOperand(i);
+          SrcCUMDs.push_back(CU);
+        }
+        MDNode* joinedCUs = MDNode::concatenate(CUs, MDTuple::get(Context, SrcCUMDs));
+        LibraryMetadata->replaceOperandWith(1, joinedCUs);
+      }
+    }
+  }
+}
+
 int main(int argc, char **argv) {
   // Print a stack trace if we signal out.
   sys::PrintStackTraceOnErrorSignal();
@@ -116,6 +162,8 @@ int main(int argc, char **argv) {
 
     if (L.linkInModule(M.get()))
       return 1;
+
+    linkInLibraryMetadata(M.get(), Composite.get());
   }
 
   if (DumpAsm) errs() << "Here's the assembly:\n" << *Composite;
