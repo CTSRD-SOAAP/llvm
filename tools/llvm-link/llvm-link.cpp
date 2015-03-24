@@ -31,13 +31,11 @@
 #include "llvm/Support/SystemUtils.h"
 #include "llvm/Support/ToolOutputFile.h"
 #include <memory>
-#include <system_error>
 using namespace llvm;
-using namespace llvm::sys::fs;
 
 static cl::list<std::string>
 InputFilenames(cl::Positional, cl::OneOrMore,
-               cl::desc("<input bitcode files|input bitcode directory>"));
+               cl::desc("<input bitcode files>"));
 
 static cl::opt<std::string>
 OutputFilename("o", cl::desc("Override output filename"), cl::init("-"),
@@ -55,9 +53,6 @@ Verbose("v", cl::desc("Print information about actions taken"));
 
 static cl::opt<bool>
 DumpAsm("d", cl::desc("Print assembly as linked"), cl::Hidden);
-
-static cl::opt<bool>
-Directory("dir", cl::desc("Input argument is a directory containing bitcode files"));
 
 static cl::opt<bool>
 SuppressWarnings("suppress-warnings", cl::desc("Suppress all linking warnings"),
@@ -106,26 +101,6 @@ int main(int argc, char **argv) {
   LLVMContext &Context = getGlobalContext();
   llvm_shutdown_obj Y;  // Call llvm_shutdown() on exit.
   cl::ParseCommandLineOptions(argc, argv, "llvm linker\n");
-
-  if (Directory) {
-    if (InputFilenames.size() > 1) {
-      errs() << "Error: More than one directory specified\n";
-      return -1;
-    }
-
-    // fill InputFilenames with the name of the files in the argument directory,
-    // thus allowing the code below to work with no changes
-    std::error_code ec; // output parameter to store error codes
-    std::string dir = InputFilenames[0];
-    InputFilenames.clear();
-    for (directory_iterator I = directory_iterator(dir, ec), E; I != E; I.increment(ec)) {
-      if (ec) {
-        errs() << "Error iterating directory: " << ec.message() << "\n";
-        return -1;
-      }
-      InputFilenames.push_back(I->path());
-    }
-  }
 
   auto Composite = make_unique<Module>("llvm-link", Context);
   Linker L(Composite.get(), diagnosticHandler);
