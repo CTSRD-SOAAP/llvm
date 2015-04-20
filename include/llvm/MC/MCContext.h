@@ -87,8 +87,9 @@ namespace llvm {
     /// artificial symbols.
     StringMap<bool, BumpPtrAllocator&> UsedNames;
 
-    /// The next ID to dole out to an unnamed assembler temporary symbol.
-    unsigned NextUniqueID;
+    /// The next ID to dole out to an unnamed assembler temporary symbol with
+    /// a given prefix.
+    StringMap<unsigned> NextID;
 
     /// Instances of directional local labels.
     DenseMap<unsigned, MCLabel *> Instances;
@@ -161,17 +162,49 @@ namespace llvm {
     /// The Compile Unit ID that we are currently processing.
     unsigned DwarfCompileUnitID;
 
-    typedef std::pair<std::string, std::string> SectionGroupPair;
-    typedef std::tuple<std::string, std::string, int> SectionGroupTriple;
+    struct ELFSectionKey {
+      std::string SectionName;
+      StringRef GroupName;
+      unsigned UniqueID;
+      ELFSectionKey(StringRef SectionName, StringRef GroupName,
+                    unsigned UniqueID)
+          : SectionName(SectionName), GroupName(GroupName), UniqueID(UniqueID) {
+      }
+      bool operator<(const ELFSectionKey &Other) const {
+        if (SectionName != Other.SectionName)
+          return SectionName < Other.SectionName;
+        if (GroupName != Other.GroupName)
+          return GroupName < Other.GroupName;
+        return UniqueID < Other.UniqueID;
+      }
+    };
+
+    struct COFFSectionKey {
+      std::string SectionName;
+      StringRef GroupName;
+      int SelectionKey;
+      COFFSectionKey(StringRef SectionName, StringRef GroupName,
+                     int SelectionKey)
+          : SectionName(SectionName), GroupName(GroupName),
+            SelectionKey(SelectionKey) {}
+      bool operator<(const COFFSectionKey &Other) const {
+        if (SectionName != Other.SectionName)
+          return SectionName < Other.SectionName;
+        if (GroupName != Other.GroupName)
+          return GroupName < Other.GroupName;
+        return SelectionKey < Other.SelectionKey;
+      }
+    };
 
     StringMap<const MCSectionMachO*> MachOUniquingMap;
-    std::map<SectionGroupPair, const MCSectionELF *> ELFUniquingMap;
-    std::map<SectionGroupTriple, const MCSectionCOFF *> COFFUniquingMap;
+    std::map<ELFSectionKey, const MCSectionELF *> ELFUniquingMap;
+    std::map<COFFSectionKey, const MCSectionCOFF *> COFFUniquingMap;
+    StringMap<bool> ELFRelSecNames;
 
     /// Do automatic reset in destructor
     bool AutoReset;
 
-    MCSymbol *CreateSymbol(StringRef Name);
+    MCSymbol *CreateSymbol(StringRef Name, bool AlwaysAddSuffix);
 
     MCSymbol *getOrCreateDirectionalLocalSymbol(unsigned LocalLabelVal,
                                                 unsigned Instance);
@@ -212,10 +245,7 @@ namespace llvm {
     /// unspecified name.
     MCSymbol *CreateTempSymbol();
 
-    MCSymbol *createTempSymbol(const Twine &Name);
-
-    /// Return a unique identifier for use in constructing symbol names.
-    unsigned getUniqueSymbolID() { return NextUniqueID++; }
+    MCSymbol *createTempSymbol(const Twine &Name, bool AlwaysAddSuffix);
 
     /// Create the definition of a directional local symbol for numbered label
     /// (used for "1:" definitions).
@@ -233,10 +263,15 @@ namespace llvm {
 
     MCSymbol *getOrCreateSectionSymbol(const MCSectionELF &Section);
 
+    /// Gets a symbol that will be defined to the final stack offset of a local
+    /// variable after codegen.
+    ///
+    /// @param Idx - The index of a local variable passed to @llvm.frameescape.
     MCSymbol *getOrCreateFrameAllocSymbol(StringRef FuncName, unsigned Idx);
 
+    MCSymbol *getOrCreateParentFrameOffsetSymbol(StringRef FuncName);
+
     /// Get the symbol for \p Name, or null.
-    MCSymbol *LookupSymbol(StringRef Name) const;
     MCSymbol *LookupSymbol(const Twine &Name) const;
 
     /// getSymbols - Get a reference for the symbol table for clients that
@@ -268,18 +303,52 @@ namespace llvm {
     }
 
     const MCSectionELF *getELFSection(StringRef Section, unsigned Type,
+                                      unsigned Flags) {
+      return getELFSection(Section, Type, Flags, nullptr);
+    }
+
+    const MCSectionELF *getELFSection(StringRef Section, unsigned Type,
                                       unsigned Flags,
-                                      const char *BeginSymName = nullptr);
+                                      const char *BeginSymName) {
+      return getELFSection(Section, Type, Flags, 0, "", BeginSymName);
+    }
+
+    const MCSectionELF *getELFSection(StringRef Section, unsigned Type,
+                                      unsigned Flags, unsigned EntrySize,
+                                      StringRef Group) {
+      return getELFSection(Section, Type, Flags, EntrySize, Group, nullptr);
+    }
 
     const MCSectionELF *getELFSection(StringRef Section, unsigned Type,
                                       unsigned Flags, unsigned EntrySize,
                                       StringRef Group,
-                                      const char *BeginSymName = nullptr);
+                                      const char *BeginSymName) {
+      return getELFSection(Section, Type, Flags, EntrySize, Group, ~0,
+                           BeginSymName);
+    }
 
     const MCSectionELF *getELFSection(StringRef Section, unsigned Type,
                                       unsigned Flags, unsigned EntrySize,
-                                      StringRef Group, bool Unique,
-                                      const char *BeginSymName = nullptr);
+                                      StringRef Group, unsigned UniqueID) {
+      return getELFSection(Section, Type, Flags, EntrySize, Group, UniqueID,
+                           nullptr);
+    }
+
+    const MCSectionELF *getELFSection(StringRef Section, unsigned Type,
+                                      unsigned Flags, unsigned EntrySize,
+                                      StringRef Group, unsigned UniqueID,
+                                      const char *BeginSymName);
+
+    const MCSectionELF *getELFSection(StringRef Section, unsigned Type,
+                                      unsigned Flags, unsigned EntrySize,
+                                      const MCSymbol *Group, unsigned UniqueID,
+                                      const char *BeginSymName,
+                                      const MCSectionELF *Associated);
+
+    const MCSectionELF *createELFRelSection(StringRef Name, unsigned Type,
+                                            unsigned Flags, unsigned EntrySize,
+                                            const MCSymbol *Group,
+                                            const MCSectionELF *Associated);
 
     void renameELFSection(const MCSectionELF *Section, StringRef Name);
 

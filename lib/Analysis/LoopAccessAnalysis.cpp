@@ -15,11 +15,13 @@
 #include "llvm/Analysis/LoopAccessAnalysis.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/ScalarEvolutionExpander.h"
+#include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Utils/VectorUtils.h"
 using namespace llvm;
 
@@ -173,6 +175,17 @@ void LoopAccessInfo::RuntimePointerCheck::print(
           OS << " (Partition: " << (*PtrPartition)[J] << ")";
         OS << "\n";
       }
+}
+
+bool LoopAccessInfo::RuntimePointerCheck::needsAnyChecking(
+    const SmallVectorImpl<int> *PtrPartition) const {
+  unsigned NumPointers = Pointers.size();
+
+  for (unsigned I = 0; I < NumPointers; ++I)
+    for (unsigned J = I + 1; J < NumPointers; ++J)
+      if (needsChecking(I, J, PtrPartition))
+        return true;
+  return false;
 }
 
 namespace {
@@ -877,14 +890,20 @@ void MemoryDepChecker::Dependence::print(
 }
 
 bool LoopAccessInfo::canAnalyzeLoop() {
+  // We need to have a loop header.
+  DEBUG(dbgs() << "LAA: Found a loop: " <<
+        TheLoop->getHeader()->getName() << '\n');
+
     // We can only analyze innermost loops.
   if (!TheLoop->empty()) {
+    DEBUG(dbgs() << "LAA: loop is not the innermost loop\n");
     emitAnalysis(LoopAccessReport() << "loop is not the innermost loop");
     return false;
   }
 
   // We must have a single backedge.
   if (TheLoop->getNumBackEdges() != 1) {
+    DEBUG(dbgs() << "LAA: loop control flow is not understood by analyzer\n");
     emitAnalysis(
         LoopAccessReport() <<
         "loop control flow is not understood by analyzer");
@@ -893,6 +912,7 @@ bool LoopAccessInfo::canAnalyzeLoop() {
 
   // We must have a single exiting block.
   if (!TheLoop->getExitingBlock()) {
+    DEBUG(dbgs() << "LAA: loop control flow is not understood by analyzer\n");
     emitAnalysis(
         LoopAccessReport() <<
         "loop control flow is not understood by analyzer");
@@ -903,15 +923,12 @@ bool LoopAccessInfo::canAnalyzeLoop() {
   // checked at the end of each iteration. With that we can assume that all
   // instructions in the loop are executed the same number of times.
   if (TheLoop->getExitingBlock() != TheLoop->getLoopLatch()) {
+    DEBUG(dbgs() << "LAA: loop control flow is not understood by analyzer\n");
     emitAnalysis(
         LoopAccessReport() <<
         "loop control flow is not understood by analyzer");
     return false;
   }
-
-  // We need to have a loop header.
-  DEBUG(dbgs() << "LAA: Found a loop: " <<
-        TheLoop->getHeader()->getName() << '\n');
 
   // ScalarEvolution needs to be able to find the exit count.
   const SCEV *ExitCount = SE->getBackedgeTakenCount(TheLoop);
@@ -960,6 +977,12 @@ void LoopAccessInfo::analyzeLoop(const ValueToValueMap &Strides) {
         // the flag. Therefore, it is safe to ignore this read from memory.
         CallInst *Call = dyn_cast<CallInst>(it);
         if (Call && getIntrinsicIDForCall(Call, TLI))
+          continue;
+
+        // If the function has an explicit vectorized counterpart, we can safely
+        // assume that it can be vectorized.
+        if (Call && !Call->isNoBuiltin() && Call->getCalledFunction() &&
+            TLI->isFunctionVectorizable(Call->getCalledFunction()->getName()))
           continue;
 
         LoadInst *Ld = dyn_cast<LoadInst>(it);
@@ -1025,16 +1048,8 @@ void LoopAccessInfo::analyzeLoop(const ValueToValueMap &Strides) {
   for (I = Stores.begin(), IE = Stores.end(); I != IE; ++I) {
     StoreInst *ST = cast<StoreInst>(*I);
     Value* Ptr = ST->getPointerOperand();
-
-    if (isUniform(Ptr)) {
-      emitAnalysis(
-          LoopAccessReport(ST)
-          << "write to a loop invariant address could not be vectorized");
-      DEBUG(dbgs() << "LAA: We don't allow storing to uniform addresses\n");
-      CanVecMem = false;
-      return;
-    }
-
+    // Check for store to loop invariant address.
+    StoreToLoopInvariantAddress |= isUniform(Ptr);
     // If we did *not* see this pointer before, insert it to  the read-write
     // list. At this phase it is only a 'write' list.
     if (Seen.insert(Ptr).second) {
@@ -1203,9 +1218,8 @@ static Instruction *getFirstInst(Instruction *FirstInst, Value *V,
 
 std::pair<Instruction *, Instruction *> LoopAccessInfo::addRuntimeCheck(
     Instruction *Loc, const SmallVectorImpl<int> *PtrPartition) const {
-  Instruction *tnullptr = nullptr;
   if (!PtrRtCheck.Need)
-    return std::pair<Instruction *, Instruction *>(tnullptr, tnullptr);
+    return std::make_pair(nullptr, nullptr);
 
   unsigned NumPointers = PtrRtCheck.Pointers.size();
   SmallVector<TrackingVH<Value> , 2> Starts;
@@ -1276,6 +1290,9 @@ std::pair<Instruction *, Instruction *> LoopAccessInfo::addRuntimeCheck(
     }
   }
 
+  if (!MemoryRuntimeCheck)
+    return std::make_pair(nullptr, nullptr);
+
   // We have to do this trickery because the IRBuilder might fold the check to a
   // constant expression in which case there is no Instruction anchored in a
   // the block.
@@ -1293,18 +1310,23 @@ LoopAccessInfo::LoopAccessInfo(Loop *L, ScalarEvolution *SE,
                                const ValueToValueMap &Strides)
     : DepChecker(SE, L), NumComparisons(0), TheLoop(L), SE(SE), DL(DL),
       TLI(TLI), AA(AA), DT(DT), NumLoads(0), NumStores(0),
-      MaxSafeDepDistBytes(-1U), CanVecMem(false) {
+      MaxSafeDepDistBytes(-1U), CanVecMem(false),
+      StoreToLoopInvariantAddress(false) {
   if (canAnalyzeLoop())
     analyzeLoop(Strides);
 }
 
 void LoopAccessInfo::print(raw_ostream &OS, unsigned Depth) const {
   if (CanVecMem) {
-    if (PtrRtCheck.empty())
-      OS.indent(Depth) << "Memory dependences are safe\n";
-    else
+    if (PtrRtCheck.Need)
       OS.indent(Depth) << "Memory dependences are safe with run-time checks\n";
+    else
+      OS.indent(Depth) << "Memory dependences are safe\n";
   }
+
+  OS.indent(Depth) << "Store to invariant address was "
+                   << (StoreToLoopInvariantAddress ? "" : "not ")
+                   << "found in loop.\n";
 
   if (Report)
     OS.indent(Depth) << "Report: " << Report->str() << "\n";

@@ -38,7 +38,6 @@
 #include "llvm/MC/SubtargetFeature.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
-#include "llvm/Support/FormattedStream.h"
 #include "llvm/Support/Host.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Signals.h"
@@ -71,7 +70,7 @@ LTOCodeGenerator::LTOCodeGenerator()
 
 LTOCodeGenerator::LTOCodeGenerator(std::unique_ptr<LLVMContext> Context)
     : OwnedContext(std::move(Context)), Context(*OwnedContext),
-      IRLinker(new Module("ld-temp.o", *OwnedContext)) {
+      IRLinker(new Module("ld-temp.o", *OwnedContext)), OptLevel(2) {
   initialize();
 }
 
@@ -83,6 +82,7 @@ void LTOCodeGenerator::initialize() {
   DiagHandler = nullptr;
   DiagContext = nullptr;
   OwnedModule = nullptr;
+  ShouldInternalize = true;
 
   initializeLTOPasses();
 }
@@ -215,7 +215,8 @@ bool LTOCodeGenerator::writeMergedModules(const char *path,
   }
 
   // write bitcode to it
-  WriteBitcodeToFile(IRLinker.getModule(), Out.os());
+  WriteBitcodeToFile(IRLinker.getModule(), Out.os(),
+                     /* ShouldPreserveUseListOrder */ true);
   Out.os().close();
 
   if (Out.os().has_error()) {
@@ -291,12 +292,11 @@ const void *LTOCodeGenerator::compileOptimized(size_t *length,
 
 
 bool LTOCodeGenerator::compile_to_file(const char **name,
-                                       bool disableOpt,
                                        bool disableInline,
                                        bool disableGVNLoadPRE,
                                        bool disableVectorization,
                                        std::string &errMsg) {
-  if (!optimize(disableOpt, disableInline, disableGVNLoadPRE,
+  if (!optimize(disableInline, disableGVNLoadPRE,
                 disableVectorization, errMsg))
     return false;
 
@@ -304,12 +304,11 @@ bool LTOCodeGenerator::compile_to_file(const char **name,
 }
 
 const void* LTOCodeGenerator::compile(size_t *length,
-                                      bool disableOpt,
                                       bool disableInline,
                                       bool disableGVNLoadPRE,
                                       bool disableVectorization,
                                       std::string &errMsg) {
-  if (!optimize(disableOpt, disableInline, disableGVNLoadPRE,
+  if (!optimize(disableInline, disableGVNLoadPRE,
                 disableVectorization, errMsg))
     return nullptr;
 
@@ -363,9 +362,25 @@ bool LTOCodeGenerator::determineTarget(std::string &errMsg) {
       MCpu = "cyclone";
   }
 
+  CodeGenOpt::Level CGOptLevel;
+  switch (OptLevel) {
+  case 0:
+    CGOptLevel = CodeGenOpt::None;
+    break;
+  case 1:
+    CGOptLevel = CodeGenOpt::Less;
+    break;
+  case 2:
+    CGOptLevel = CodeGenOpt::Default;
+    break;
+  case 3:
+    CGOptLevel = CodeGenOpt::Aggressive;
+    break;
+  }
+
   TargetMach = march->createTargetMachine(TripleStr, MCpu, FeatureStr, Options,
                                           RelocModel, CodeModel::Default,
-                                          CodeGenOpt::Aggressive);
+                                          CGOptLevel);
   return true;
 }
 
@@ -450,14 +465,13 @@ static void accumulateAndSortLibcalls(std::vector<StringRef> &Libcalls,
 }
 
 void LTOCodeGenerator::applyScopeRestrictions() {
-  if (ScopeRestrictionsDone)
+  if (ScopeRestrictionsDone || !ShouldInternalize)
     return;
   Module *mergedModule = IRLinker.getModule();
 
   // Start off with a verification pass.
   legacy::PassManager passes;
   passes.add(createVerifierPass());
-  passes.add(createDebugInfoVerifierPass());
 
   // mark which symbols can not be internalized
   Mangler Mangler(TargetMach->getDataLayout());
@@ -512,8 +526,7 @@ void LTOCodeGenerator::applyScopeRestrictions() {
 }
 
 /// Optimize merged modules using various IPO passes
-bool LTOCodeGenerator::optimize(bool DisableOpt,
-                                bool DisableInline,
+bool LTOCodeGenerator::optimize(bool DisableInline,
                                 bool DisableGVNLoadPRE,
                                 bool DisableVectorization,
                                 std::string &errMsg) {
@@ -542,8 +555,7 @@ bool LTOCodeGenerator::optimize(bool DisableOpt,
   if (!DisableInline)
     PMB.Inliner = createFunctionInliningPass();
   PMB.LibraryInfo = new TargetLibraryInfoImpl(TargetTriple);
-  if (DisableOpt)
-    PMB.OptLevel = 0;
+  PMB.OptLevel = OptLevel;
   PMB.VerifyInput = true;
   PMB.VerifyOutput = true;
 
@@ -555,24 +567,20 @@ bool LTOCodeGenerator::optimize(bool DisableOpt,
   return true;
 }
 
-bool LTOCodeGenerator::compileOptimized(raw_ostream &out, std::string &errMsg) {
+bool LTOCodeGenerator::compileOptimized(raw_pwrite_stream &out,
+                                        std::string &errMsg) {
   if (!this->determineTarget(errMsg))
     return false;
 
   Module *mergedModule = IRLinker.getModule();
 
-  // Mark which symbols can not be internalized
-  this->applyScopeRestrictions();
-
   legacy::PassManager codeGenPasses;
-
-  formatted_raw_ostream Out(out);
 
   // If the bitcode files contain ARC code and were compiled with optimization,
   // the ObjCARCContractPass must be run, so do it unconditionally here.
   codeGenPasses.add(createObjCARCContractPass());
 
-  if (TargetMach->addPassesToEmitFile(codeGenPasses, Out,
+  if (TargetMach->addPassesToEmitFile(codeGenPasses, out,
                                       TargetMachine::CGFT_ObjectFile)) {
     errMsg = "target file type not supported";
     return false;

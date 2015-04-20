@@ -898,6 +898,9 @@ SDNode *SystemZDAGToDAGISel::tryRISBGZero(SDNode *N) {
   }  
 
   unsigned Opcode = SystemZ::RISBG;
+  // Prefer RISBGN if available, since it does not clobber CC.
+  if (Subtarget->hasMiscellaneousExtensions())
+    Opcode = SystemZ::RISBGN;
   EVT OpcodeVT = MVT::i64;
   if (VT == MVT::i32 && Subtarget->hasHighWord()) {
     Opcode = SystemZ::RISBMux;
@@ -945,9 +948,13 @@ SDNode *SystemZDAGToDAGISel::tryRxSBG(SDNode *N, unsigned Opcode) {
 
   // See whether we can avoid an AND in the first operand by converting
   // ROSBG to RISBG.
-  if (Opcode == SystemZ::ROSBG && detectOrAndInsertion(Op0, RxSBG[I].Mask))
+  if (Opcode == SystemZ::ROSBG && detectOrAndInsertion(Op0, RxSBG[I].Mask)) {
     Opcode = SystemZ::RISBG;
-           
+    // Prefer RISBGN if available, since it does not clobber CC.
+    if (Subtarget->hasMiscellaneousExtensions())
+      Opcode = SystemZ::RISBGN;
+  }
+
   EVT VT = N->getValueType(0);
   SDValue Ops[5] = {
     convertTo(SDLoc(N), MVT::i64, Op0),
@@ -1131,17 +1138,27 @@ bool SystemZDAGToDAGISel::
 SelectInlineAsmMemoryOperand(const SDValue &Op,
                              unsigned ConstraintID,
                              std::vector<SDValue> &OutOps) {
-  assert(ConstraintID == InlineAsm::Constraint_m &&
-         "Unexpected constraint code");
-  // Accept addresses with short displacements, which are compatible
-  // with Q, R, S and T.  But keep the index operand for future expansion.
-  SDValue Base, Disp, Index;
-  if (!selectBDXAddr(SystemZAddressingMode::FormBD,
-                     SystemZAddressingMode::Disp12Only,
-                     Op, Base, Disp, Index))
-    return true;
-  OutOps.push_back(Base);
-  OutOps.push_back(Disp);
-  OutOps.push_back(Index);
-  return false;
+  switch(ConstraintID) {
+  default:
+    llvm_unreachable("Unexpected asm memory constraint");
+  case InlineAsm::Constraint_i:
+  case InlineAsm::Constraint_m:
+  case InlineAsm::Constraint_Q:
+  case InlineAsm::Constraint_R:
+  case InlineAsm::Constraint_S:
+  case InlineAsm::Constraint_T:
+    // Accept addresses with short displacements, which are compatible
+    // with Q, R, S and T.  But keep the index operand for future expansion.
+    SDValue Base, Disp, Index;
+    if (selectBDXAddr(SystemZAddressingMode::FormBD,
+                      SystemZAddressingMode::Disp12Only,
+                      Op, Base, Disp, Index)) {
+      OutOps.push_back(Base);
+      OutOps.push_back(Disp);
+      OutOps.push_back(Index);
+      return false;
+    }
+    break;
+  }
+  return true;
 }

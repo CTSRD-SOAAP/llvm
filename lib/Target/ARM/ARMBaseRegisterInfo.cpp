@@ -245,11 +245,15 @@ ARMBaseRegisterInfo::getRegAllocationHints(unsigned VirtReg,
   // This register should preferably be even (Odd == 0) or odd (Odd == 1).
   // Check if the other part of the pair has already been assigned, and provide
   // the paired register as the first hint.
+  unsigned Paired = Hint.second;
+  if (Paired == 0)
+    return;
+
   unsigned PairedPhys = 0;
-  if (VRM && VRM->hasPhys(Hint.second)) {
-    PairedPhys = getPairedGPR(VRM->getPhys(Hint.second), Odd, this);
-    if (PairedPhys && MRI.isReserved(PairedPhys))
-      PairedPhys = 0;
+  if (TargetRegisterInfo::isPhysicalRegister(Paired)) {
+    PairedPhys = Paired;
+  } else if (VRM && VRM->hasPhys(Paired)) {
+    PairedPhys = getPairedGPR(VRM->getPhys(Paired), Odd, this);
   }
 
   // First prefer the paired physreg.
@@ -284,9 +288,14 @@ ARMBaseRegisterInfo::updateRegAllocHint(unsigned Reg, unsigned NewReg,
     // change.
     unsigned OtherReg = Hint.second;
     Hint = MRI->getRegAllocationHint(OtherReg);
-    if (Hint.second == Reg)
-      // Make sure the pair has not already divorced.
+    // Make sure the pair has not already divorced.
+    if (Hint.second == Reg) {
       MRI->setRegAllocationHint(OtherReg, Hint.first, NewReg);
+      if (TargetRegisterInfo::isVirtualRegister(NewReg))
+        MRI->setRegAllocationHint(NewReg,
+            Hint.first == (unsigned)ARMRI::RegPairOdd ? ARMRI::RegPairEven
+            : ARMRI::RegPairOdd, OtherReg);
+    }
   }
 }
 
@@ -524,7 +533,6 @@ needsFrameBaseReg(MachineInstr *MI, int64_t Offset) const {
   // The incoming offset is relating to the SP at the start of the function,
   // but when we access the local it'll be relative to the SP after local
   // allocation, so adjust our SP-relative offset by that allocation size.
-  Offset = -Offset;
   Offset += MFI->getLocalFrameSize();
   // Assume that we'll have at least some spill slots allocated.
   // FIXME: This is a total SWAG number. We should run some statistics
@@ -537,9 +545,8 @@ needsFrameBaseReg(MachineInstr *MI, int64_t Offset) const {
   // on whether there are any local variables that would trigger it.
   unsigned StackAlign = TFI->getStackAlignment();
   if (TFI->hasFP(MF) && 
-      (MI->getDesc().TSFlags & ARMII::AddrModeMask) != ARMII::AddrModeT1_s &&
       !((MFI->getLocalFrameMaxAlign() > StackAlign) && canRealignStack(MF))) {
-    if (isFrameOffsetLegal(MI, FPOffset))
+    if (isFrameOffsetLegal(MI, getFrameRegister(MF), FPOffset))
       return false;
   }
   // If we can reference via the stack pointer, try that.
@@ -547,7 +554,7 @@ needsFrameBaseReg(MachineInstr *MI, int64_t Offset) const {
   //        to only disallow SP relative references in the live range of
   //        the VLA(s). In practice, it's unclear how much difference that
   //        would make, but it may be worth doing.
-  if (!MFI->hasVarSizedObjects() && isFrameOffsetLegal(MI, Offset))
+  if (!MFI->hasVarSizedObjects() && isFrameOffsetLegal(MI, ARM::SP, Offset))
     return false;
 
   // The offset likely isn't legal, we want to allocate a virtual base register.
@@ -610,7 +617,7 @@ void ARMBaseRegisterInfo::resolveFrameIndex(MachineInstr &MI, unsigned BaseReg,
   (void)Done;
 }
 
-bool ARMBaseRegisterInfo::isFrameOffsetLegal(const MachineInstr *MI,
+bool ARMBaseRegisterInfo::isFrameOffsetLegal(const MachineInstr *MI, unsigned BaseReg,
                                              int64_t Offset) const {
   const MCInstrDesc &Desc = MI->getDesc();
   unsigned AddrMode = (Desc.TSFlags & ARMII::AddrModeMask);
@@ -654,7 +661,7 @@ bool ARMBaseRegisterInfo::isFrameOffsetLegal(const MachineInstr *MI,
     NumBits = 8;
     break;
   case ARMII::AddrModeT1_s:
-    NumBits = 8;
+    NumBits = (BaseReg == ARM::SP ? 8 : 5);
     Scale = 4;
     isSigned = false;
     break;

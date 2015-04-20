@@ -31,7 +31,9 @@ class MCSubtargetInfo;
 class MCTargetStreamer;
 class StringRef;
 class Target;
+class Triple;
 class raw_ostream;
+class raw_pwrite_stream;
 
 extern Target TheAArch64leTarget;
 extern Target TheAArch64beTarget;
@@ -47,16 +49,22 @@ MCAsmBackend *createAArch64beAsmBackend(const Target &T,
                                         const MCRegisterInfo &MRI, StringRef TT,
                                         StringRef CPU);
 
-MCObjectWriter *createAArch64ELFObjectWriter(raw_ostream &OS, uint8_t OSABI,
+MCObjectWriter *createAArch64ELFObjectWriter(raw_pwrite_stream &OS,
+                                             uint8_t OSABI,
                                              bool IsLittleEndian);
 
-MCObjectWriter *createAArch64MachObjectWriter(raw_ostream &OS, uint32_t CPUType,
-                                            uint32_t CPUSubtype);
+MCObjectWriter *createAArch64MachObjectWriter(raw_pwrite_stream &OS,
+                                              uint32_t CPUType,
+                                              uint32_t CPUSubtype);
 
 MCTargetStreamer *createAArch64AsmTargetStreamer(MCStreamer &S,
                                                  formatted_raw_ostream &OS,
                                                  MCInstPrinter *InstPrint,
                                                  bool isVerboseAsm);
+
+MCTargetStreamer *createAArch64ObjectTargetStreamer(MCStreamer &S,
+                                                    const MCSubtargetInfo &STI);
+
 } // End llvm namespace
 
 // Defines symbolic names for AArch64 registers.  This defines a mapping from

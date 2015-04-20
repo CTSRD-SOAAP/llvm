@@ -87,6 +87,11 @@ EnableGEPOpt("aarch64-gep-opt", cl::Hidden,
              cl::desc("Enable optimizations on complex GEPs"),
              cl::init(true));
 
+// FIXME: Unify control over GlobalMerge.
+static cl::opt<cl::boolOrDefault>
+EnableGlobalMerge("aarch64-global-merge", cl::Hidden,
+                  cl::desc("Enable the global merge pass"));
+
 extern "C" void LLVMInitializeAArch64Target() {
   // Register the target.
   RegisterTargetMachine<AArch64leTargetMachine> X(TheAArch64leTarget);
@@ -127,8 +132,6 @@ AArch64TargetMachine::AArch64TargetMachine(const Target &T, StringRef TT,
     : LLVMTargetMachine(T, computeDataLayout(TT, LittleEndian), TT, CPU, FS,
                         Options, RM, CM, OL),
       TLOF(createTLOF(Triple(getTargetTriple()))),
-      RI(TT),
-      Subtarget(TT, CPU, FS, *this, LittleEndian),
       isLittle(LittleEndian) {
   initAsmInfo();
 }
@@ -247,7 +250,9 @@ bool AArch64PassConfig::addPreISel() {
   // FIXME: On AArch64, this depends on the type.
   // Basically, the addressable offsets are up to 4095 * Ty.getSizeInBytes().
   // and the offset has to be a multiple of the related size in bytes.
-  if (TM->getOptLevel() != CodeGenOpt::None)
+  if ((TM->getOptLevel() == CodeGenOpt::Aggressive &&
+       EnableGlobalMerge == cl::BOU_UNSET) ||
+      EnableGlobalMerge == cl::BOU_TRUE)
     addPass(createGlobalMergePass(TM, 4095));
   if (TM->getOptLevel() != CodeGenOpt::None)
     addPass(createAArch64AddressTypePromotionPass());
