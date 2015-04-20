@@ -44,6 +44,9 @@ OutputFilename("o", cl::desc("Override output filename"), cl::init("-"),
 static cl::opt<bool>
 Force("f", cl::desc("Enable binary output on terminals"));
 
+static cl::list<std::string>
+SharedLibraries("l", cl::Prefix, cl::desc("Shared libraries to be linked"), cl::value_desc("library"));
+
 static cl::opt<bool>
 OutputAssembly("S",
          cl::desc("Write output as LLVM assembly"), cl::Hidden);
@@ -64,7 +67,7 @@ static MDNode* LibraryMetadata = nullptr;
 // link path for the specified file to try to find it...
 //
 static std::unique_ptr<Module>
-loadFile(const char *argv0, const std::string &FN, LLVMContext &Context) {
+loadFile(const char *argv0, StringRef FN, LLVMContext &Context) {
   SMDiagnostic Err;
   if (Verbose) errs() << "Loading '" << FN << "'\n";
   std::unique_ptr<Module> Result = getLazyIRFileModule(FN, Err, Context);
@@ -155,19 +158,44 @@ int main(int argc, char **argv) {
   auto Composite = make_unique<Module>(ModuleID, Context);
   Linker L(Composite.get(), diagnosticHandler);
 
+  std::vector<Metadata*> SharedLibsMD;
   for (unsigned i = 0; i < InputFilenames.size(); ++i) {
-    std::unique_ptr<Module> M = loadFile(argv[0], InputFilenames[i], Context);
+    StringRef InputFilename = InputFilenames[i];
+    // don't link in shared libraries since that will result in duplicate symbols
+    // when creating a binary that links to libfoo.so.bc and libbar.so.bc since
+    // both of those libraries will also link libc.so.bc
+    // Apart from file names ending in .so.bc this also includes versioned libraries such as
+    // for example libfoo.so.bc.4.2.1
+    if (InputFilename.endswith(".so.bc") || InputFilename.rfind(".so.bc.") != StringRef::npos) {
+      if (Verbose) llvm::errs() << "Adding dependency on shared bitcode library "
+                                << sys::path::filename(InputFilename) << '\n';
+      SharedLibsMD.push_back(MDString::get(Context, sys::path::filename(InputFilename)));
+      continue;
+    }
+
+    std::unique_ptr<Module> M = loadFile(argv[0], InputFilename, Context);
     if (!M.get()) {
-      errs() << argv[0] << ": error loading file '" <<InputFilenames[i]<< "'\n";
+      errs() << argv[0] << ": error loading file '" << InputFilename << "'\n";
       return 1;
     }
 
-    if (Verbose) errs() << "Linking in '" << InputFilenames[i] << "'\n";
+    if (Verbose) errs() << "Linking in '" << InputFilename << "'\n";
 
     if (L.linkInModule(M.get()))
       return 1;
 
     linkInLibraryMetadata(M.get(), Composite.get());
+  }
+
+  for (const std::string& Lib : SharedLibraries) {
+    if (Verbose) llvm::errs() << "Adding dependency on shared bitcode library lib" << sys::path::filename(Lib) << '\n';
+    SharedLibsMD.push_back(MDString::get(Context, "lib" + Lib));
+  }
+
+  if (!SharedLibsMD.empty()) {
+    NamedMDNode* NMD = Composite->getOrInsertNamedMetadata("llvm.sharedlibs");
+    assert(NMD);
+    NMD->addOperand(MDTuple::get(Context, SharedLibsMD));
   }
 
   if (DumpAsm) errs() << "Here's the assembly:\n" << *Composite;
