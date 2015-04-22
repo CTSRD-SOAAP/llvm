@@ -182,7 +182,7 @@ static bool linkFiles(const char *argv0, LLVMContext &Context, Linker &L,
     if (L.linkInModule(M.get(), OverrideDuplicateSymbols))
       return false;
     
-    linkInLibraryMetadata(M.get(), Composite.get());
+    linkInLibraryMetadata(M.get(), L.getModule());
   }
 
   return true;
