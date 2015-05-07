@@ -54,6 +54,10 @@ static cl::list<std::string>
 SharedLibraries("l", cl::Prefix, cl::desc("Shared libraries to be linked"), cl::value_desc("library"));
 
 static cl::opt<bool>
+InsertLibraryMetadata("libmd",
+                      cl::desc("Insert library metadata"));
+
+static cl::opt<bool>
 OutputAssembly("S",
          cl::desc("Write output as LLVM assembly"), cl::Hidden);
 
@@ -182,7 +186,9 @@ static bool linkFiles(const char *argv0, LLVMContext &Context, Linker &L,
     if (L.linkInModule(M.get(), OverrideDuplicateSymbols))
       return false;
     
-    linkInLibraryMetadata(M.get(), L.getModule());
+    if (InsertLibraryMetadata) {
+      linkInLibraryMetadata(M.get(), L.getModule());
+    }
   }
 
   return true;
