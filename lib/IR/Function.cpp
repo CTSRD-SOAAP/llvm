@@ -117,6 +117,12 @@ uint64_t Argument::getDereferenceableBytes() const {
   return getParent()->getDereferenceableBytes(getArgNo()+1);
 }
 
+uint64_t Argument::getDereferenceableOrNullBytes() const {
+  assert(getType()->isPointerTy() &&
+         "Only pointers have dereferenceable bytes");
+  return getParent()->getDereferenceableOrNullBytes(getArgNo()+1);
+}
+
 /// hasNestAttr - Return true if this argument has the nest attribute on
 /// it in its containing function.
 bool Argument::hasNestAttr() const {
@@ -206,10 +212,12 @@ void Argument::removeAttr(AttributeSet AS) {
 //===----------------------------------------------------------------------===//
 
 bool Function::isMaterializable() const {
-  return getGlobalObjectSubClassData();
+  return getGlobalObjectSubClassData() & IsMaterializableBit;
 }
 
-void Function::setIsMaterializable(bool V) { setGlobalObjectSubClassData(V); }
+void Function::setIsMaterializable(bool V) {
+  setGlobalObjectBit(IsMaterializableBit, V);
+}
 
 LLVMContext &Function::getContext() const {
   return getType()->getContext();
@@ -244,7 +252,7 @@ Function::Function(FunctionType *Ty, LinkageTypes Linkage, const Twine &name,
       Ty(Ty) {
   assert(FunctionType::isValidReturnType(getReturnType()) &&
          "invalid return type");
-  setIsMaterializable(false);
+  setGlobalObjectSubClassData(0);
   SymTab = new ValueSymbolTable();
 
   // If the function has arguments, mark them as lazily built.
@@ -322,6 +330,9 @@ void Function::dropAllReferences() {
   // Prefix and prologue data are stored in a side table.
   setPrefixData(nullptr);
   setPrologueData(nullptr);
+
+  // Metadata is stored in a side-table.
+  clearMetadata();
 }
 
 void Function::addAttribute(unsigned i, Attribute::AttrKind attr) {
@@ -963,4 +974,17 @@ void Function::setPrologueData(Constant *PrologueData) {
     PDData &= ~(1<<2);
   }
   setValueSubclassData(PDData);
+}
+
+void llvm::overrideFunctionAttribute(StringRef Kind, StringRef Value,
+                                     Function &F) {
+  auto &Ctx = F.getContext();
+  AttributeSet Attrs = F.getAttributes(), AttrsToRemove;
+
+  AttrsToRemove =
+      AttrsToRemove.addAttribute(Ctx, AttributeSet::FunctionIndex, Kind);
+  Attrs = Attrs.removeAttributes(Ctx, AttributeSet::FunctionIndex,
+                                 AttrsToRemove);
+  Attrs = Attrs.addAttribute(Ctx, AttributeSet::FunctionIndex, Kind, Value);
+  F.setAttributes(Attrs);
 }

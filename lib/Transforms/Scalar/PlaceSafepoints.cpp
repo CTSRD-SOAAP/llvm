@@ -430,6 +430,13 @@ static Instruction *findLocationForEntrySafepoint(Function &F,
         if (II->getIntrinsicID() == Intrinsic::assume) {
           continue;
         }
+        // llvm.frameescape() intrinsic is not a real call. The intrinsic can 
+        // exist only in the entry block.
+        // Inserting a statepoint before llvm.frameescape() may split the 
+        // entry block, and push the intrinsic out of the entry block.
+        if (II->getIntrinsicID() == Intrinsic::frameescape) {
+          continue;
+        }
       }
       break;
     }
@@ -448,10 +455,9 @@ static Instruction *findLocationForEntrySafepoint(Function &F,
   // Note: SplitBlock modifies the DT.  Simply passing a Pass (which is a
   // module pass) is not enough.
   DT.recalculate(F);
-#ifndef NDEBUG
+
   // SplitBlock updates the DT
-  DT.verifyDomTree();
-#endif
+  DEBUG(DT.verifyDomTree());
 
   return BB->getTerminator();
 }
@@ -876,111 +882,81 @@ static Value *ReplaceWithStatepoint(const CallSite &CS, /* to replace */
   // immediately before the previous instruction under the assumption that all
   // arguments will be available here.  We can't insert afterwards since we may
   // be replacing a terminator.
-  Instruction *insertBefore = CS.getInstruction();
-  IRBuilder<> Builder(insertBefore);
+  IRBuilder<> Builder(CS.getInstruction());
 
   // Note: The gc args are not filled in at this time, that's handled by
   // RewriteStatepointsForGC (which is currently under review).
 
   // Create the statepoint given all the arguments
-  Instruction *token = nullptr;
-  AttributeSet return_attributes;
+  Instruction *Token = nullptr;
+  AttributeSet OriginalAttrs;
+
   if (CS.isCall()) {
-    CallInst *toReplace = cast<CallInst>(CS.getInstruction());
-    CallInst *Call = Builder.CreateGCStatepoint(
+    CallInst *ToReplace = cast<CallInst>(CS.getInstruction());
+    CallInst *Call = Builder.CreateGCStatepointCall(
         CS.getCalledValue(), makeArrayRef(CS.arg_begin(), CS.arg_end()), None,
         None, "safepoint_token");
-    Call->setTailCall(toReplace->isTailCall());
-    Call->setCallingConv(toReplace->getCallingConv());
+    Call->setTailCall(ToReplace->isTailCall());
+    Call->setCallingConv(ToReplace->getCallingConv());
 
     // Before we have to worry about GC semantics, all attributes are legal
-    AttributeSet new_attrs = toReplace->getAttributes();
-    // In case if we can handle this set of sttributes - set up function attrs
-    // directly on statepoint and return attrs later for gc_result intrinsic.
-    Call->setAttributes(new_attrs.getFnAttributes());
-    return_attributes = new_attrs.getRetAttributes();
     // TODO: handle param attributes
+    OriginalAttrs = ToReplace->getAttributes();
 
-    token = Call;
+    // In case if we can handle this set of attributes - set up function
+    // attributes directly on statepoint and return attributes later for
+    // gc_result intrinsic.
+    Call->setAttributes(OriginalAttrs.getFnAttributes());
+
+    Token = Call;
 
     // Put the following gc_result and gc_relocate calls immediately after the
-    // the old call (which we're about to delete)
-    BasicBlock::iterator next(toReplace);
-    assert(BB->end() != next && "not a terminator, must have next");
-    next++;
-    Instruction *IP = &*(next);
-    Builder.SetInsertPoint(IP);
-    Builder.SetCurrentDebugLocation(IP->getDebugLoc());
-
+    // the old call (which we're about to delete).
+    assert(ToReplace->getNextNode() && "not a terminator, must have next");
+    Builder.SetInsertPoint(ToReplace->getNextNode());
+    Builder.SetCurrentDebugLocation(ToReplace->getNextNode()->getDebugLoc());
   } else if (CS.isInvoke()) {
-    // TODO: make CreateGCStatepoint return an Instruction that we can cast to a
-    // Call or Invoke, instead of doing this junk here.
-
-    // Fill in the one generic type'd argument (the function is also
-    // vararg)
-    std::vector<Type *> argTypes;
-    argTypes.push_back(CS.getCalledValue()->getType());
-
-    Function *gc_statepoint_decl = Intrinsic::getDeclaration(
-        M, Intrinsic::experimental_gc_statepoint, argTypes);
-
-    // First, create the statepoint (with all live ptrs as arguments).
-    std::vector<llvm::Value *> args;
-    // target, #call args, unused, ... call parameters, #deopt args, ... deopt
-    // parameters, ... gc parameters
-    Value *Target = CS.getCalledValue();
-    args.push_back(Target);
-    int callArgSize = CS.arg_size();
-    // #call args
-    args.push_back(Builder.getInt32(callArgSize));
-    // unused
-    args.push_back(Builder.getInt32(0));
-    // call parameters
-    args.insert(args.end(), CS.arg_begin(), CS.arg_end());
-    // #deopt args: 0
-    args.push_back(Builder.getInt32(0));
-
-    InvokeInst *toReplace = cast<InvokeInst>(CS.getInstruction());
+    InvokeInst *ToReplace = cast<InvokeInst>(CS.getInstruction());
 
     // Insert the new invoke into the old block.  We'll remove the old one in a
     // moment at which point this will become the new terminator for the
     // original block.
-    InvokeInst *invoke = InvokeInst::Create(
-        gc_statepoint_decl, toReplace->getNormalDest(),
-        toReplace->getUnwindDest(), args, "", toReplace->getParent());
-    invoke->setCallingConv(toReplace->getCallingConv());
+    Builder.SetInsertPoint(ToReplace->getParent());
+    InvokeInst *Invoke = Builder.CreateGCStatepointInvoke(
+        CS.getCalledValue(), ToReplace->getNormalDest(),
+        ToReplace->getUnwindDest(), makeArrayRef(CS.arg_begin(), CS.arg_end()),
+        Builder.getInt32(0), None, "safepoint_token");
 
     // Currently we will fail on parameter attributes and on certain
     // function attributes.
-    AttributeSet new_attrs = toReplace->getAttributes();
-    // In case if we can handle this set of sttributes - set up function attrs
-    // directly on statepoint and return attrs later for gc_result intrinsic.
-    invoke->setAttributes(new_attrs.getFnAttributes());
-    return_attributes = new_attrs.getRetAttributes();
+    OriginalAttrs = ToReplace->getAttributes();
 
-    token = invoke;
+    // In case if we can handle this set of attributes - set up function
+    // attributes directly on statepoint and return attributes later for
+    // gc_result intrinsic.
+    Invoke->setAttributes(OriginalAttrs.getFnAttributes());
+
+    Token = Invoke;
 
     // We'll insert the gc.result into the normal block
-    BasicBlock *normalDest = normalizeBBForInvokeSafepoint(
-        toReplace->getNormalDest(), invoke->getParent());
-    Instruction *IP = &*(normalDest->getFirstInsertionPt());
-    Builder.SetInsertPoint(IP);
+    BasicBlock *NormalDest = normalizeBBForInvokeSafepoint(
+        ToReplace->getNormalDest(), Invoke->getParent());
+    Builder.SetInsertPoint(NormalDest->getFirstInsertionPt());
   } else {
     llvm_unreachable("unexpect type of CallSite");
   }
-  assert(token);
+  assert(Token);
 
   // Handle the return value of the original call - update all uses to use a
   // gc_result hanging off the statepoint node we just inserted
 
   // Only add the gc_result iff there is actually a used result
   if (!CS.getType()->isVoidTy() && !CS.getInstruction()->use_empty()) {
-    std::string takenName =
-      CS.getInstruction()->hasName() ? CS.getInstruction()->getName() : "";
-    CallInst *gc_result =
-        Builder.CreateGCResult(token, CS.getType(), takenName);
-    gc_result->setAttributes(return_attributes);
-    return gc_result;
+    std::string TakenName =
+        CS.getInstruction()->hasName() ? CS.getInstruction()->getName() : "";
+    CallInst *GCResult = Builder.CreateGCResult(Token, CS.getType(), TakenName);
+    GCResult->setAttributes(OriginalAttrs.getRetAttributes());
+    return GCResult;
   } else {
     // No return value for the call.
     return nullptr;

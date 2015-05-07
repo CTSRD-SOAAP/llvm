@@ -4,7 +4,7 @@
 #include <cstring>
 #include <cstdio>
 
-extern "C" void TestOneInput(const uint8_t *Data, size_t Size) {
+extern "C" void LLVMFuzzerTestOneInput(const uint8_t *Data, size_t Size) {
   if (Size < 14) return;
   uint64_t x = 0;
   int64_t  y = 0;
@@ -23,7 +23,7 @@ extern "C" void TestOneInput(const uint8_t *Data, size_t Size) {
       z >= -10005 &&
       z != -10003 &&
       a == 4242) {
-    fprintf(stderr, "Found the target: size %zd (%zd, %zd, %d, %d), exiting.\n",
+    fprintf(stderr, "BINGO; Found the target: size %zd (%zd, %zd, %d, %d), exiting.\n",
             Size, x, y, z, a);
     exit(1);
   }
