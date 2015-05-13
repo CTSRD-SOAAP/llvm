@@ -19,6 +19,7 @@
 #include "llvm/IR/IRPrintingPasses.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/Verifier.h"
 #include "llvm/IRReader/IRReader.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/Support/CommandLine.h"
@@ -252,6 +253,20 @@ int main(int argc, char **argv) {
         }
       }
     }
+    for (auto &A : M->aliases()) {
+      if (!GVSet.count(&A)) {
+        if (std::error_code EC = A.materialize()) {
+          errs() << argv[0] << ": error reading input: " << EC.message()
+                            << "\n";
+          return 1;
+        }
+      }
+    }
+    if (verifyModule(*M, &errs())) {
+      errs() << argv[0] << ": error: linked module is broken!\n";
+      return 1;
+    }
+    // TODO: aliases?
   }
 
   // In addition to deleting all other functions, we also want to spiff it
@@ -261,11 +276,12 @@ int main(int argc, char **argv) {
   std::vector<GlobalValue*> Gvs(GVs.begin(), GVs.end());
 
   Passes.add(createGVExtractionPass(Gvs, DeleteFn));
-  if (!DeleteFn)
+  if (!DeleteFn) {
     Passes.add(createGlobalDCEPass());           // Delete unreachable globals
-  Passes.add(createStripDeadDebugInfoPass());    // Remove dead debug info
-  Passes.add(createStripDeadPrototypesPass());   // Remove dead func decls
+    Passes.add(createStripDeadDebugInfoPass());    // Remove dead debug info
+    Passes.add(createStripDeadPrototypesPass());   // Remove dead func decls
 
+  }
   std::error_code EC;
   tool_output_file Out(OutputFilename, EC, sys::fs::F_None);
   if (EC) {
@@ -280,6 +296,11 @@ int main(int argc, char **argv) {
     Passes.add(createBitcodeWriterPass(Out.os(), PreserveBitcodeUseListOrder));
 
   Passes.run(*M.get());
+
+  if (verifyModule(*M, &errs())) {
+    errs() << argv[0] << ": error: linked module is broken!\n";
+    return 1;
+  }
 
   // Declare success.
   Out.keep();

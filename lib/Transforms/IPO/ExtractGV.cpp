@@ -25,10 +25,12 @@ using namespace llvm;
 /// being deleted from this module.
 /// This also makes sure GV cannot be dropped so that references from
 /// the split module remain valid.
-static void makeVisible(GlobalValue &GV, bool Delete) {
+static void makeVisible(GlobalValue &GV, bool Delete, bool IsDeletePass) {
   bool Local = GV.hasLocalLinkage();
   if (Local || Delete) {
-    GV.setLinkage(GlobalValue::ExternalLinkage);
+    // This changes members from private -> hidden -> causes linker errors when using llvm-link
+    if (!IsDeletePass)
+      GV.setLinkage(GlobalValue::ExternalLinkage);
     if (Local)
       GV.setVisibility(GlobalValue::HiddenVisibility);
     return;
@@ -91,7 +93,7 @@ namespace {
             continue;
         }
 
-        makeVisible(*I, Delete);
+        makeVisible(*I, Delete, deleteStuff);
 
         if (Delete)
           I->setInitializer(nullptr);
@@ -106,7 +108,7 @@ namespace {
             continue;
         }
 
-        makeVisible(*I, Delete);
+        makeVisible(*I, Delete, deleteStuff);
 
         if (Delete)
           I->deleteBody();
@@ -119,7 +121,7 @@ namespace {
         ++I;
 
         bool Delete = deleteStuff == (bool)Named.count(CurI);
-        makeVisible(*CurI, Delete);
+        makeVisible(*CurI, Delete, deleteStuff);
 
         if (Delete) {
           Type *Ty =  CurI->getType()->getElementType();
