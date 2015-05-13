@@ -32,6 +32,7 @@
 #include "llvm/Support/SystemUtils.h"
 #include "llvm/Support/ToolOutputFile.h"
 #include <memory>
+#include <unordered_set>
 using namespace llvm;
 
 static cl::list<std::string>
@@ -210,21 +211,6 @@ int main(int argc, char **argv) {
   auto Composite = make_unique<Module>(ModuleID, Context);
   Linker L(Composite.get(), diagnosticHandler);
 
-  std::vector<Metadata*> SharedLibsMD;
-  for (const std::string& Lib : SharedLibraries) {
-    if (Verbose) {
-      llvm::errs() << "Adding dependency on shared bitcode library lib"
-                   << sys::path::filename(Lib) << '\n';
-    }
-    SharedLibsMD.push_back(MDString::get(Context, "lib" + Lib));
-  }
-  
-  if (!SharedLibsMD.empty()) {
-    NamedMDNode* NMD = Composite->getOrInsertNamedMetadata("llvm.sharedlibs");
-    assert(NMD);
-    NMD->addOperand(MDTuple::get(Context, SharedLibsMD));
-  }
-  
   // First add all the regular input files
   if (!linkFiles(argv[0], Context, L, InputFilenames, false))
     return 1;
@@ -241,6 +227,43 @@ int main(int argc, char **argv) {
     errs() << EC.message() << '\n';
     return 1;
   }
+
+  // now add the shared library metadata (make sure we don't duplicate entries)
+  std::unordered_set<std::string> SharedLibsSet;
+  for (const std::string& Lib : SharedLibraries) {
+    if (Verbose) {
+      llvm::errs() << "Adding dependency on shared bitcode library lib"
+                   << sys::path::filename(Lib) << '\n';
+    }
+    SharedLibsSet.insert("lib" + Lib);
+  }
+  // make sure the shared libs metadata is a flat list of strings
+  NamedMDNode* NMD = Composite->getNamedMetadata("llvm.sharedlibs");
+  if (NMD) {
+    for (MDNode* Op : NMD->operands()) {
+      for (const MDOperand& M : Op->operands()) {
+        assert(isa<MDString>(M.get()));
+        SharedLibsSet.insert(cast<MDString>(M.get())->getString().str());
+      }
+    }
+    Composite->eraseNamedMetadata(NMD);
+  }
+  NMD = Composite->getOrInsertNamedMetadata("llvm.sharedlibs");
+  assert(NMD);
+  // TODO: remove those that were linked in
+  // the following is not correct since we should also remove elements
+  // when foo has "libc" in the metadata and we have libc.a.bc on the input command line
+  for (const auto I : InputFilenames) {
+    SharedLibsSet.erase(sys::path::filename(I).str());
+  }
+  for (const auto I : OverridingInputs) {
+    SharedLibsSet.erase(sys::path::filename(I).str());
+  }
+  llvm::SmallVector<Metadata*, 16> SharedLibsMD;
+  for (const std::string& s : SharedLibsSet) {
+    SharedLibsMD.push_back(MDString::get(Context, s));
+  }
+  NMD->addOperand(MDTuple::get(Context, SharedLibsMD));
 
   if (verifyModule(*Composite, &errs())) {
     errs() << argv[0] << ": error: linked module is broken!\n";
