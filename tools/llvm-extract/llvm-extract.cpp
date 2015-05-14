@@ -128,7 +128,7 @@ int main(int argc, char **argv) {
     if (!GA) {
       errs() << argv[0] << ": program doesn't contain alias named '"
              << ExtractAliases[i] << "'!\n";
-      return 1;
+      // return 1;
     }
     GVs.insert(GA);
   }
@@ -152,7 +152,7 @@ int main(int argc, char **argv) {
     if (!match) {
       errs() << argv[0] << ": program doesn't contain global named '"
              << ExtractRegExpAliases[i] << "'!\n";
-      return 1;
+      // return 1;
     }
   }
 
@@ -162,7 +162,7 @@ int main(int argc, char **argv) {
     if (!GV) {
       errs() << argv[0] << ": program doesn't contain global named '"
              << ExtractGlobals[i] << "'!\n";
-      return 1;
+      // return 1;
     }
     GVs.insert(GV);
   }
@@ -185,7 +185,7 @@ int main(int argc, char **argv) {
     if (!match) {
       errs() << argv[0] << ": program doesn't contain global named '"
              << ExtractRegExpGlobals[i] << "'!\n";
-      return 1;
+      // return 1;
     }
   }
 
@@ -195,7 +195,7 @@ int main(int argc, char **argv) {
     if (!GV) {
       errs() << argv[0] << ": program doesn't contain function named '"
              << ExtractFuncs[i] << "'!\n";
-      return 1;
+      // return 1;
     }
     GVs.insert(GV);
   }
@@ -219,7 +219,7 @@ int main(int argc, char **argv) {
     if (!match) {
       errs() << argv[0] << ": program doesn't contain global named '"
              << ExtractRegExpFuncs[i] << "'!\n";
-      return 1;
+      // return 1;
     }
   }
 
