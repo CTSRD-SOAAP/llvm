@@ -252,10 +252,17 @@ int main(int argc, char **argv) {
   // the following is not correct since we should also remove elements
   // when foo has "libc" in the metadata and we have libc.a.bc on the input command line
   for (const auto I : InputFilenames) {
-    SharedLibsSet.erase(sys::path::filename(I).str());
-  }
-  for (const auto I : OverridingInputs) {
-    SharedLibsSet.erase(sys::path::filename(I).str());
+    for (auto it = SharedLibsSet.begin(); it != SharedLibsSet.end(); ++it) {
+      const std::string LibName = it->substr(0, it->find('.'));
+      if (Verbose) errs() << "Base: " << LibName << " I:" << I << "\n";
+      if (sys::path::filename(I).startswith(LibName + ".so.")
+          || sys::path::filename(I).startswith(LibName + ".a.")) {
+        if (Verbose) errs() << "Removing '" << *it << "'' from shared libs since '"
+                            << I << "' is being linked in.\n";
+        SharedLibsSet.erase(it);
+        break;
+      }
+    }
   }
   llvm::SmallVector<Metadata*, 16> SharedLibsMD;
   for (const std::string& s : SharedLibsSet) {
