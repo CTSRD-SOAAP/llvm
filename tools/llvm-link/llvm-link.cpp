@@ -248,22 +248,43 @@ int main(int argc, char **argv) {
     }
     Composite->eraseNamedMetadata(NMD);
   }
-  // TODO: remove those that were linked in
-  // the following is not correct since we should also remove elements
-  // when foo has "libc" in the metadata and we have libc.a.bc on the input command line
+  NMD = Composite->getOrInsertNamedMetadata("llvm.sharedlibs");
+  assert(NMD);
+  // remove files that are being linked in from llvm.sharedLibs
   for (const auto I : InputFilenames) {
     for (auto it = SharedLibsSet.begin(); it != SharedLibsSet.end(); ++it) {
       const std::string LibName = it->substr(0, it->find('.'));
-      if (Verbose) errs() << "Base: " << LibName << " I:" << I << "\n";
       if (sys::path::filename(I).startswith(LibName + ".so.")
           || sys::path::filename(I).startswith(LibName + ".a.")) {
-        if (Verbose) errs() << "Removing '" << *it << "'' from shared libs since '"
+        if (Verbose) errs() << "Removing '" << *it << "' from shared libs since '"
                             << I << "' is being linked in.\n";
         SharedLibsSet.erase(it);
         break;
       }
     }
   }
+  if (auto LinkedLibsMD = Composite->getNamedMetadata("llvm.libs")) {
+    // also remove those that we have already linked in
+    for (const MDNode* N : LinkedLibsMD->operands()) {
+      if (const MDTuple* T = dyn_cast<MDTuple>(N)) {
+        if (const MDString* S = dyn_cast<MDString>(T->getOperand(0).get())) {
+          StringRef ExistingLib = S->getString();
+          for (auto it = SharedLibsSet.begin(); it != SharedLibsSet.end(); ++it) {
+            const std::string LibName = it->substr(0, it->find('.'));
+            if (sys::path::filename(ExistingLib).startswith(LibName + ".so.")
+                || sys::path::filename(ExistingLib).startswith(LibName + ".a.")) {
+              if (Verbose) errs() << "Removing '" << *it << "' from shared libs since '"
+                                  << ExistingLib << "' is already linked in.\n";
+              SharedLibsSet.erase(it);
+              break;
+            }
+          }
+        }
+      }
+    }
+  }
+
+
   llvm::SmallVector<Metadata*, 16> SharedLibsMD;
   for (const std::string& s : SharedLibsSet) {
     SharedLibsMD.push_back(MDString::get(Context, s));
