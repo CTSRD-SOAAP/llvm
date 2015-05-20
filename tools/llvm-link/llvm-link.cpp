@@ -250,10 +250,25 @@ int main(int argc, char **argv) {
   }
   NMD = Composite->getOrInsertNamedMetadata("llvm.sharedlibs");
   assert(NMD);
+  const auto getLibName = [](StringRef str) {
+    if (str.find('.') == StringRef::npos) {
+      return str;
+    }
+    auto n = str.find(".so");
+    if (n == StringRef::npos) {
+      n = str.find(".a");
+      if (n == StringRef::npos) {
+        if (Verbose) errs() << "llvm.sharedlibs contains qualified entry that "
+                               "contains neither '.so' nor '.a': " << str << "\n";
+      }
+    }
+    return str.substr(0, n);
+  };
+
   // remove files that are being linked in from llvm.sharedLibs
   for (const auto I : InputFilenames) {
     for (auto it = SharedLibsSet.begin(); it != SharedLibsSet.end(); ++it) {
-      const std::string LibName = it->substr(0, it->find('.'));
+      const std::string LibName = getLibName(*it).str();
       if (sys::path::filename(I).startswith(LibName + ".so.")
           || sys::path::filename(I).startswith(LibName + ".a.")) {
         if (Verbose) errs() << "Removing '" << *it << "' from shared libs since '"
@@ -270,7 +285,7 @@ int main(int argc, char **argv) {
         if (const MDString* S = dyn_cast<MDString>(T->getOperand(0).get())) {
           StringRef ExistingLib = S->getString();
           for (auto it = SharedLibsSet.begin(); it != SharedLibsSet.end(); ++it) {
-            const std::string LibName = it->substr(0, it->find('.'));
+            const std::string LibName = getLibName(*it).str();
             if (sys::path::filename(ExistingLib).startswith(LibName + ".so.")
                 || sys::path::filename(ExistingLib).startswith(LibName + ".a.")) {
               if (Verbose) errs() << "Removing '" << *it << "' from shared libs since '"
