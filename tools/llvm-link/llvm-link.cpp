@@ -248,8 +248,6 @@ int main(int argc, char **argv) {
     }
     Composite->eraseNamedMetadata(NMD);
   }
-  NMD = Composite->getOrInsertNamedMetadata("llvm.sharedlibs");
-  assert(NMD);
   // TODO: remove those that were linked in
   // the following is not correct since we should also remove elements
   // when foo has "libc" in the metadata and we have libc.a.bc on the input command line
@@ -263,7 +261,11 @@ int main(int argc, char **argv) {
   for (const std::string& s : SharedLibsSet) {
     SharedLibsMD.push_back(MDString::get(Context, s));
   }
-  NMD->addOperand(MDTuple::get(Context, SharedLibsMD));
+  if (!SharedLibsMD.empty()) {
+    NMD = Composite->getOrInsertNamedMetadata("llvm.sharedlibs");
+    assert(NMD);
+    NMD->addOperand(MDTuple::get(Context, SharedLibsMD));
+  }
 
   if (verifyModule(*Composite, &errs())) {
     errs() << argv[0] << ": error: linked module is broken!\n";
