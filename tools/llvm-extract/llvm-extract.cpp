@@ -124,13 +124,14 @@ int main(int argc, char **argv) {
 
   // Figure out which aliases we should extract.
   for (size_t i = 0, e = ExtractAliases.size(); i != e; ++i) {
-    GlobalAlias *GA = M->getNamedAlias(ExtractAliases[i]);
-    if (!GA) {
+    if (GlobalAlias *GA = M->getNamedAlias(ExtractAliases[i])) {
+      GVs.insert(GA);
+    }
+    else {
       errs() << argv[0] << ": program doesn't contain alias named '"
              << ExtractAliases[i] << "'!\n";
       // return 1;
     }
-    GVs.insert(GA);
   }
 
   // Extract aliases via regular expression matching.
@@ -158,13 +159,14 @@ int main(int argc, char **argv) {
 
   // Figure out which globals we should extract.
   for (size_t i = 0, e = ExtractGlobals.size(); i != e; ++i) {
-    GlobalValue *GV = M->getNamedGlobal(ExtractGlobals[i]);
-    if (!GV) {
+    if (GlobalValue *GV = M->getNamedGlobal(ExtractGlobals[i])) {
+      GVs.insert(GV);
+    }
+    else {
       errs() << argv[0] << ": program doesn't contain global named '"
              << ExtractGlobals[i] << "'!\n";
       // return 1;
     }
-    GVs.insert(GV);
   }
 
   // Extract globals via regular expression matching.
@@ -191,13 +193,14 @@ int main(int argc, char **argv) {
 
   // Figure out which functions we should extract.
   for (size_t i = 0, e = ExtractFuncs.size(); i != e; ++i) {
-    GlobalValue *GV = M->getFunction(ExtractFuncs[i]);
-    if (!GV) {
+    if (GlobalValue *GV = M->getFunction(ExtractFuncs[i])) {
+      GVs.insert(GV);
+    }
+    else {
       errs() << argv[0] << ": program doesn't contain function named '"
              << ExtractFuncs[i] << "'!\n";
       // return 1;
     }
-    GVs.insert(GV);
   }
   // Extract functions via regular expression matching.
   for (size_t i = 0, e = ExtractRegExpFuncs.size(); i != e; ++i) {
