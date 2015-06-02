@@ -22,7 +22,7 @@
 
 namespace llvm {
 namespace SystemZISD {
-enum {
+enum NodeType : unsigned {
   FIRST_NUMBER = ISD::BUILTIN_OP_END,
 
   // Return with a flag operand.  Operand 0 is the chain operand.
@@ -369,7 +369,8 @@ public:
   bool isFPImmLegal(const APFloat &Imm, EVT VT) const override;
   bool isLegalICmpImmediate(int64_t Imm) const override;
   bool isLegalAddImmediate(int64_t Imm) const override;
-  bool isLegalAddressingMode(const AddrMode &AM, Type *Ty) const override;
+  bool isLegalAddressingMode(const AddrMode &AM, Type *Ty,
+                             unsigned AS) const override;
   bool allowsMisalignedMemoryAccesses(EVT VT, unsigned AS,
                                       unsigned Align,
                                       bool *Fast) const override;

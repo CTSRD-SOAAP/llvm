@@ -37,7 +37,7 @@
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCStreamer.h"
-#include "llvm/MC/MCSymbol.h"
+#include "llvm/MC/MCSymbolELF.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/raw_ostream.h"
@@ -96,11 +96,11 @@ void XCoreAsmPrinter::emitArrayBound(MCSymbol *Sym, const GlobalVariable *GV) {
   if (ArrayType *ATy = dyn_cast<ArrayType>(
                         cast<PointerType>(GV->getType())->getElementType())) {
 
-    MCSymbol *SymGlob = OutContext.GetOrCreateSymbol(
+    MCSymbol *SymGlob = OutContext.getOrCreateSymbol(
                           Twine(Sym->getName() + StringRef(".globound")));
     OutStreamer->EmitSymbolAttribute(SymGlob, MCSA_Global);
     OutStreamer->EmitAssignment(SymGlob,
-                                MCConstantExpr::Create(ATy->getNumElements(),
+                                MCConstantExpr::create(ATy->getNumElements(),
                                                        OutContext));
     if (GV->hasWeakLinkage() || GV->hasLinkOnceLinkage() ||
         GV->hasCommonLinkage()) {
@@ -157,7 +157,8 @@ void XCoreAsmPrinter::EmitGlobalVariable(const GlobalVariable *GV) {
   unsigned Size = TD->getTypeAllocSize(C->getType());
   if (MAI->hasDotTypeDotSizeDirective()) {
     OutStreamer->EmitSymbolAttribute(GVSym, MCSA_ELF_TypeObject);
-    OutStreamer->EmitELFSize(GVSym, MCConstantExpr::Create(Size, OutContext));
+    OutStreamer->emitELFSize(cast<MCSymbolELF>(GVSym),
+                             MCConstantExpr::create(Size, OutContext));
   }
   OutStreamer->EmitLabel(GVSym);
   

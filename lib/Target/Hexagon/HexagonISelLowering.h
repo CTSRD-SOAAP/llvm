@@ -26,7 +26,7 @@ namespace llvm {
 bool isPositiveHalfWord(SDNode *N);
 
   namespace HexagonISD {
-    enum {
+    enum NodeType : unsigned {
       OP_BEGIN = ISD::BUILTIN_OP_END,
 
       CONST32 = OP_BEGIN,
@@ -198,7 +198,8 @@ bool isPositiveHalfWord(SDNode *N);
     /// The type may be VoidTy, in which case only return true if the addressing
     /// mode is legal for a load/store of any legal type.
     /// TODO: Handle pre/postinc as well.
-    bool isLegalAddressingMode(const AddrMode &AM, Type *Ty) const override;
+    bool isLegalAddressingMode(const AddrMode &AM, Type *Ty,
+                               unsigned AS) const override;
     bool isFPImmLegal(const APFloat &Imm, EVT VT) const override;
 
     /// isLegalICmpImmediate - Return true if the specified immediate is legal

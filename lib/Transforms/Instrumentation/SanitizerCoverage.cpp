@@ -156,7 +156,6 @@ class SanitizerCoverageModule : public ModulePass {
   Function *SanCovFunction;
   Function *SanCovWithCheckFunction;
   Function *SanCovIndirCallFunction;
-  Function *SanCovModuleInit;
   Function *SanCovTraceEnter, *SanCovTraceBB;
   Function *SanCovTraceCmpFunction;
   InlineAsm *EmptyAsm;
@@ -184,12 +183,6 @@ bool SanitizerCoverageModule::runOnModule(Module &M) {
   Type *Int32PtrTy = PointerType::getUnqual(IRB.getInt32Ty());
   Int64Ty = IRB.getInt64Ty();
 
-  Function *CtorFunc =
-      Function::Create(FunctionType::get(VoidTy, false),
-                       GlobalValue::InternalLinkage, kSanCovModuleCtorName, &M);
-  ReturnInst::Create(*C, BasicBlock::Create(*C, "", CtorFunc));
-  appendToGlobalCtors(M, CtorFunc, kSanCtorAndDtorPriority);
-
   SanCovFunction = checkSanitizerInterfaceFunction(
       M.getOrInsertFunction(kSanCovName, VoidTy, Int32PtrTy, nullptr));
   SanCovWithCheckFunction = checkSanitizerInterfaceFunction(
@@ -201,10 +194,6 @@ bool SanitizerCoverageModule::runOnModule(Module &M) {
       checkSanitizerInterfaceFunction(M.getOrInsertFunction(
           kSanCovTraceCmp, VoidTy, Int64Ty, Int64Ty, Int64Ty, nullptr));
 
-  SanCovModuleInit = checkSanitizerInterfaceFunction(M.getOrInsertFunction(
-      kSanCovModuleInitName, VoidTy, Int32PtrTy, IntptrTy,
-      Int8PtrTy, Int8PtrTy, nullptr));
-  SanCovModuleInit->setLinkage(Function::ExternalLinkage);
   // We insert an empty inline asm after cov callbacks to avoid callback merge.
   EmptyAsm = InlineAsm::get(FunctionType::get(IRB.getVoidTy(), false),
                             StringRef(""), StringRef(""),
@@ -270,15 +259,19 @@ bool SanitizerCoverageModule::runOnModule(Module &M) {
       new GlobalVariable(M, ModNameStrConst->getType(), true,
                          GlobalValue::PrivateLinkage, ModNameStrConst);
 
-  // Call __sanitizer_cov_module_init
-  IRB.SetInsertPoint(CtorFunc->getEntryBlock().getTerminator());
-  IRB.CreateCall4(
-      SanCovModuleInit, IRB.CreatePointerCast(RealGuardArray, Int32PtrTy),
-      ConstantInt::get(IntptrTy, N),
-      Options.Use8bitCounters
-          ? IRB.CreatePointerCast(RealEightBitCounterArray, Int8PtrTy)
-          : Constant::getNullValue(Int8PtrTy),
-      IRB.CreatePointerCast(ModuleName, Int8PtrTy));
+  Function *CtorFunc;
+  std::tie(CtorFunc, std::ignore) = createSanitizerCtorAndInitFunctions(
+      M, kSanCovModuleCtorName, kSanCovModuleInitName,
+      {Int32PtrTy, IntptrTy, Int8PtrTy, Int8PtrTy},
+      {IRB.CreatePointerCast(RealGuardArray, Int32PtrTy),
+       ConstantInt::get(IntptrTy, N),
+       Options.Use8bitCounters
+           ? IRB.CreatePointerCast(RealEightBitCounterArray, Int8PtrTy)
+           : Constant::getNullValue(Int8PtrTy),
+       IRB.CreatePointerCast(ModuleName, Int8PtrTy)});
+
+  appendToGlobalCtors(M, CtorFunc, kSanCtorAndDtorPriority);
+
   return true;
 }
 
@@ -348,9 +341,9 @@ void SanitizerCoverageModule::InjectCoverageForIndirectCalls(
         *F.getParent(), Ty, false, GlobalValue::PrivateLinkage,
         Constant::getNullValue(Ty), "__sancov_gen_callee_cache");
     CalleeCache->setAlignment(kCacheAlignment);
-    IRB.CreateCall2(SanCovIndirCallFunction,
-                    IRB.CreatePointerCast(Callee, IntptrTy),
-                    IRB.CreatePointerCast(CalleeCache, IntptrTy));
+    IRB.CreateCall(SanCovIndirCallFunction,
+                   {IRB.CreatePointerCast(Callee, IntptrTy),
+                    IRB.CreatePointerCast(CalleeCache, IntptrTy)});
   }
 }
 
@@ -364,11 +357,11 @@ void SanitizerCoverageModule::InjectTraceForCmp(
       if (!A0->getType()->isIntegerTy()) continue;
       uint64_t TypeSize = DL->getTypeStoreSizeInBits(A0->getType());
       // __sanitizer_cov_trace_cmp((type_size << 32) | predicate, A0, A1);
-      IRB.CreateCall3(
+      IRB.CreateCall(
           SanCovTraceCmpFunction,
-          ConstantInt::get(Int64Ty, (TypeSize << 32) | ICMP->getPredicate()),
-          IRB.CreateIntCast(A0, Int64Ty, true),
-          IRB.CreateIntCast(A1, Int64Ty, true));
+          {ConstantInt::get(Int64Ty, (TypeSize << 32) | ICMP->getPredicate()),
+           IRB.CreateIntCast(A0, Int64Ty, true),
+           IRB.CreateIntCast(A1, Int64Ty, true)});
     }
   }
 }
@@ -417,7 +410,7 @@ void SanitizerCoverageModule::InjectCoverageAtBlock(Function &F, BasicBlock &BB,
     IRB.SetCurrentDebugLocation(EntryLoc);
     // __sanitizer_cov gets the PC of the instruction using GET_CALLER_PC.
     IRB.CreateCall(SanCovFunction, GuardP);
-    IRB.CreateCall(EmptyAsm);  // Avoids callback merge.
+    IRB.CreateCall(EmptyAsm, {}); // Avoids callback merge.
   }
 
   if (Options.Use8bitCounters) {
@@ -445,9 +438,6 @@ char SanitizerCoverageModule::ID = 0;
 INITIALIZE_PASS(SanitizerCoverageModule, "sancov",
     "SanitizerCoverage: TODO."
     "ModulePass", false, false)
-ModulePass *llvm::createSanitizerCoverageModulePass(int CoverageLevel) {
-  return createSanitizerCoverageModulePass(getOptions(CoverageLevel));
-}
 ModulePass *llvm::createSanitizerCoverageModulePass(
     const SanitizerCoverageOptions &Options) {
   return new SanitizerCoverageModule(Options);

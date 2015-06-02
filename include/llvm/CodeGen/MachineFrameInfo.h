@@ -246,15 +246,15 @@ class MachineFrameInfo {
   /// True if this is a varargs function that contains a musttail call.
   bool HasMustTailInVarArgFunc;
 
+  /// True if this function contains a tail call. If so immutable objects like
+  /// function arguments are no longer so. A tail call *can* override fixed
+  /// stack objects like arguments so we can't treat them as immutable.
+  bool HasTailCall;
+
   /// Not null, if shrink-wrapping found a better place for the prologue.
   MachineBasicBlock *Save;
   /// Not null, if shrink-wrapping found a better place for the epilogue.
   MachineBasicBlock *Restore;
-
-  /// Check if it exists a path from \p MBB leading to the basic
-  /// block with a SavePoint (a.k.a. prologue).
-  bool isBeforeSavePoint(const MachineFunction &MF,
-                         const MachineBasicBlock &MBB) const;
 
 public:
   explicit MachineFrameInfo(unsigned StackAlign, bool isStackRealign,
@@ -281,6 +281,7 @@ public:
     HasMustTailInVarArgFunc = false;
     Save = nullptr;
     Restore = nullptr;
+    HasTailCall = false;
   }
 
   /// hasStackObjects - Return true if there are any stack objects in this
@@ -508,6 +509,10 @@ public:
   bool hasMustTailInVarArgFunc() const { return HasMustTailInVarArgFunc; }
   void setHasMustTailInVarArgFunc(bool B) { HasMustTailInVarArgFunc = B; }
 
+  /// Returns true if the function contains a tail call.
+  bool hasTailCall() const { return HasTailCall; }
+  void setHasTailCall() { HasTailCall = true; }
+
   /// getMaxCallFrameSize - Return the maximum size of a call frame that must be
   /// allocated for an outgoing function call.  This is only available if
   /// CallFrameSetup/Destroy pseudo instructions are used by the target, and
@@ -545,6 +550,9 @@ public:
   /// isImmutableObjectIndex - Returns true if the specified index corresponds
   /// to an immutable object.
   bool isImmutableObjectIndex(int ObjectIdx) const {
+    // Tail calling functions can clobber their function arguments.
+    if (HasTailCall)
+      return false;
     assert(unsigned(ObjectIdx+NumFixedObjects) < Objects.size() &&
            "Invalid Object Idx!");
     return Objects[ObjectIdx+NumFixedObjects].isImmutable;
@@ -614,16 +622,15 @@ public:
   MachineBasicBlock *getRestorePoint() const { return Restore; }
   void setRestorePoint(MachineBasicBlock *NewRestore) { Restore = NewRestore; }
 
-  /// getPristineRegs - Return a set of physical registers that are pristine on
-  /// entry to the MBB.
+  /// Return a set of physical registers that are pristine.
   ///
   /// Pristine registers hold a value that is useless to the current function,
-  /// but that must be preserved - they are callee saved registers that have not
-  /// been saved yet.
+  /// but that must be preserved - they are callee saved registers that are not
+  /// saved.
   ///
   /// Before the PrologueEpilogueInserter has placed the CSR spill code, this
   /// method always returns an empty set.
-  BitVector getPristineRegs(const MachineBasicBlock *MBB) const;
+  BitVector getPristineRegs(const MachineFunction &MF) const;
 
   /// print - Used by the MachineFunction printer to print information about
   /// stack objects. Implemented in MachineFunction.cpp

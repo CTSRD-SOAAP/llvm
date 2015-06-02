@@ -13,6 +13,7 @@
 
 #include "InstCombineInternal.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/Analysis/InstructionSimplify.h"
 #include "llvm/Analysis/MemoryBuiltins.h"
 #include "llvm/IR/CallSite.h"
 #include "llvm/IR/Dominators.h"
@@ -323,6 +324,11 @@ static Value *SimplifyX86vperm2(const IntrinsicInst &II,
 /// the heavy lifting.
 ///
 Instruction *InstCombiner::visitCallInst(CallInst &CI) {
+  auto Args = CI.arg_operands();
+  if (Value *V = SimplifyCall(CI.getCalledValue(), Args.begin(), Args.end(), DL,
+                              TLI, DT, AC))
+    return ReplaceInstUsesWith(CI, V);
+
   if (isFreeCall(&CI, TLI))
     return visitFree(CI);
 
@@ -624,9 +630,12 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
     // Turn PPC QPX qvlfs -> load if the pointer is known aligned.
     if (getOrEnforceKnownAlignment(II->getArgOperand(0), 16, DL, II, AC, DT) >=
         16) {
+      Type *VTy = VectorType::get(Builder->getFloatTy(),
+                                  II->getType()->getVectorNumElements());
       Value *Ptr = Builder->CreateBitCast(II->getArgOperand(0),
-                                         PointerType::getUnqual(II->getType()));
-      return new LoadInst(Ptr);
+                                         PointerType::getUnqual(VTy));
+      Value *Load = Builder->CreateLoad(Ptr);
+      return new FPExtInst(Load, II->getType());
     }
     break;
   case Intrinsic::ppc_qpx_qvlfd:
@@ -642,10 +651,12 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
     // Turn PPC QPX qvstfs -> store if the pointer is known aligned.
     if (getOrEnforceKnownAlignment(II->getArgOperand(1), 16, DL, II, AC, DT) >=
         16) {
-      Type *OpPtrTy =
-        PointerType::getUnqual(II->getArgOperand(0)->getType());
+      Type *VTy = VectorType::get(Builder->getFloatTy(),
+          II->getArgOperand(0)->getType()->getVectorNumElements());
+      Value *TOp = Builder->CreateFPTrunc(II->getArgOperand(0), VTy);
+      Type *OpPtrTy = PointerType::getUnqual(VTy);
       Value *Ptr = Builder->CreateBitCast(II->getArgOperand(1), OpPtrTy);
-      return new StoreInst(II->getArgOperand(0), Ptr);
+      return new StoreInst(TOp, Ptr);
     }
     break;
   case Intrinsic::ppc_qpx_qvstfd:
@@ -1197,6 +1208,7 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
     // preserve relocation semantics.
     GCRelocateOperands Operands(II);
     Value *DerivedPtr = Operands.getDerivedPtr();
+    auto *GCRelocateType = cast<PointerType>(II->getType());
 
     // Remove the relocation if unused, note that this check is required
     // to prevent the cases below from looping forever.
@@ -1207,14 +1219,18 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
     // TODO: provide a hook for this in GCStrategy.  This is clearly legal for
     // most practical collectors, but there was discussion in the review thread
     // about whether it was legal for all possible collectors.
-    if (isa<UndefValue>(DerivedPtr))
-      return ReplaceInstUsesWith(*II, DerivedPtr);
+    if (isa<UndefValue>(DerivedPtr)) {
+      // gc_relocate is uncasted. Use undef of gc_relocate's type to replace it.
+      return ReplaceInstUsesWith(*II, UndefValue::get(GCRelocateType));
+    }
 
     // The relocation of null will be null for most any collector.
     // TODO: provide a hook for this in GCStrategy.  There might be some weird
     // collector this property does not hold for.
-    if (isa<ConstantPointerNull>(DerivedPtr))
-      return ReplaceInstUsesWith(*II, DerivedPtr);
+    if (isa<ConstantPointerNull>(DerivedPtr)) {
+      // gc_relocate is uncasted. Use null-pointer of gc_relocate's type to replace it.
+      return ReplaceInstUsesWith(*II, ConstantPointerNull::get(GCRelocateType));
+    }
 
     // isKnownNonNull -> nonnull attribute
     if (isKnownNonNull(DerivedPtr))

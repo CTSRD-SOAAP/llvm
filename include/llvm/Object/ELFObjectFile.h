@@ -79,13 +79,13 @@ protected:
                                 StringRef &Res) const override;
   std::error_code getSymbolAddress(DataRefImpl Symb,
                                    uint64_t &Res) const override;
-  std::error_code getSymbolAlignment(DataRefImpl Symb,
-                                     uint32_t &Res) const override;
-  std::error_code getSymbolSize(DataRefImpl Symb, uint64_t &Res) const override;
+  uint32_t getSymbolAlignment(DataRefImpl Symb) const override;
+  uint64_t getSymbolSize(DataRefImpl Symb) const override;
   uint32_t getSymbolFlags(DataRefImpl Symb) const override;
   std::error_code getSymbolOther(DataRefImpl Symb, uint8_t &Res) const override;
   std::error_code getSymbolType(DataRefImpl Symb,
                                 SymbolRef::Type &Res) const override;
+  section_iterator getSymbolSection(const Elf_Sym *Symb) const;
   std::error_code getSymbolSection(DataRefImpl Symb,
                                    section_iterator &Res) const override;
 
@@ -112,6 +112,7 @@ protected:
   std::error_code getRelocationOffset(DataRefImpl Rel,
                                       uint64_t &Res) const override;
   symbol_iterator getRelocationSymbol(DataRefImpl Rel) const override;
+  section_iterator getRelocationSection(DataRefImpl Rel) const override;
   std::error_code getRelocationType(DataRefImpl Rel,
                                     uint64_t &Res) const override;
   std::error_code
@@ -324,21 +325,16 @@ std::error_code ELFObjectFile<ELFT>::getSymbolAddress(DataRefImpl Symb,
 }
 
 template <class ELFT>
-std::error_code ELFObjectFile<ELFT>::getSymbolAlignment(DataRefImpl Symb,
-                                                        uint32_t &Res) const {
+uint32_t ELFObjectFile<ELFT>::getSymbolAlignment(DataRefImpl Symb) const {
   Elf_Sym_Iter Sym = toELFSymIter(Symb);
   if (Sym->st_shndx == ELF::SHN_COMMON)
-    Res = Sym->st_value;
-  else
-    Res = 0;
-  return object_error::success;
+    return Sym->st_value;
+  return 0;
 }
 
 template <class ELFT>
-std::error_code ELFObjectFile<ELFT>::getSymbolSize(DataRefImpl Symb,
-                                                   uint64_t &Result) const {
-  Result = toELFSymIter(Symb)->st_size;
-  return object_error::success;
+uint64_t ELFObjectFile<ELFT>::getSymbolSize(DataRefImpl Symb) const {
+  return toELFSymIter(Symb)->st_size;
 }
 
 template <class ELFT>
@@ -416,18 +412,23 @@ uint32_t ELFObjectFile<ELFT>::getSymbolFlags(DataRefImpl Symb) const {
 }
 
 template <class ELFT>
-std::error_code
-ELFObjectFile<ELFT>::getSymbolSection(DataRefImpl Symb,
-                                      section_iterator &Res) const {
-  const Elf_Sym *ESym = getSymbol(Symb);
+section_iterator
+ELFObjectFile<ELFT>::getSymbolSection(const Elf_Sym *ESym) const {
   const Elf_Shdr *ESec = EF.getSection(ESym);
   if (!ESec)
-    Res = section_end();
+    return section_end();
   else {
     DataRefImpl Sec;
     Sec.p = reinterpret_cast<intptr_t>(ESec);
-    Res = section_iterator(SectionRef(Sec, this));
+    return section_iterator(SectionRef(Sec, this));
   }
+}
+
+template <class ELFT>
+std::error_code
+ELFObjectFile<ELFT>::getSymbolSection(DataRefImpl Symb,
+                                      section_iterator &Res) const {
+  Res = getSymbolSection(getSymbol(Symb));
   return object_error::success;
 }
 
@@ -586,6 +587,20 @@ ELFObjectFile<ELFT>::getRelocationSymbol(DataRefImpl Rel) const {
   }
 
   return symbol_iterator(SymbolRef(SymbolData, this));
+}
+
+// ELF relocations can target sections, by targetting a symbol of type
+// STT_SECTION
+template <class ELFT>
+section_iterator
+ELFObjectFile<ELFT>::getRelocationSection(DataRefImpl Rel) const {
+  symbol_iterator Sym = getRelocationSymbol(Rel);
+  if (Sym == symbol_end())
+    return section_end();
+  const Elf_Sym *ESym = getSymbol(Sym->getRawDataRefImpl());
+  if (ESym->getType() != ELF::STT_SECTION)
+    return section_end();
+  return getSymbolSection(ESym);
 }
 
 template <class ELFT>

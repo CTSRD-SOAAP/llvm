@@ -114,11 +114,11 @@ MCSymbol *MMIAddrLabelMap::getAddrLabelSymbol(BasicBlock *BB) {
 
   // Otherwise, this is a new entry, create a new symbol for it and add an
   // entry to BBCallbacks so we can be notified if the BB is deleted or RAUWd.
-  BBCallbacks.push_back(BB);
+  BBCallbacks.emplace_back(BB);
   BBCallbacks.back().setMap(this);
   Entry.Index = BBCallbacks.size()-1;
   Entry.Fn = BB->getParent();
-  MCSymbol *Result = Context.CreateTempSymbol();
+  MCSymbol *Result = Context.createTempSymbol();
   Entry.Symbols = Result;
   return Result;
 }
@@ -308,6 +308,7 @@ void MachineModuleInfo::EndFunction() {
 
   // Clean up exception info.
   LandingPads.clear();
+  PersonalityTypeCache = EHPersonality::Unknown;
   CallSiteMap.clear();
   TypeInfos.clear();
   FilterIds.clear();
@@ -401,7 +402,7 @@ void MachineModuleInfo::addInvoke(MachineBasicBlock *LandingPad,
 /// addLandingPad - Provide the label of a try LandingPad block.
 ///
 MCSymbol *MachineModuleInfo::addLandingPad(MachineBasicBlock *LandingPad) {
-  MCSymbol *LandingPadLabel = Context.CreateTempSymbol();
+  MCSymbol *LandingPadLabel = Context.createTempSymbol();
   LandingPadInfo &LP = getOrCreateLandingPadInfo(LandingPad);
   LP.LandingPadLabel = LandingPadLabel;
   return LandingPadLabel;

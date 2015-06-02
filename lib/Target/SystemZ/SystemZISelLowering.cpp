@@ -506,9 +506,10 @@ bool SystemZTargetLowering::allowsMisalignedMemoryAccesses(EVT VT,
     *Fast = true;
   return true;
 }
-  
+
 bool SystemZTargetLowering::isLegalAddressingMode(const AddrMode &AM,
-                                                  Type *Ty) const {
+                                                  Type *Ty,
+                                                  unsigned AS) const {
   // Punt on globals for now, although they can be used in limited
   // RELATIVE LONG cases.
   if (AM.BaseGV)
@@ -2171,14 +2172,14 @@ static unsigned getVectorComparison(ISD::CondCode CC, bool IsFP) {
 
   case ISD::SETOGE:
   case ISD::SETGE:
-    return IsFP ? SystemZISD::VFCMPHE : 0;
+    return IsFP ? SystemZISD::VFCMPHE : static_cast<SystemZISD::NodeType>(0);
 
   case ISD::SETOGT:
   case ISD::SETGT:
     return IsFP ? SystemZISD::VFCMPH : SystemZISD::VICMPH;
 
   case ISD::SETUGT:
-    return IsFP ? 0 : SystemZISD::VICMPHL;
+    return IsFP ? static_cast<SystemZISD::NodeType>(0) : SystemZISD::VICMPHL;
 
   default:
     return 0;
@@ -3796,7 +3797,7 @@ static bool tryBuildVectorByteMask(BuildVectorSDNode *BVN, uint64_t &Mask) {
       for (unsigned J = 0; J < BytesPerElement; ++J) {
         uint64_t Byte = (Value >> (J * 8)) & 0xff;
         if (Byte == 0xff)
-          Mask |= 1 << ((E - I - 1) * BytesPerElement + J);
+          Mask |= 1ULL << ((E - I - 1) * BytesPerElement + J);
         else if (Byte != 0)
           return false;
       }
@@ -4369,7 +4370,8 @@ SDValue SystemZTargetLowering::LowerOperation(SDValue Op,
 
 const char *SystemZTargetLowering::getTargetNodeName(unsigned Opcode) const {
 #define OPCODE(NAME) case SystemZISD::NAME: return "SystemZISD::" #NAME
-  switch (Opcode) {
+  switch ((SystemZISD::NodeType)Opcode) {
+    case SystemZISD::FIRST_NUMBER: break;
     OPCODE(RET_FLAG);
     OPCODE(CALL);
     OPCODE(SIBCALL);

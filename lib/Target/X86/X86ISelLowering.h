@@ -26,7 +26,7 @@ namespace llvm {
 
   namespace X86ISD {
     // X86 Specific DAG Nodes
-    enum NodeType {
+    enum NodeType : unsigned {
       // Start the numbering where the builtin ops leave off.
       FIRST_NUMBER = ISD::BUILTIN_OP_END,
 
@@ -184,6 +184,9 @@ namespace llvm {
       /// Shuffle 16 8-bit values within a vector.
       PSHUFB,
 
+      /// Compute Sum of Absolute Differences.
+      PSADBW,
+
       /// Bitwise Logical AND NOT of Packed FP values.
       ANDNP,
 
@@ -205,6 +208,8 @@ namespace llvm {
       FSUB_RND,
       FMUL_RND,
       FDIV_RND,
+      FMAX_RND,
+      FMIN_RND,
       
       // Integer add/sub with unsigned saturation.
       ADDUS,
@@ -308,6 +313,8 @@ namespace llvm {
       /// integer signed and unsigned data types.
       CMPM,
       CMPMU,
+      // Vector comparison with rounding mode for FP values
+      CMPM_RND,
 
       // Arithmetic operations with FLAGS results.
       ADD, SUB, ADC, SBB, SMUL,
@@ -370,7 +377,14 @@ namespace llvm {
       VPERMIV3,
       VPERMI,
       VPERM2X128,
+      //Fix Up Special Packed Float32/64 values
+      VFIXUPIMM,
+      //Range Restriction Calculation For Packed Pairs of Float32/64 values
+      VRANGE,
+      // Broadcast scalar to vector
       VBROADCAST,
+      // Broadcast subvector to vector
+      SUBV_BROADCAST,
       // Insert/Extract vector element
       VINSERT,
       VEXTRACT,
@@ -568,6 +582,7 @@ namespace llvm {
                                const X86Subtarget &STI);
 
     unsigned getJumpTableEncoding() const override;
+    bool useSoftFloat() const override;
 
     MVT getScalarShiftAmountTy(EVT LHSTy) const override { return MVT::i8; }
 
@@ -699,8 +714,15 @@ namespace llvm {
 
     unsigned getInlineAsmMemConstraint(
         const std::string &ConstraintCode) const override {
-      // FIXME: Map different constraints differently.
-      return InlineAsm::Constraint_m;
+      if (ConstraintCode == "i")
+        return InlineAsm::Constraint_i;
+      else if (ConstraintCode == "o")
+        return InlineAsm::Constraint_o;
+      else if (ConstraintCode == "v")
+        return InlineAsm::Constraint_v;
+      else if (ConstraintCode == "X")
+        return InlineAsm::Constraint_X;
+      return TargetLowering::getInlineAsmMemConstraint(ConstraintCode);
     }
 
     /// Given a physical register constraint
@@ -714,7 +736,8 @@ namespace llvm {
 
     /// Return true if the addressing mode represented
     /// by AM is legal for this target, for a load/store of the specified type.
-    bool isLegalAddressingMode(const AddrMode &AM, Type *Ty) const override;
+    bool isLegalAddressingMode(const AddrMode &AM, Type *Ty,
+                               unsigned AS) const override;
 
     /// Return true if the specified immediate is legal
     /// icmp immediate, that is the target has icmp instructions which can
@@ -733,7 +756,8 @@ namespace llvm {
     /// of the specified type.
     /// If the AM is supported, the return value must be >= 0.
     /// If the AM is not supported, it returns a negative value.
-    int getScalingFactorCost(const AddrMode &AM, Type *Ty) const override;
+    int getScalingFactorCost(const AddrMode &AM, Type *Ty,
+                             unsigned AS) const override;
 
     bool isVectorShiftByScalarCheap(Type *Ty) const override;
 
@@ -967,6 +991,8 @@ namespace llvm {
     SDValue LowerINIT_TRAMPOLINE(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerFLT_ROUNDS_(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerWin64_i128OP(SDValue Op, SelectionDAG &DAG) const;
+    SDValue LowerGC_TRANSITION_START(SDValue Op, SelectionDAG &DAG) const;
+    SDValue LowerGC_TRANSITION_END(SDValue Op, SelectionDAG &DAG) const;
 
     SDValue
       LowerFormalArguments(SDValue Chain,
