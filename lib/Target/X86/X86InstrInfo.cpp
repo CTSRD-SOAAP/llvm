@@ -433,6 +433,12 @@ X86InstrInfo::X86InstrInfo(X86Subtarget &STI)
   }
 
   static const X86MemoryFoldTableEntry MemoryFoldTable1[] = {
+    { X86::BSF16rr,         X86::BSF16rm,             0 },
+    { X86::BSF32rr,         X86::BSF32rm,             0 },
+    { X86::BSF64rr,         X86::BSF64rm,             0 },
+    { X86::BSR16rr,         X86::BSR16rm,             0 },
+    { X86::BSR32rr,         X86::BSR32rm,             0 },
+    { X86::BSR64rr,         X86::BSR64rm,             0 },
     { X86::CMP16rr,         X86::CMP16rm,             0 },
     { X86::CMP32rr,         X86::CMP32rm,             0 },
     { X86::CMP64rr,         X86::CMP64rm,             0 },
@@ -1690,8 +1696,8 @@ X86InstrInfo::X86InstrInfo(X86Subtarget &STI)
     { X86::VPSUBQZrr,         X86::VPSUBQZrm,           0 },
     { X86::VSHUFPDZrri,       X86::VSHUFPDZrmi,         0 },
     { X86::VSHUFPSZrri,       X86::VSHUFPSZrmi,         0 },
-    { X86::VALIGNQrri,        X86::VALIGNQrmi,          0 },
-    { X86::VALIGNDrri,        X86::VALIGNDrmi,          0 },
+    { X86::VALIGNQZrri,       X86::VALIGNQZrmi,         0 },
+    { X86::VALIGNDZrri,       X86::VALIGNDZrmi,         0 },
     { X86::VPMULUDQZrr,       X86::VPMULUDQZrm,         0 },
     { X86::VBROADCASTSSZrkz,  X86::VBROADCASTSSZmkz,    TB_NO_REVERSE },
     { X86::VBROADCASTSDZrkz,  X86::VBROADCASTSDZmkz,    TB_NO_REVERSE },
