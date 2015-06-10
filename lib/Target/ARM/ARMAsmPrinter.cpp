@@ -173,7 +173,7 @@ void ARMAsmPrinter::printOperand(const MachineInstr *MI, int OpNum,
     break;
   }
   case MachineOperand::MO_MachineBasicBlock:
-    O << *MO.getMBB()->getSymbol();
+    MO.getMBB()->getSymbol()->print(O, MAI);
     return;
   case MachineOperand::MO_GlobalAddress: {
     const GlobalValue *GV = MO.getGlobal();
@@ -181,7 +181,7 @@ void ARMAsmPrinter::printOperand(const MachineInstr *MI, int OpNum,
       O << ":lower16:";
     else if (TF & ARMII::MO_HI16)
       O << ":upper16:";
-    O << *GetARMGVSymbol(GV, TF);
+    GetARMGVSymbol(GV, TF)->print(O, MAI);
 
     printOffset(MO.getOffset(), O);
     if (TF == ARMII::MO_PLT)
@@ -189,7 +189,7 @@ void ARMAsmPrinter::printOperand(const MachineInstr *MI, int OpNum,
     break;
   }
   case MachineOperand::MO_ConstantPoolIndex:
-    O << *GetCPISymbol(MO.getIndex());
+    GetCPISymbol(MO.getIndex())->print(O, MAI);
     break;
   }
 }
@@ -851,16 +851,7 @@ MCSymbol *ARMAsmPrinter::GetARMGVSymbol(const GlobalValue *GV,
   } else if (Subtarget->isTargetCOFF()) {
     assert(Subtarget->isTargetWindows() &&
            "Windows is the only supported COFF target");
-
-    bool IsIndirect = (TargetFlags & ARMII::MO_DLLIMPORT);
-    if (!IsIndirect)
-      return getSymbol(GV);
-
-    SmallString<128> Name;
-    Name = "__imp_";
-    getNameWithPrefix(Name, GV);
-
-    return OutContext.getOrCreateSymbol(Name);
+    return getSymbol(GV);
   } else if (Subtarget->isTargetELF()) {
     return getSymbol(GV);
   }

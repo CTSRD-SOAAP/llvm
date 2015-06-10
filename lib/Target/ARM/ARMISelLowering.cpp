@@ -1483,9 +1483,10 @@ ARMTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
   bool isStructRet    = (Outs.empty()) ? false : Outs[0].Flags.isSRet();
   bool isThisReturn   = false;
   bool isSibCall      = false;
+  auto Attr = MF.getFunction()->getFnAttribute("disable-tail-calls");
 
   // Disable tail calls if they're not supported.
-  if (!Subtarget->supportsTailCall() || MF.getTarget().Options.DisableTailCalls)
+  if (!Subtarget->supportsTailCall() || Attr.getValueAsString() == "true")
     isTailCall = false;
 
   if (isTailCall) {
@@ -1750,11 +1751,8 @@ ARMTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
     } else if (Subtarget->isTargetCOFF()) {
       assert(Subtarget->isTargetWindows() &&
              "Windows is the only supported COFF target");
-      unsigned TargetFlags = GV->hasDLLImportStorageClass()
-                                 ? ARMII::MO_DLLIMPORT
-                                 : ARMII::MO_NO_FLAG;
       Callee = DAG.getTargetGlobalAddress(GV, dl, getPointerTy(), /*Offset=*/0,
-                                          TargetFlags);
+                                          ARMII::MO_NO_FLAG);
       if (GV->hasDLLImportStorageClass())
         Callee = DAG.getLoad(getPointerTy(), dl, DAG.getEntryNode(),
                              DAG.getNode(ARMISD::Wrapper, dl, getPointerTy(),
@@ -2375,7 +2373,9 @@ bool ARMTargetLowering::mayBeEmittedAsTailCall(CallInst *CI) const {
   if (!Subtarget->supportsTailCall())
     return false;
 
-  if (!CI->isTailCall() || getTargetMachine().Options.DisableTailCalls)
+  auto Attr =
+      CI->getParent()->getParent()->getFnAttribute("disable-tail-calls");
+  if (!CI->isTailCall() || Attr.getValueAsString() == "true")
     return false;
 
   return !Subtarget->isThumb1Only();
@@ -2643,8 +2643,6 @@ SDValue ARMTargetLowering::LowerGlobalAddressWindows(SDValue Op,
          "Windows on ARM expects to use movw/movt");
 
   const GlobalValue *GV = cast<GlobalAddressSDNode>(Op)->getGlobal();
-  const ARMII::TOF TargetFlags =
-    (GV->hasDLLImportStorageClass() ? ARMII::MO_DLLIMPORT : ARMII::MO_NO_FLAG);
   EVT PtrVT = getPointerTy();
   SDValue Result;
   SDLoc DL(Op);
@@ -2655,7 +2653,7 @@ SDValue ARMTargetLowering::LowerGlobalAddressWindows(SDValue Op,
   // operands, expand this into two nodes.
   Result = DAG.getNode(ARMISD::Wrapper, DL, PtrVT,
                        DAG.getTargetGlobalAddress(GV, DL, PtrVT, /*Offset=*/0,
-                                                  TargetFlags));
+                                                  ARMII::MO_NO_FLAG));
   if (GV->hasDLLImportStorageClass())
     Result = DAG.getLoad(PtrVT, DL, DAG.getEntryNode(), Result,
                          MachinePointerInfo::getGOT(), false, false, false, 0);
