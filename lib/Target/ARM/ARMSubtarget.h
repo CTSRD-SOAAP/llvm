@@ -206,6 +206,9 @@ protected:
   /// NaCl TRAP instruction is generated instead of the regular TRAP.
   bool UseNaClTrap;
 
+  /// Generate calls via indirect call instructions.
+  bool GenLongCalls;
+
   /// Target machine allowed unsafe FP math (such as use of NEON fp)
   bool UnsafeFPMath;
 
@@ -237,8 +240,8 @@ public:
   /// This constructor initializes the data members to match that
   /// of the specified triple.
   ///
-  ARMSubtarget(const std::string &TT, const std::string &CPU,
-               const std::string &FS, const ARMBaseTargetMachine &TM, bool IsLittle);
+  ARMSubtarget(const Triple &TT, const std::string &CPU, const std::string &FS,
+               const ARMBaseTargetMachine &TM, bool IsLittle);
 
   /// getMaxInlineSizeThreshold - Returns the maximum memset / memcpy size
   /// that still makes it profitable to inline the call.
@@ -342,6 +345,7 @@ public:
   bool hasMPExtension() const { return HasMPExtension; }
   bool hasThumb2DSP() const { return Thumb2DSP; }
   bool useNaClTrap() const { return UseNaClTrap; }
+  bool genLongCalls() const { return GenLongCalls; }
 
   bool hasFP16() const { return HasFP16; }
   bool hasD16() const { return HasD16; }
@@ -430,7 +434,7 @@ public:
   bool hasSinCos() const;
 
   /// True for some subtargets at > -O0.
-  bool enablePostMachineScheduler() const override;
+  bool enablePostRAScheduler() const override;
 
   // enableAtomicExpand- True if we need to expand our atomics.
   bool enableAtomicExpand() const override;

@@ -19,7 +19,6 @@
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/ConstantFolding.h"
-#include "llvm/Analysis/JumpInstrTableInfo.h"
 #include "llvm/CodeGen/Analysis.h"
 #include "llvm/CodeGen/GCMetadataPrinter.h"
 #include "llvm/CodeGen/MachineConstantPool.h"
@@ -151,7 +150,7 @@ void AsmPrinter::EmitToStreamer(MCStreamer &S, const MCInst &Inst) {
 }
 
 StringRef AsmPrinter::getTargetTriple() const {
-  return TM.getTargetTriple();
+  return TM.getTargetTriple().str();
 }
 
 /// getCurrentSection() - Return the current section we are emitting to.
@@ -172,7 +171,6 @@ void AsmPrinter::getAnalysisUsage(AnalysisUsage &AU) const {
 
 bool AsmPrinter::doInitialization(Module &M) {
   MMI = getAnalysisIfAvailable<MachineModuleInfo>();
-  MMI->AnalyzeModule(M);
 
   // Initialize TargetLoweringObjectFile.
   const_cast<TargetLoweringObjectFile&>(getObjFileLowering())
@@ -180,7 +178,7 @@ bool AsmPrinter::doInitialization(Module &M) {
 
   OutStreamer->InitSections(false);
 
-  Mang = new Mangler(TM.getDataLayout());
+  Mang = new Mangler();
 
   // Emit the version-min deplyment target directive if needed.
   //
@@ -222,7 +220,8 @@ bool AsmPrinter::doInitialization(Module &M) {
     // We're at the module level. Construct MCSubtarget from the default CPU
     // and target triple.
     std::unique_ptr<MCSubtargetInfo> STI(TM.getTarget().createMCSubtargetInfo(
-        TM.getTargetTriple(), TM.getTargetCPU(), TM.getTargetFeatureString()));
+        TM.getTargetTriple().str(), TM.getTargetCPU(),
+        TM.getTargetFeatureString()));
     OutStreamer->AddComment("Start of file scope inline assembly");
     OutStreamer->AddBlankLine();
     EmitInlineAsm(M.getModuleInlineAsm()+"\n", *STI, TM.Options.MCOptions);
@@ -232,7 +231,7 @@ bool AsmPrinter::doInitialization(Module &M) {
 
   if (MAI->doesSupportDebugInformation()) {
     bool skip_dwarf = false;
-    if (Triple(TM.getTargetTriple()).isKnownWindowsMSVCEnvironment()) {
+    if (TM.getTargetTriple().isKnownWindowsMSVCEnvironment()) {
       Handlers.push_back(HandlerInfo(new WinCodeViewLineTables(this),
                                      DbgTimerName,
                                      CodeViewLineTablesGroupName));
@@ -820,7 +819,7 @@ void AsmPrinter::EmitFunctionBody() {
         emitCFIInstruction(MI);
         break;
 
-      case TargetOpcode::FRAME_ALLOC:
+      case TargetOpcode::LOCAL_ESCAPE:
         emitFrameAlloc(MI);
         break;
 
@@ -900,12 +899,11 @@ void AsmPrinter::EmitFunctionBody() {
   if (MAI->hasDotTypeDotSizeDirective()) {
     // We can get the size as difference between the function label and the
     // temp label.
-    const MCExpr *SizeExp =
-      MCBinaryExpr::createSub(MCSymbolRefExpr::create(CurrentFnEnd, OutContext),
-                              MCSymbolRefExpr::create(CurrentFnSymForSize,
-                                                      OutContext),
-                              OutContext);
-    OutStreamer->emitELFSize(cast<MCSymbolELF>(CurrentFnSym), SizeExp);
+    const MCExpr *SizeExp = MCBinaryExpr::createSub(
+        MCSymbolRefExpr::create(CurrentFnEnd, OutContext),
+        MCSymbolRefExpr::create(CurrentFnSymForSize, OutContext), OutContext);
+    if (auto Sym = dyn_cast<MCSymbolELF>(CurrentFnSym))
+      OutStreamer->emitELFSize(Sym, SizeExp);
   }
 
   for (const HandlerInfo &HI : Handlers) {
@@ -1025,7 +1023,7 @@ bool AsmPrinter::doFinalization(Module &M) {
 
   // Emit visibility info for declarations
   for (const Function &F : M) {
-    if (!F.isDeclaration())
+    if (!F.isDeclarationForLinker())
       continue;
     GlobalValue::VisibilityTypes V = F.getVisibility();
     if (V == GlobalValue::DefaultVisibility)
@@ -1043,8 +1041,7 @@ bool AsmPrinter::doFinalization(Module &M) {
   if (!ModuleFlags.empty())
     TLOF.emitModuleFlags(*OutStreamer, ModuleFlags, *Mang, TM);
 
-  Triple TT(TM.getTargetTriple());
-  if (TT.isOSBinFormatELF()) {
+  if (TM.getTargetTriple().isOSBinFormatELF()) {
     MachineModuleInfoELF &MMIELF = MMI->getObjFileInfo<MachineModuleInfoELF>();
 
     // Output stubs for external and common global variables.
@@ -1591,25 +1588,7 @@ void AsmPrinter::EmitInt32(int Value) const {
 /// .set if it avoids relocations.
 void AsmPrinter::EmitLabelDifference(const MCSymbol *Hi, const MCSymbol *Lo,
                                      unsigned Size) const {
-  if (!MAI->doesDwarfUseRelocationsAcrossSections())
-    if (OutStreamer->emitAbsoluteSymbolDiff(Hi, Lo, Size))
-      return;
-
-  // Get the Hi-Lo expression.
-  const MCExpr *Diff =
-    MCBinaryExpr::createSub(MCSymbolRefExpr::create(Hi, OutContext),
-                            MCSymbolRefExpr::create(Lo, OutContext),
-                            OutContext);
-
-  if (!MAI->doesSetDirectiveSuppressesReloc()) {
-    OutStreamer->EmitValue(Diff, Size);
-    return;
-  }
-
-  // Otherwise, emit with .set (aka assignment).
-  MCSymbol *SetLabel = createTempSymbol("set");
-  OutStreamer->EmitAssignment(SetLabel, Diff);
-  OutStreamer->EmitSymbolValue(SetLabel, Size);
+  OutStreamer->emitAbsoluteSymbolDiff(Hi, Lo, Size);
 }
 
 /// EmitLabelPlusOffset - Emit something like ".long Label+Offset"
@@ -1811,40 +1790,30 @@ static int isRepeatedByteSequence(const ConstantDataSequential *V) {
 /// composed of a repeated sequence of identical bytes and return the
 /// byte value.  If it is not a repeated sequence, return -1.
 static int isRepeatedByteSequence(const Value *V, TargetMachine &TM) {
-
   if (const ConstantInt *CI = dyn_cast<ConstantInt>(V)) {
-    if (CI->getBitWidth() > 64) return -1;
+    uint64_t Size = TM.getDataLayout()->getTypeAllocSizeInBits(V->getType());
+    assert(Size % 8 == 0);
 
-    uint64_t Size =
-        TM.getDataLayout()->getTypeAllocSize(V->getType());
-    uint64_t Value = CI->getZExtValue();
+    // Extend the element to take zero padding into account.
+    APInt Value = CI->getValue().zextOrSelf(Size);
+    if (!Value.isSplat(8))
+      return -1;
 
-    // Make sure the constant is at least 8 bits long and has a power
-    // of 2 bit width.  This guarantees the constant bit width is
-    // always a multiple of 8 bits, avoiding issues with padding out
-    // to Size and other such corner cases.
-    if (CI->getBitWidth() < 8 || !isPowerOf2_64(CI->getBitWidth())) return -1;
-
-    uint8_t Byte = static_cast<uint8_t>(Value);
-
-    for (unsigned i = 1; i < Size; ++i) {
-      Value >>= 8;
-      if (static_cast<uint8_t>(Value) != Byte) return -1;
-    }
-    return Byte;
+    return Value.zextOrTrunc(8).getZExtValue();
   }
   if (const ConstantArray *CA = dyn_cast<ConstantArray>(V)) {
     // Make sure all array elements are sequences of the same repeated
     // byte.
     assert(CA->getNumOperands() != 0 && "Should be a CAZ");
-    int Byte = isRepeatedByteSequence(CA->getOperand(0), TM);
-    if (Byte == -1) return -1;
+    Constant *Op0 = CA->getOperand(0);
+    int Byte = isRepeatedByteSequence(Op0, TM);
+    if (Byte == -1)
+      return -1;
 
-    for (unsigned i = 1, e = CA->getNumOperands(); i != e; ++i) {
-      int ThisByte = isRepeatedByteSequence(CA->getOperand(i), TM);
-      if (ThisByte == -1) return -1;
-      if (Byte != ThisByte) return -1;
-    }
+    // All array elements must be equal.
+    for (unsigned i = 1, e = CA->getNumOperands(); i != e; ++i)
+      if (CA->getOperand(i) != Op0)
+        return -1;
     return Byte;
   }
 
@@ -2116,8 +2085,12 @@ static void handleIndirectSymViaGOTPCRel(AsmPrinter &AP, const MCExpr **ME,
   MCValue MV;
   if (!(*ME)->evaluateAsRelocatable(MV, nullptr, nullptr) || MV.isAbsolute())
     return;
+  const MCSymbolRefExpr *SymA = MV.getSymA();
+  if (!SymA)
+    return;
 
-  const MCSymbol *GOTEquivSym = &MV.getSymA()->getSymbol();
+  // Check that GOT equivalent symbol is cached.
+  const MCSymbol *GOTEquivSym = &SymA->getSymbol();
   if (!AP.GlobalGOTEquivs.count(GOTEquivSym))
     return;
 
@@ -2125,8 +2098,11 @@ static void handleIndirectSymViaGOTPCRel(AsmPrinter &AP, const MCExpr **ME,
   if (!BaseGV)
     return;
 
+  // Check for a valid base symbol
   const MCSymbol *BaseSym = AP.getSymbol(BaseGV);
-  if (BaseSym != &MV.getSymB()->getSymbol())
+  const MCSymbolRefExpr *SymB = MV.getSymB();
+
+  if (!SymB || BaseSym != &SymB->getSymbol())
     return;
 
   // Make sure to match:
@@ -2322,11 +2298,10 @@ MCSymbol *AsmPrinter::getSymbolWithGlobalValueBase(const GlobalValue *GV,
                                                            TM);
 }
 
-/// GetExternalSymbolSymbol - Return the MCSymbol for the specified
-/// ExternalSymbol.
+/// Return the MCSymbol for the specified ExternalSymbol.
 MCSymbol *AsmPrinter::GetExternalSymbolSymbol(StringRef Sym) const {
   SmallString<60> NameStr;
-  Mang->getNameWithPrefix(NameStr, Sym);
+  Mangler::getNameWithPrefix(NameStr, Sym, *TM.getDataLayout());
   return OutContext.getOrCreateSymbol(NameStr);
 }
 
@@ -2414,8 +2389,7 @@ void AsmPrinter::EmitBasicBlockStart(const MachineBasicBlock &MBB) const {
     if (isVerbose())
       OutStreamer->AddComment("Block address taken");
 
-    std::vector<MCSymbol*> Symbols = MMI->getAddrLabelSymbolToEmit(BB);
-    for (auto *Sym : Symbols)
+    for (MCSymbol *Sym : MMI->getAddrLabelSymbolToEmit(BB))
       OutStreamer->EmitLabel(Sym);
   }
 
