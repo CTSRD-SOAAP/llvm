@@ -45,6 +45,9 @@ Verbose("v", cl::desc("Print information about actions taken"));
 static cl::opt<bool>
 Recursive("R", cl::desc("Print information recursively for all found libraries"));
 
+static cl::opt<bool>
+ListOnly("list-only", cl::desc("Print all required shared libs (one per line)"));
+
 // Read the specified bitcode file in and return it. This routine searches the
 // link path for the specified file to try to find it...
 static std::unique_ptr<Module>
@@ -129,7 +132,9 @@ int main(int argc, char **argv) {
       return 1;
     }
 
-    outs() << InputFilename << ":\n";
+    if (!ListOnly) {
+      outs() << InputFilename << ":\n";
+    }
 
     // TODO: implement Recursive Flag
     if (NamedMDNode* NMD = M->getNamedMetadata("llvm.sharedlibs")) {
@@ -141,7 +146,9 @@ int main(int argc, char **argv) {
       }
       MDNode* libs = NMD->getOperand(0);
       if (libs->getNumOperands() == 0) {
-        indented(1) << "no shared libraries\n";
+        if (!ListOnly) {
+          indented(1) << "no shared libraries\n";
+        }
         continue;
       }
       for (const MDOperand& lib : libs->operands()) {
@@ -150,6 +157,10 @@ int main(int argc, char **argv) {
           if (Name.empty()) {
             errs() << "Invalid file format of " << InputFilename << ": Empty library name found!\n";
             error = true;
+            continue;
+          }
+          if (ListOnly) {
+            outs() << Name << '\n';
             continue;
           }
           std::string Result = findSharedLib(Name);
@@ -163,7 +174,9 @@ int main(int argc, char **argv) {
         }
       }
     } else {
-      indented(1) << "no shared libraries\n";
+      if (!ListOnly) {
+        indented(1) << "no shared libraries\n";
+      }
     }
   }
   return error ? 1 : 0;
