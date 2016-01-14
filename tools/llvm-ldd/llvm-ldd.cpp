@@ -138,7 +138,9 @@ int main(int argc, char **argv) {
 
     // TODO: implement Recursive Flag
     if (NamedMDNode* NMD = M->getNamedMetadata("llvm.sharedlibs")) {
-      if (NMD->getNumOperands() != 1) {
+      if (NMD->getNumOperands() == 0) {
+        continue; // there is no shared libs metadata
+      } else if (NMD->getNumOperands() != 1) {
         errs() << "Invalid file format of " << InputFilename << "\n";
         if (Verbose) NMD->dump();
         error = true;
