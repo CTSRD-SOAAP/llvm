@@ -14,6 +14,8 @@
 
 #include "CodeGenDAGPatterns.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallSet.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/Debug.h"
@@ -23,697 +25,795 @@
 #include <algorithm>
 #include <cstdio>
 #include <set>
+#include <sstream>
 using namespace llvm;
 
 #define DEBUG_TYPE "dag-patterns"
 
-//===----------------------------------------------------------------------===//
-//  EEVT::TypeSet Implementation
-//===----------------------------------------------------------------------===//
-
-static inline bool isInteger(MVT::SimpleValueType VT) {
-  return MVT(VT).isInteger();
+static inline bool isIntegerOrPtr(MVT VT) {
+  return VT.isInteger() || VT == MVT::iPTR;
 }
-static inline bool isFloatingPoint(MVT::SimpleValueType VT) {
-  return MVT(VT).isFloatingPoint();
+static inline bool isFloatingPoint(MVT VT) {
+  return VT.isFloatingPoint();
 }
-static inline bool isVector(MVT::SimpleValueType VT) {
-  return MVT(VT).isVector();
+static inline bool isVector(MVT VT) {
+  return VT.isVector();
 }
-static inline bool isScalar(MVT::SimpleValueType VT) {
-  return !MVT(VT).isVector();
+static inline bool isScalar(MVT VT) {
+  return !VT.isVector();
 }
 
-EEVT::TypeSet::TypeSet(MVT::SimpleValueType VT, TreePattern &TP) {
-  if (VT == MVT::iAny)
-    EnforceInteger(TP);
-  else if (VT == MVT::fAny)
-    EnforceFloatingPoint(TP);
-  else if (VT == MVT::vAny)
-    EnforceVector(TP);
-  else {
-    assert((VT < MVT::LAST_VALUETYPE || VT == MVT::iPTR ||
-            VT == MVT::iPTRAny || VT == MVT::Any) && "Not a concrete type!");
-    TypeVec.push_back(VT);
+template <typename T, typename Predicate>
+static bool berase_if(std::set<T> &S, Predicate P) {
+  bool Erased = false;
+  for (auto I = S.begin(); I != S.end(); ) {
+    if (P(*I)) {
+      Erased = true;
+      I = S.erase(I);
+    } else
+      ++I;
   }
+  return Erased;
 }
 
+// --- TypeSetByHwMode
 
-EEVT::TypeSet::TypeSet(ArrayRef<MVT::SimpleValueType> VTList) {
-  assert(!VTList.empty() && "empty list?");
-  TypeVec.append(VTList.begin(), VTList.end());
+// This is a parameterized type-set class. For each mode there is a list
+// of types that are currently possible for a given tree node. Type
+// inference will apply to each mode separately.
 
-  if (!VTList.empty())
-    assert(VTList[0] != MVT::iAny && VTList[0] != MVT::vAny &&
-           VTList[0] != MVT::fAny);
-
-  // Verify no duplicates.
-  array_pod_sort(TypeVec.begin(), TypeVec.end());
-  assert(std::unique(TypeVec.begin(), TypeVec.end()) == TypeVec.end());
+TypeSetByHwMode::TypeSetByHwMode(ArrayRef<ValueTypeByHwMode> VTList) {
+  for (const ValueTypeByHwMode &VVT : VTList)
+    insert(VVT);
 }
 
-/// FillWithPossibleTypes - Set to all legal types and return true, only valid
-/// on completely unknown type sets.
-bool EEVT::TypeSet::FillWithPossibleTypes(TreePattern &TP,
-                                          bool (*Pred)(MVT::SimpleValueType),
-                                          const char *PredicateName) {
-  assert(isCompletelyUnknown());
-  ArrayRef<MVT::SimpleValueType> LegalTypes =
-    TP.getDAGPatterns().getTargetInfo().getLegalValueTypes();
+bool TypeSetByHwMode::isValueTypeByHwMode(bool AllowEmpty) const {
+  for (const auto &I : *this) {
+    if (I.second.size() > 1)
+      return false;
+    if (!AllowEmpty && I.second.empty())
+      return false;
+  }
+  return true;
+}
 
-  if (TP.hasError())
+ValueTypeByHwMode TypeSetByHwMode::getValueTypeByHwMode() const {
+  assert(isValueTypeByHwMode(true) &&
+         "The type set has multiple types for at least one HW mode");
+  ValueTypeByHwMode VVT;
+  for (const auto &I : *this) {
+    MVT T = I.second.empty() ? MVT::Other : *I.second.begin();
+    VVT.getOrCreateTypeForMode(I.first, T);
+  }
+  return VVT;
+}
+
+bool TypeSetByHwMode::isPossible() const {
+  for (const auto &I : *this)
+    if (!I.second.empty())
+      return true;
+  return false;
+}
+
+bool TypeSetByHwMode::insert(const ValueTypeByHwMode &VVT) {
+  bool Changed = false;
+  std::set<unsigned> Modes;
+  for (const auto &P : VVT) {
+    unsigned M = P.first;
+    Modes.insert(M);
+    // Make sure there exists a set for each specific mode from VVT.
+    Changed |= getOrCreate(M).insert(P.second).second;
+  }
+
+  // If VVT has a default mode, add the corresponding type to all
+  // modes in "this" that do not exist in VVT.
+  if (Modes.count(DefaultMode)) {
+    MVT DT = VVT.getType(DefaultMode);
+    for (auto &I : *this)
+      if (!Modes.count(I.first))
+        Changed |= I.second.insert(DT).second;
+  }
+
+  return Changed;
+}
+
+// Constrain the type set to be the intersection with VTS.
+bool TypeSetByHwMode::constrain(const TypeSetByHwMode &VTS) {
+  bool Changed = false;
+  if (hasDefault()) {
+    for (const auto &I : VTS) {
+      unsigned M = I.first;
+      if (M == DefaultMode || hasMode(M))
+        continue;
+      Map[M] = Map[DefaultMode];
+      Changed = true;
+    }
+  }
+
+  for (auto &I : *this) {
+    unsigned M = I.first;
+    SetType &S = I.second;
+    if (VTS.hasMode(M) || VTS.hasDefault()) {
+      Changed |= intersect(I.second, VTS.get(M));
+    } else if (!S.empty()) {
+      S.clear();
+      Changed = true;
+    }
+  }
+  return Changed;
+}
+
+template <typename Predicate>
+bool TypeSetByHwMode::constrain(Predicate P) {
+  bool Changed = false;
+  for (auto &I : *this)
+    Changed |= berase_if(I.second, [&P](MVT VT) { return !P(VT); });
+  return Changed;
+}
+
+template <typename Predicate>
+bool TypeSetByHwMode::assign_if(const TypeSetByHwMode &VTS, Predicate P) {
+  assert(empty());
+  for (const auto &I : VTS) {
+    SetType &S = getOrCreate(I.first);
+    for (auto J : I.second)
+      if (P(J))
+        S.insert(J);
+  }
+  return !empty();
+}
+
+std::string TypeSetByHwMode::getAsString() const {
+  std::stringstream str;
+  std::vector<unsigned> Modes;
+
+  for (const auto &I : *this)
+    Modes.push_back(I.first);
+  if (Modes.empty())
+    return "{}";
+  array_pod_sort(Modes.begin(), Modes.end());
+
+  str << '{';
+  for (unsigned M : Modes) {
+    const SetType &S = get(M);
+    str << ' ' << getModeName(M) << ':' << getAsString(S);
+  }
+  str << " }";
+  return str.str();
+}
+
+std::string TypeSetByHwMode::getAsString(const SetType &S) {
+  std::vector<MVT> Types(S.begin(), S.end());
+  array_pod_sort(Types.begin(), Types.end());
+
+  std::stringstream str;
+  str << '[';
+  for (unsigned i = 0, e = Types.size(); i != e; ++i) {
+    str << ValueTypeByHwMode::getMVTName(Types[i]);
+    if (i != e-1)
+      str << ' ';
+  }
+  str << ']';
+  return str.str();
+}
+
+bool TypeSetByHwMode::operator==(const TypeSetByHwMode &VTS) const {
+  bool HaveDefault = hasDefault();
+  if (HaveDefault != VTS.hasDefault())
     return false;
 
-  for (unsigned i = 0, e = LegalTypes.size(); i != e; ++i)
-    if (!Pred || Pred(LegalTypes[i]))
-      TypeVec.push_back(LegalTypes[i]);
+  std::set<unsigned> Modes;
+  for (auto &I : *this)
+    Modes.insert(I.first);
+  for (const auto &I : VTS)
+    Modes.insert(I.first);
 
-  // If we have nothing that matches the predicate, bail out.
-  if (TypeVec.empty()) {
-    TP.error("Type inference contradiction found, no " +
-             std::string(PredicateName) + " types found");
-    return false;
+  if (HaveDefault) {
+    // Both sets have default mode.
+    for (unsigned M : Modes) {
+      if (get(M) != VTS.get(M))
+        return false;
+    }
+  } else {
+    // Neither set has default mode.
+    for (unsigned M : Modes) {
+      // If there is no default mode, an empty set is equivalent to not having
+      // the corresponding mode.
+      bool NoModeThis = !hasMode(M) || get(M).empty();
+      bool NoModeVTS = !VTS.hasMode(M) || VTS.get(M).empty();
+      if (NoModeThis != NoModeVTS)
+        return false;
+      if (!NoModeThis)
+        if (get(M) != VTS.get(M))
+          return false;
+    }
   }
-  // No need to sort with one element.
-  if (TypeVec.size() == 1) return true;
-
-  // Remove duplicates.
-  array_pod_sort(TypeVec.begin(), TypeVec.end());
-  TypeVec.erase(std::unique(TypeVec.begin(), TypeVec.end()), TypeVec.end());
 
   return true;
 }
 
-/// hasIntegerTypes - Return true if this TypeSet contains iAny or an
-/// integer value type.
-bool EEVT::TypeSet::hasIntegerTypes() const {
-  for (unsigned i = 0, e = TypeVec.size(); i != e; ++i)
-    if (isInteger(TypeVec[i]))
-      return true;
-  return false;
+LLVM_DUMP_METHOD
+void TypeSetByHwMode::dump() const {
+  dbgs() << getAsString() << '\n';
 }
 
-/// hasFloatingPointTypes - Return true if this TypeSet contains an fAny or
-/// a floating point value type.
-bool EEVT::TypeSet::hasFloatingPointTypes() const {
-  for (unsigned i = 0, e = TypeVec.size(); i != e; ++i)
-    if (isFloatingPoint(TypeVec[i]))
-      return true;
-  return false;
-}
+bool TypeSetByHwMode::intersect(SetType &Out, const SetType &In) {
+  bool OutP = Out.count(MVT::iPTR), InP = In.count(MVT::iPTR);
+  auto Int = [&In](MVT T) -> bool { return !In.count(T); };
 
-/// hasScalarTypes - Return true if this TypeSet contains a scalar value type.
-bool EEVT::TypeSet::hasScalarTypes() const {
-  for (unsigned i = 0, e = TypeVec.size(); i != e; ++i)
-    if (isScalar(TypeVec[i]))
-      return true;
-  return false;
-}
+  if (OutP == InP)
+    return berase_if(Out, Int);
 
-/// hasVectorTypes - Return true if this TypeSet contains a vAny or a vector
-/// value type.
-bool EEVT::TypeSet::hasVectorTypes() const {
-  for (unsigned i = 0, e = TypeVec.size(); i != e; ++i)
-    if (isVector(TypeVec[i]))
-      return true;
-  return false;
-}
+  // Compute the intersection of scalars separately to account for only
+  // one set containing iPTR.
+  // The itersection of iPTR with a set of integer scalar types that does not
+  // include iPTR will result in the most specific scalar type:
+  // - iPTR is more specific than any set with two elements or more
+  // - iPTR is less specific than any single integer scalar type.
+  // For example
+  // { iPTR } * { i32 }     -> { i32 }
+  // { iPTR } * { i32 i64 } -> { iPTR }
 
-
-std::string EEVT::TypeSet::getName() const {
-  if (TypeVec.empty()) return "<empty>";
-
-  std::string Result;
-
-  for (unsigned i = 0, e = TypeVec.size(); i != e; ++i) {
-    std::string VTName = llvm::getEnumName(TypeVec[i]);
-    // Strip off MVT:: prefix if present.
-    if (VTName.substr(0,5) == "MVT::")
-      VTName = VTName.substr(5);
-    if (i) Result += ':';
-    Result += VTName;
+  SetType Diff;
+  if (InP) {
+    std::copy_if(Out.begin(), Out.end(), std::inserter(Diff, Diff.end()),
+                [&In](MVT T) { return !In.count(T); });
+    berase_if(Out, [&Diff](MVT T) { return Diff.count(T); });
+  } else {
+    std::copy_if(In.begin(), In.end(), std::inserter(Diff, Diff.end()),
+                [&Out](MVT T) { return !Out.count(T); });
+    Out.erase(MVT::iPTR);
   }
 
-  if (TypeVec.size() == 1)
-    return Result;
-  return "{" + Result + "}";
+  bool Changed = berase_if(Out, Int);
+  unsigned NumD = Diff.size();
+  if (NumD == 0)
+    return Changed;
+
+  if (NumD == 1) {
+    Out.insert(*Diff.begin());
+    // This is a change only if Out was the one with iPTR (which is now
+    // being replaced).
+    Changed |= OutP;
+  } else {
+    Out.insert(MVT::iPTR);
+    Changed |= InP;
+  }
+  return Changed;
 }
 
-/// MergeInTypeInfo - This merges in type information from the specified
-/// argument.  If 'this' changes, it returns true.  If the two types are
-/// contradictory (e.g. merge f32 into i32) then this flags an error.
-bool EEVT::TypeSet::MergeInTypeInfo(const EEVT::TypeSet &InVT, TreePattern &TP){
-  if (InVT.isCompletelyUnknown() || *this == InVT || TP.hasError())
-    return false;
+void TypeSetByHwMode::validate() const {
+#ifndef NDEBUG
+  if (empty())
+    return;
+  bool AllEmpty = true;
+  for (const auto &I : *this)
+    AllEmpty &= I.second.empty();
+  assert(!AllEmpty &&
+          "type set is empty for each HW mode: type contradiction?");
+#endif
+}
 
-  if (isCompletelyUnknown()) {
-    *this = InVT;
+// --- TypeInfer
+
+bool TypeInfer::MergeInTypeInfo(TypeSetByHwMode &Out,
+                                const TypeSetByHwMode &In) {
+  ValidateOnExit _1(Out);
+  In.validate();
+  if (In.empty() || Out == In || TP.hasError())
+    return false;
+  if (Out.empty()) {
+    Out = In;
     return true;
   }
 
-  assert(TypeVec.size() >= 1 && InVT.TypeVec.size() >= 1 && "No unknowns");
+  bool Changed = Out.constrain(In);
+  if (Changed && Out.empty())
+    TP.error("Type contradiction");
 
-  // Handle the abstract cases, seeing if we can resolve them better.
-  switch (TypeVec[0]) {
-  default: break;
-  case MVT::iPTR:
-  case MVT::iPTRAny:
-    if (InVT.hasIntegerTypes()) {
-      EEVT::TypeSet InCopy(InVT);
-      InCopy.EnforceInteger(TP);
-      InCopy.EnforceScalar(TP);
+  return Changed;
+}
 
-      if (InCopy.isConcrete()) {
-        // If the RHS has one integer type, upgrade iPTR to i32.
-        TypeVec[0] = InVT.TypeVec[0];
-        return true;
+bool TypeInfer::forceArbitrary(TypeSetByHwMode &Out) {
+  ValidateOnExit _1(Out);
+  if (TP.hasError())
+    return false;
+  assert(!Out.empty() && "cannot pick from an empty set");
+
+  bool Changed = false;
+  for (auto &I : Out) {
+    TypeSetByHwMode::SetType &S = I.second;
+    if (S.size() <= 1)
+      continue;
+    MVT T = *S.begin(); // Pick the first element.
+    S.clear();
+    S.insert(T);
+    Changed = true;
+  }
+  return Changed;
+}
+
+bool TypeInfer::EnforceInteger(TypeSetByHwMode &Out) {
+  ValidateOnExit _1(Out);
+  if (TP.hasError())
+    return false;
+  if (!Out.empty())
+    return Out.constrain(isIntegerOrPtr);
+
+  return Out.assign_if(getLegalTypes(), isIntegerOrPtr);
+}
+
+bool TypeInfer::EnforceFloatingPoint(TypeSetByHwMode &Out) {
+  ValidateOnExit _1(Out);
+  if (TP.hasError())
+    return false;
+  if (!Out.empty())
+    return Out.constrain(isFloatingPoint);
+
+  return Out.assign_if(getLegalTypes(), isFloatingPoint);
+}
+
+bool TypeInfer::EnforceScalar(TypeSetByHwMode &Out) {
+  ValidateOnExit _1(Out);
+  if (TP.hasError())
+    return false;
+  if (!Out.empty())
+    return Out.constrain(isScalar);
+
+  return Out.assign_if(getLegalTypes(), isScalar);
+}
+
+bool TypeInfer::EnforceVector(TypeSetByHwMode &Out) {
+  ValidateOnExit _1(Out);
+  if (TP.hasError())
+    return false;
+  if (!Out.empty())
+    return Out.constrain(isVector);
+
+  return Out.assign_if(getLegalTypes(), isVector);
+}
+
+bool TypeInfer::EnforceAny(TypeSetByHwMode &Out) {
+  ValidateOnExit _1(Out);
+  if (TP.hasError() || !Out.empty())
+    return false;
+
+  Out = getLegalTypes();
+  return true;
+}
+
+template <typename Iter, typename Pred, typename Less>
+static Iter min_if(Iter B, Iter E, Pred P, Less L) {
+  if (B == E)
+    return E;
+  Iter Min = E;
+  for (Iter I = B; I != E; ++I) {
+    if (!P(*I))
+      continue;
+    if (Min == E || L(*I, *Min))
+      Min = I;
+  }
+  return Min;
+}
+
+template <typename Iter, typename Pred, typename Less>
+static Iter max_if(Iter B, Iter E, Pred P, Less L) {
+  if (B == E)
+    return E;
+  Iter Max = E;
+  for (Iter I = B; I != E; ++I) {
+    if (!P(*I))
+      continue;
+    if (Max == E || L(*Max, *I))
+      Max = I;
+  }
+  return Max;
+}
+
+/// Make sure that for each type in Small, there exists a larger type in Big.
+bool TypeInfer::EnforceSmallerThan(TypeSetByHwMode &Small,
+                                   TypeSetByHwMode &Big) {
+  ValidateOnExit _1(Small), _2(Big);
+  if (TP.hasError())
+    return false;
+  bool Changed = false;
+
+  if (Small.empty())
+    Changed |= EnforceAny(Small);
+  if (Big.empty())
+    Changed |= EnforceAny(Big);
+
+  assert(Small.hasDefault() && Big.hasDefault());
+
+  std::vector<unsigned> Modes = union_modes(Small, Big);
+
+  // 1. Only allow integer or floating point types and make sure that
+  //    both sides are both integer or both floating point.
+  // 2. Make sure that either both sides have vector types, or neither
+  //    of them does.
+  for (unsigned M : Modes) {
+    TypeSetByHwMode::SetType &S = Small.get(M);
+    TypeSetByHwMode::SetType &B = Big.get(M);
+
+    if (any_of(S, isIntegerOrPtr) && any_of(S, isIntegerOrPtr)) {
+      auto NotInt = [](MVT VT) { return !isIntegerOrPtr(VT); };
+      Changed |= berase_if(S, NotInt) |
+                 berase_if(B, NotInt);
+    } else if (any_of(S, isFloatingPoint) && any_of(B, isFloatingPoint)) {
+      auto NotFP = [](MVT VT) { return !isFloatingPoint(VT); };
+      Changed |= berase_if(S, NotFP) |
+                 berase_if(B, NotFP);
+    } else if (S.empty() || B.empty()) {
+      Changed = !S.empty() || !B.empty();
+      S.clear();
+      B.clear();
+    } else {
+      TP.error("Incompatible types");
+      return Changed;
+    }
+
+    if (none_of(S, isVector) || none_of(B, isVector)) {
+      Changed |= berase_if(S, isVector) |
+                 berase_if(B, isVector);
+    }
+  }
+
+  auto LT = [](MVT A, MVT B) -> bool {
+    return A.getScalarSizeInBits() < B.getScalarSizeInBits() ||
+           (A.getScalarSizeInBits() == B.getScalarSizeInBits() &&
+            A.getSizeInBits() < B.getSizeInBits());
+  };
+  auto LE = [](MVT A, MVT B) -> bool {
+    // This function is used when removing elements: when a vector is compared
+    // to a non-vector, it should return false (to avoid removal).
+    if (A.isVector() != B.isVector())
+      return false;
+
+    // Note on the < comparison below:
+    // X86 has patterns like
+    //   (set VR128X:$dst, (v16i8 (X86vtrunc (v4i32 VR128X:$src1)))),
+    // where the truncated vector is given a type v16i8, while the source
+    // vector has type v4i32. They both have the same size in bits.
+    // The minimal type in the result is obviously v16i8, and when we remove
+    // all types from the source that are smaller-or-equal than v8i16, the
+    // only source type would also be removed (since it's equal in size).
+    return A.getScalarSizeInBits() <= B.getScalarSizeInBits() ||
+           A.getSizeInBits() < B.getSizeInBits();
+  };
+
+  for (unsigned M : Modes) {
+    TypeSetByHwMode::SetType &S = Small.get(M);
+    TypeSetByHwMode::SetType &B = Big.get(M);
+    // MinS = min scalar in Small, remove all scalars from Big that are
+    // smaller-or-equal than MinS.
+    auto MinS = min_if(S.begin(), S.end(), isScalar, LT);
+    if (MinS != S.end()) {
+      Changed |= berase_if(B, std::bind(LE, std::placeholders::_1, *MinS));
+      if (B.empty()) {
+        TP.error("Type contradiction in " +
+                 Twine(__func__) + ":" + Twine(__LINE__));
+        return Changed;
       }
+    }
+    // MaxS = max scalar in Big, remove all scalars from Small that are
+    // larger than MaxS.
+    auto MaxS = max_if(B.begin(), B.end(), isScalar, LT);
+    if (MaxS != B.end()) {
+      Changed |= berase_if(S, std::bind(LE, *MaxS, std::placeholders::_1));
+      if (B.empty()) {
+        TP.error("Type contradiction in " +
+                 Twine(__func__) + ":" + Twine(__LINE__));
+        return Changed;
+      }
+    }
 
-      // If the input has multiple scalar integers, this doesn't add any info.
-      if (!InCopy.isCompletelyUnknown())
+    // MinV = min vector in Small, remove all vectors from Big that are
+    // smaller-or-equal than MinV.
+    auto MinV = min_if(S.begin(), S.end(), isVector, LT);
+    if (MinV != S.end()) {
+      Changed |= berase_if(B, std::bind(LE, std::placeholders::_1, *MinV));
+      if (B.empty()) {
+        TP.error("Type contradiction in " +
+                 Twine(__func__) + ":" + Twine(__LINE__));
+        return Changed;
+      }
+    }
+    // MaxV = max vector in Big, remove all vectors from Small that are
+    // larger than MaxV.
+    auto MaxV = max_if(B.begin(), B.end(), isVector, LT);
+    if (MaxV != B.end()) {
+      Changed |= berase_if(S, std::bind(LE, *MaxV, std::placeholders::_1));
+      if (B.empty()) {
+        TP.error("Type contradiction in " +
+                 Twine(__func__) + ":" + Twine(__LINE__));
+        return Changed;
+      }
+    }
+  }
+
+  return Changed;
+}
+
+/// 1. Ensure that for each type T in Vec, T is a vector type, and that
+///    for each type U in Elem, U is a scalar type.
+/// 2. Ensure that for each (scalar) type U in Elem, there exists a (vector)
+///    type T in Vec, such that U is the element type of T.
+bool TypeInfer::EnforceVectorEltTypeIs(TypeSetByHwMode &Vec,
+                                       TypeSetByHwMode &Elem) {
+  ValidateOnExit _1(Vec), _2(Elem);
+  if (TP.hasError())
+    return false;
+  bool Changed = false;
+
+  if (Vec.empty())
+    Changed |= EnforceVector(Vec);
+  if (Elem.empty())
+    Changed |= EnforceScalar(Elem);
+
+  for (unsigned M : union_modes(Vec, Elem)) {
+    TypeSetByHwMode::SetType &V = Vec.get(M);
+    TypeSetByHwMode::SetType &E = Elem.get(M);
+
+    Changed |= berase_if(V, isScalar);  // Scalar = !vector
+    Changed |= berase_if(E, isVector);  // Vector = !scalar
+    assert(!V.empty() && !E.empty());
+
+    SmallSet<MVT,4> VT, ST;
+    // Collect element types from the "vector" set.
+    for (MVT T : V)
+      VT.insert(T.getVectorElementType());
+    // Collect scalar types from the "element" set.
+    for (MVT T : E)
+      ST.insert(T);
+
+    // Remove from V all (vector) types whose element type is not in S.
+    Changed |= berase_if(V, [&ST](MVT T) -> bool {
+                              return !ST.count(T.getVectorElementType());
+                            });
+    // Remove from E all (scalar) types, for which there is no corresponding
+    // type in V.
+    Changed |= berase_if(E, [&VT](MVT T) -> bool { return !VT.count(T); });
+
+    if (V.empty() || E.empty()) {
+      TP.error("Type contradiction in " +
+               Twine(__func__) + ":" + Twine(__LINE__));
+      return Changed;
+    }
+  }
+
+  return Changed;
+}
+
+bool TypeInfer::EnforceVectorEltTypeIs(TypeSetByHwMode &Vec,
+                                       const ValueTypeByHwMode &VVT) {
+  TypeSetByHwMode Tmp(VVT);
+  ValidateOnExit _1(Vec), _2(Tmp);
+  return EnforceVectorEltTypeIs(Vec, Tmp);
+}
+
+/// Ensure that for each type T in Sub, T is a vector type, and there
+/// exists a type U in Vec such that U is a vector type with the same
+/// element type as T and at least as many elements as T.
+bool TypeInfer::EnforceVectorSubVectorTypeIs(TypeSetByHwMode &Vec,
+                                             TypeSetByHwMode &Sub) {
+  ValidateOnExit _1(Vec), _2(Sub);
+  if (TP.hasError())
+    return false;
+
+  /// Return true if B is a suB-vector of P, i.e. P is a suPer-vector of B.
+  auto IsSubVec = [](MVT B, MVT P) -> bool {
+    if (!B.isVector() || !P.isVector())
+      return false;
+    if (B.getVectorElementType() != P.getVectorElementType())
+      return false;
+    return B.getVectorNumElements() < P.getVectorNumElements();
+  };
+
+  /// Return true if S has no element (vector type) that T is a sub-vector of,
+  /// i.e. has the same element type as T and more elements.
+  auto NoSubV = [&IsSubVec](const TypeSetByHwMode::SetType &S, MVT T) -> bool {
+    for (const auto &I : S)
+      if (IsSubVec(T, I))
         return false;
+    return true;
+  };
+
+  /// Return true if S has no element (vector type) that T is a super-vector
+  /// of, i.e. has the same element type as T and fewer elements.
+  auto NoSupV = [&IsSubVec](const TypeSetByHwMode::SetType &S, MVT T) -> bool {
+    for (const auto &I : S)
+      if (IsSubVec(I, T))
+        return false;
+    return true;
+  };
+
+  bool Changed = false;
+
+  if (Vec.empty())
+    Changed |= EnforceVector(Vec);
+  if (Sub.empty())
+    Changed |= EnforceVector(Sub);
+
+  for (unsigned M : union_modes(Vec, Sub)) {
+    TypeSetByHwMode::SetType &S = Sub.get(M);
+    TypeSetByHwMode::SetType &V = Vec.get(M);
+
+    Changed |= berase_if(S, isScalar);
+    if (S.empty()) {
+      TP.error("Type contradiction in " +
+               Twine(__func__) + ":" + Twine(__LINE__));
+      return Changed;
     }
-    break;
+
+    // Erase all types from S that are not sub-vectors of a type in V.
+    Changed |= berase_if(S, std::bind(NoSubV, V, std::placeholders::_1));
+    if (S.empty()) {
+      TP.error("Type contradiction in " +
+               Twine(__func__) + ":" + Twine(__LINE__));
+      return Changed;
+    }
+
+    // Erase all types from V that are not super-vectors of a type in S.
+    Changed |= berase_if(V, std::bind(NoSupV, S, std::placeholders::_1));
+    if (V.empty()) {
+      TP.error("Type contradiction in " +
+               Twine(__func__) + ":" + Twine(__LINE__));
+      return Changed;
+    }
   }
 
-  // If the input constraint is iAny/iPTR and this is an integer type list,
-  // remove non-integer types from the list.
-  if ((InVT.TypeVec[0] == MVT::iPTR || InVT.TypeVec[0] == MVT::iPTRAny) &&
-      hasIntegerTypes()) {
-    bool MadeChange = EnforceInteger(TP);
+  return Changed;
+}
 
-    // If we're merging in iPTR/iPTRAny and the node currently has a list of
-    // multiple different integer types, replace them with a single iPTR.
-    if ((InVT.TypeVec[0] == MVT::iPTR || InVT.TypeVec[0] == MVT::iPTRAny) &&
-        TypeVec.size() != 1) {
-      TypeVec.resize(1);
-      TypeVec[0] = InVT.TypeVec[0];
-      MadeChange = true;
-    }
+/// 1. Ensure that V has a scalar type iff W has a scalar type.
+/// 2. Ensure that for each vector type T in V, there exists a vector
+///    type U in W, such that T and U have the same number of elements.
+/// 3. Ensure that for each vector type U in W, there exists a vector
+///    type T in V, such that T and U have the same number of elements
+///    (reverse of 2).
+bool TypeInfer::EnforceSameNumElts(TypeSetByHwMode &V, TypeSetByHwMode &W) {
+  ValidateOnExit _1(V), _2(W);
+  if (TP.hasError())
+    return false;
 
-    return MadeChange;
+  bool Changed = false;
+  if (V.empty())
+    Changed |= EnforceAny(V);
+  if (W.empty())
+    Changed |= EnforceAny(W);
+
+  // An actual vector type cannot have 0 elements, so we can treat scalars
+  // as zero-length vectors. This way both vectors and scalars can be
+  // processed identically.
+  auto NoLength = [](const SmallSet<unsigned,2> &Lengths, MVT T) -> bool {
+    return !Lengths.count(T.isVector() ? T.getVectorNumElements() : 0);
+  };
+
+  for (unsigned M : union_modes(V, W)) {
+    TypeSetByHwMode::SetType &VS = V.get(M);
+    TypeSetByHwMode::SetType &WS = W.get(M);
+
+    SmallSet<unsigned,2> VN, WN;
+    for (MVT T : VS)
+      VN.insert(T.isVector() ? T.getVectorNumElements() : 0);
+    for (MVT T : WS)
+      WN.insert(T.isVector() ? T.getVectorNumElements() : 0);
+
+    Changed |= berase_if(VS, std::bind(NoLength, WN, std::placeholders::_1));
+    Changed |= berase_if(WS, std::bind(NoLength, VN, std::placeholders::_1));
+  }
+  return Changed;
+}
+
+/// 1. Ensure that for each type T in A, there exists a type U in B,
+///    such that T and U have equal size in bits.
+/// 2. Ensure that for each type U in B, there exists a type T in A
+///    such that T and U have equal size in bits (reverse of 1).
+bool TypeInfer::EnforceSameSize(TypeSetByHwMode &A, TypeSetByHwMode &B) {
+  ValidateOnExit _1(A), _2(B);
+  if (TP.hasError())
+    return false;
+  bool Changed = false;
+  if (A.empty())
+    Changed |= EnforceAny(A);
+  if (B.empty())
+    Changed |= EnforceAny(B);
+
+  auto NoSize = [](const SmallSet<unsigned,2> &Sizes, MVT T) -> bool {
+    return !Sizes.count(T.getSizeInBits());
+  };
+
+  for (unsigned M : union_modes(A, B)) {
+    TypeSetByHwMode::SetType &AS = A.get(M);
+    TypeSetByHwMode::SetType &BS = B.get(M);
+    SmallSet<unsigned,2> AN, BN;
+
+    for (MVT T : AS)
+      AN.insert(T.getSizeInBits());
+    for (MVT T : BS)
+      BN.insert(T.getSizeInBits());
+
+    Changed |= berase_if(AS, std::bind(NoSize, BN, std::placeholders::_1));
+    Changed |= berase_if(BS, std::bind(NoSize, AN, std::placeholders::_1));
   }
 
-  // If this is a type list and the RHS is a typelist as well, eliminate entries
-  // from this list that aren't in the other one.
-  bool MadeChange = false;
-  TypeSet InputSet(*this);
+  return Changed;
+}
 
-  for (unsigned i = 0; i != TypeVec.size(); ++i) {
-    bool InInVT = false;
-    for (unsigned j = 0, e = InVT.TypeVec.size(); j != e; ++j)
-      if (TypeVec[i] == InVT.TypeVec[j]) {
-        InInVT = true;
+void TypeInfer::expandOverloads(TypeSetByHwMode &VTS) {
+  ValidateOnExit _1(VTS);
+  TypeSetByHwMode Legal = getLegalTypes();
+  bool HaveLegalDef = Legal.hasDefault();
+
+  for (auto &I : VTS) {
+    unsigned M = I.first;
+    if (!Legal.hasMode(M) && !HaveLegalDef) {
+      TP.error("Invalid mode " + Twine(M));
+      return;
+    }
+    expandOverloads(I.second, Legal.get(M));
+  }
+}
+
+void TypeInfer::expandOverloads(TypeSetByHwMode::SetType &Out,
+                                const TypeSetByHwMode::SetType &Legal) {
+  std::set<MVT> Ovs;
+  for (auto I = Out.begin(); I != Out.end(); ) {
+    if (I->isOverloaded()) {
+      Ovs.insert(*I);
+      I = Out.erase(I);
+      continue;
+    }
+    ++I;
+  }
+
+  for (MVT Ov : Ovs) {
+    switch (Ov.SimpleTy) {
+      case MVT::iPTRAny:
+        Out.insert(MVT::iPTR);
+        return;
+      case MVT::iAny:
+        for (MVT T : MVT::integer_valuetypes())
+          if (Legal.count(T))
+            Out.insert(T);
+        for (MVT T : MVT::integer_vector_valuetypes())
+          if (Legal.count(T))
+            Out.insert(T);
+        return;
+      case MVT::fAny:
+        for (MVT T : MVT::fp_valuetypes())
+          if (Legal.count(T))
+            Out.insert(T);
+        for (MVT T : MVT::fp_vector_valuetypes())
+          if (Legal.count(T))
+            Out.insert(T);
+        return;
+      case MVT::vAny:
+        for (MVT T : MVT::vector_valuetypes())
+          if (Legal.count(T))
+            Out.insert(T);
+        return;
+      case MVT::Any:
+        for (MVT T : MVT::all_valuetypes())
+          if (Legal.count(T))
+            Out.insert(T);
+        return;
+      default:
         break;
-      }
-
-    if (InInVT) continue;
-    TypeVec.erase(TypeVec.begin()+i--);
-    MadeChange = true;
-  }
-
-  // If we removed all of our types, we have a type contradiction.
-  if (!TypeVec.empty())
-    return MadeChange;
-
-  // FIXME: Really want an SMLoc here!
-  TP.error("Type inference contradiction found, merging '" +
-           InVT.getName() + "' into '" + InputSet.getName() + "'");
-  return false;
-}
-
-/// EnforceInteger - Remove all non-integer types from this set.
-bool EEVT::TypeSet::EnforceInteger(TreePattern &TP) {
-  if (TP.hasError())
-    return false;
-  // If we know nothing, then get the full set.
-  if (TypeVec.empty())
-    return FillWithPossibleTypes(TP, isInteger, "integer");
-  if (!hasFloatingPointTypes())
-    return false;
-
-  TypeSet InputSet(*this);
-
-  // Filter out all the fp types.
-  for (unsigned i = 0; i != TypeVec.size(); ++i)
-    if (!isInteger(TypeVec[i]))
-      TypeVec.erase(TypeVec.begin()+i--);
-
-  if (TypeVec.empty()) {
-    TP.error("Type inference contradiction found, '" +
-             InputSet.getName() + "' needs to be integer");
-    return false;
-  }
-  return true;
-}
-
-/// EnforceFloatingPoint - Remove all integer types from this set.
-bool EEVT::TypeSet::EnforceFloatingPoint(TreePattern &TP) {
-  if (TP.hasError())
-    return false;
-  // If we know nothing, then get the full set.
-  if (TypeVec.empty())
-    return FillWithPossibleTypes(TP, isFloatingPoint, "floating point");
-
-  if (!hasIntegerTypes())
-    return false;
-
-  TypeSet InputSet(*this);
-
-  // Filter out all the fp types.
-  for (unsigned i = 0; i != TypeVec.size(); ++i)
-    if (!isFloatingPoint(TypeVec[i]))
-      TypeVec.erase(TypeVec.begin()+i--);
-
-  if (TypeVec.empty()) {
-    TP.error("Type inference contradiction found, '" +
-             InputSet.getName() + "' needs to be floating point");
-    return false;
-  }
-  return true;
-}
-
-/// EnforceScalar - Remove all vector types from this.
-bool EEVT::TypeSet::EnforceScalar(TreePattern &TP) {
-  if (TP.hasError())
-    return false;
-
-  // If we know nothing, then get the full set.
-  if (TypeVec.empty())
-    return FillWithPossibleTypes(TP, isScalar, "scalar");
-
-  if (!hasVectorTypes())
-    return false;
-
-  TypeSet InputSet(*this);
-
-  // Filter out all the vector types.
-  for (unsigned i = 0; i != TypeVec.size(); ++i)
-    if (!isScalar(TypeVec[i]))
-      TypeVec.erase(TypeVec.begin()+i--);
-
-  if (TypeVec.empty()) {
-    TP.error("Type inference contradiction found, '" +
-             InputSet.getName() + "' needs to be scalar");
-    return false;
-  }
-  return true;
-}
-
-/// EnforceVector - Remove all vector types from this.
-bool EEVT::TypeSet::EnforceVector(TreePattern &TP) {
-  if (TP.hasError())
-    return false;
-
-  // If we know nothing, then get the full set.
-  if (TypeVec.empty())
-    return FillWithPossibleTypes(TP, isVector, "vector");
-
-  TypeSet InputSet(*this);
-  bool MadeChange = false;
-
-  // Filter out all the scalar types.
-  for (unsigned i = 0; i != TypeVec.size(); ++i)
-    if (!isVector(TypeVec[i])) {
-      TypeVec.erase(TypeVec.begin()+i--);
-      MadeChange = true;
     }
-
-  if (TypeVec.empty()) {
-    TP.error("Type inference contradiction found, '" +
-             InputSet.getName() + "' needs to be a vector");
-    return false;
-  }
-  return MadeChange;
-}
-
-
-
-/// EnforceSmallerThan - 'this' must be a smaller VT than Other. For vectors
-/// this shoud be based on the element type. Update this and other based on
-/// this information.
-bool EEVT::TypeSet::EnforceSmallerThan(EEVT::TypeSet &Other, TreePattern &TP) {
-  if (TP.hasError())
-    return false;
-
-  // Both operands must be integer or FP, but we don't care which.
-  bool MadeChange = false;
-
-  if (isCompletelyUnknown())
-    MadeChange = FillWithPossibleTypes(TP);
-
-  if (Other.isCompletelyUnknown())
-    MadeChange = Other.FillWithPossibleTypes(TP);
-
-  // If one side is known to be integer or known to be FP but the other side has
-  // no information, get at least the type integrality info in there.
-  if (!hasFloatingPointTypes())
-    MadeChange |= Other.EnforceInteger(TP);
-  else if (!hasIntegerTypes())
-    MadeChange |= Other.EnforceFloatingPoint(TP);
-  if (!Other.hasFloatingPointTypes())
-    MadeChange |= EnforceInteger(TP);
-  else if (!Other.hasIntegerTypes())
-    MadeChange |= EnforceFloatingPoint(TP);
-
-  assert(!isCompletelyUnknown() && !Other.isCompletelyUnknown() &&
-         "Should have a type list now");
-
-  // If one contains vectors but the other doesn't pull vectors out.
-  if (!hasVectorTypes())
-    MadeChange |= Other.EnforceScalar(TP);
-  else if (!hasScalarTypes())
-    MadeChange |= Other.EnforceVector(TP);
-  if (!Other.hasVectorTypes())
-    MadeChange |= EnforceScalar(TP);
-  else if (!Other.hasScalarTypes())
-    MadeChange |= EnforceVector(TP);
-
-  // This code does not currently handle nodes which have multiple types,
-  // where some types are integer, and some are fp.  Assert that this is not
-  // the case.
-  assert(!(hasIntegerTypes() && hasFloatingPointTypes()) &&
-         !(Other.hasIntegerTypes() && Other.hasFloatingPointTypes()) &&
-         "SDTCisOpSmallerThanOp does not handle mixed int/fp types!");
-
-  if (TP.hasError())
-    return false;
-
-  // Okay, find the smallest type from current set and remove anything the
-  // same or smaller from the other set. We need to ensure that the scalar
-  // type size is smaller than the scalar size of the smallest type. For
-  // vectors, we also need to make sure that the total size is no larger than
-  // the size of the smallest type.
-  TypeSet InputSet(Other);
-  MVT Smallest = TypeVec[0];
-  for (unsigned i = 0; i != Other.TypeVec.size(); ++i) {
-    MVT OtherVT = Other.TypeVec[i];
-    // Don't compare vector and non-vector types.
-    if (OtherVT.isVector() != Smallest.isVector())
-      continue;
-    // The getSizeInBits() check here is only needed for vectors, but is
-    // a subset of the scalar check for scalars so no need to qualify.
-    if (OtherVT.getScalarSizeInBits() <= Smallest.getScalarSizeInBits() ||
-        OtherVT.getSizeInBits() < Smallest.getSizeInBits()) {
-      Other.TypeVec.erase(Other.TypeVec.begin()+i--);
-      MadeChange = true;
-    }
-  }
-
-  if (Other.TypeVec.empty()) {
-    TP.error("Type inference contradiction found, '" + InputSet.getName() +
-             "' has nothing larger than '" + getName() +"'!");
-    return false;
-  }
-
-  // Okay, find the largest type from the other set and remove anything the
-  // same or smaller from the current set. We need to ensure that the scalar
-  // type size is larger than the scalar size of the largest type. For
-  // vectors, we also need to make sure that the total size is no smaller than
-  // the size of the largest type.
-  InputSet = TypeSet(*this);
-  MVT Largest = Other.TypeVec[Other.TypeVec.size()-1];
-  for (unsigned i = 0; i != TypeVec.size(); ++i) {
-    MVT OtherVT = TypeVec[i];
-    // Don't compare vector and non-vector types.
-    if (OtherVT.isVector() != Largest.isVector())
-      continue;
-    // The getSizeInBits() check here is only needed for vectors, but is
-    // a subset of the scalar check for scalars so no need to qualify.
-    if (OtherVT.getScalarSizeInBits() >= Largest.getScalarSizeInBits() ||
-         OtherVT.getSizeInBits() > Largest.getSizeInBits()) {
-      TypeVec.erase(TypeVec.begin()+i--);
-      MadeChange = true;
-    }
-  }
-
-  if (TypeVec.empty()) {
-    TP.error("Type inference contradiction found, '" + InputSet.getName() +
-             "' has nothing smaller than '" + Other.getName() +"'!");
-    return false;
-  }
-
-  return MadeChange;
-}
-
-/// EnforceVectorEltTypeIs - 'this' is now constrainted to be a vector type
-/// whose element is specified by VTOperand.
-bool EEVT::TypeSet::EnforceVectorEltTypeIs(MVT::SimpleValueType VT,
-                                           TreePattern &TP) {
-  bool MadeChange = false;
-
-  MadeChange |= EnforceVector(TP);
-
-  TypeSet InputSet(*this);
-
-  // Filter out all the types which don't have the right element type.
-  for (unsigned i = 0; i != TypeVec.size(); ++i) {
-    assert(isVector(TypeVec[i]) && "EnforceVector didn't work");
-    if (MVT(TypeVec[i]).getVectorElementType().SimpleTy != VT) {
-      TypeVec.erase(TypeVec.begin()+i--);
-      MadeChange = true;
-    }
-  }
-
-  if (TypeVec.empty()) {  // FIXME: Really want an SMLoc here!
-    TP.error("Type inference contradiction found, forcing '" +
-             InputSet.getName() + "' to have a vector element");
-    return false;
-  }
-
-  return MadeChange;
-}
-
-/// EnforceVectorEltTypeIs - 'this' is now constrainted to be a vector type
-/// whose element is specified by VTOperand.
-bool EEVT::TypeSet::EnforceVectorEltTypeIs(EEVT::TypeSet &VTOperand,
-                                           TreePattern &TP) {
-  if (TP.hasError())
-    return false;
-
-  // "This" must be a vector and "VTOperand" must be a scalar.
-  bool MadeChange = false;
-  MadeChange |= EnforceVector(TP);
-  MadeChange |= VTOperand.EnforceScalar(TP);
-
-  // If we know the vector type, it forces the scalar to agree.
-  if (isConcrete()) {
-    MVT IVT = getConcrete();
-    IVT = IVT.getVectorElementType();
-    return MadeChange |
-      VTOperand.MergeInTypeInfo(IVT.SimpleTy, TP);
-  }
-
-  // If the scalar type is known, filter out vector types whose element types
-  // disagree.
-  if (!VTOperand.isConcrete())
-    return MadeChange;
-
-  MVT::SimpleValueType VT = VTOperand.getConcrete();
-
-  TypeSet InputSet(*this);
-
-  // Filter out all the types which don't have the right element type.
-  for (unsigned i = 0; i != TypeVec.size(); ++i) {
-    assert(isVector(TypeVec[i]) && "EnforceVector didn't work");
-    if (MVT(TypeVec[i]).getVectorElementType().SimpleTy != VT) {
-      TypeVec.erase(TypeVec.begin()+i--);
-      MadeChange = true;
-    }
-  }
-
-  if (TypeVec.empty()) {  // FIXME: Really want an SMLoc here!
-    TP.error("Type inference contradiction found, forcing '" +
-             InputSet.getName() + "' to have a vector element");
-    return false;
-  }
-  return MadeChange;
-}
-
-/// EnforceVectorSubVectorTypeIs - 'this' is now constrainted to be a
-/// vector type specified by VTOperand.
-bool EEVT::TypeSet::EnforceVectorSubVectorTypeIs(EEVT::TypeSet &VTOperand,
-                                                 TreePattern &TP) {
-  if (TP.hasError())
-    return false;
-
-  // "This" must be a vector and "VTOperand" must be a vector.
-  bool MadeChange = false;
-  MadeChange |= EnforceVector(TP);
-  MadeChange |= VTOperand.EnforceVector(TP);
-
-  // If one side is known to be integer or known to be FP but the other side has
-  // no information, get at least the type integrality info in there.
-  if (!hasFloatingPointTypes())
-    MadeChange |= VTOperand.EnforceInteger(TP);
-  else if (!hasIntegerTypes())
-    MadeChange |= VTOperand.EnforceFloatingPoint(TP);
-  if (!VTOperand.hasFloatingPointTypes())
-    MadeChange |= EnforceInteger(TP);
-  else if (!VTOperand.hasIntegerTypes())
-    MadeChange |= EnforceFloatingPoint(TP);
-
-  assert(!isCompletelyUnknown() && !VTOperand.isCompletelyUnknown() &&
-         "Should have a type list now");
-
-  // If we know the vector type, it forces the scalar types to agree.
-  // Also force one vector to have more elements than the other.
-  if (isConcrete()) {
-    MVT IVT = getConcrete();
-    unsigned NumElems = IVT.getVectorNumElements();
-    IVT = IVT.getVectorElementType();
-
-    EEVT::TypeSet EltTypeSet(IVT.SimpleTy, TP);
-    MadeChange |= VTOperand.EnforceVectorEltTypeIs(EltTypeSet, TP);
-
-    // Only keep types that have less elements than VTOperand.
-    TypeSet InputSet(VTOperand);
-
-    for (unsigned i = 0; i != VTOperand.TypeVec.size(); ++i) {
-      assert(isVector(VTOperand.TypeVec[i]) && "EnforceVector didn't work");
-      if (MVT(VTOperand.TypeVec[i]).getVectorNumElements() >= NumElems) {
-        VTOperand.TypeVec.erase(VTOperand.TypeVec.begin()+i--);
-        MadeChange = true;
-      }
-    }
-    if (VTOperand.TypeVec.empty()) {  // FIXME: Really want an SMLoc here!
-      TP.error("Type inference contradiction found, forcing '" +
-               InputSet.getName() + "' to have less vector elements than '" +
-               getName() + "'");
-      return false;
-    }
-  } else if (VTOperand.isConcrete()) {
-    MVT IVT = VTOperand.getConcrete();
-    unsigned NumElems = IVT.getVectorNumElements();
-    IVT = IVT.getVectorElementType();
-
-    EEVT::TypeSet EltTypeSet(IVT.SimpleTy, TP);
-    MadeChange |= EnforceVectorEltTypeIs(EltTypeSet, TP);
-
-    // Only keep types that have more elements than 'this'.
-    TypeSet InputSet(*this);
-
-    for (unsigned i = 0; i != TypeVec.size(); ++i) {
-      assert(isVector(TypeVec[i]) && "EnforceVector didn't work");
-      if (MVT(TypeVec[i]).getVectorNumElements() <= NumElems) {
-        TypeVec.erase(TypeVec.begin()+i--);
-        MadeChange = true;
-      }
-    }
-    if (TypeVec.empty()) {  // FIXME: Really want an SMLoc here!
-      TP.error("Type inference contradiction found, forcing '" +
-               InputSet.getName() + "' to have more vector elements than '" +
-               VTOperand.getName() + "'");
-      return false;
-    }
-  }
-
-  return MadeChange;
-}
-
-/// EnforceVectorSameNumElts - 'this' is now constrainted to
-/// be a vector with same num elements as VTOperand.
-bool EEVT::TypeSet::EnforceVectorSameNumElts(EEVT::TypeSet &VTOperand,
-                                             TreePattern &TP) {
-  if (TP.hasError())
-    return false;
-
-  // "This" must be a vector and "VTOperand" must be a vector.
-  bool MadeChange = false;
-  MadeChange |= EnforceVector(TP);
-  MadeChange |= VTOperand.EnforceVector(TP);
-
-  // If we know one of the vector types, it forces the other type to agree.
-  if (isConcrete()) {
-    MVT IVT = getConcrete();
-    unsigned NumElems = IVT.getVectorNumElements();
-
-    // Only keep types that have same elements as VTOperand.
-    TypeSet InputSet(VTOperand);
-
-    for (unsigned i = 0; i != VTOperand.TypeVec.size(); ++i) {
-      assert(isVector(VTOperand.TypeVec[i]) && "EnforceVector didn't work");
-      if (MVT(VTOperand.TypeVec[i]).getVectorNumElements() != NumElems) {
-        VTOperand.TypeVec.erase(VTOperand.TypeVec.begin()+i--);
-        MadeChange = true;
-      }
-    }
-    if (VTOperand.TypeVec.empty()) {  // FIXME: Really want an SMLoc here!
-      TP.error("Type inference contradiction found, forcing '" +
-               InputSet.getName() + "' to have same number elements as '" +
-               getName() + "'");
-      return false;
-    }
-  } else if (VTOperand.isConcrete()) {
-    MVT IVT = VTOperand.getConcrete();
-    unsigned NumElems = IVT.getVectorNumElements();
-
-    // Only keep types that have same elements as 'this'.
-    TypeSet InputSet(*this);
-
-    for (unsigned i = 0; i != TypeVec.size(); ++i) {
-      assert(isVector(TypeVec[i]) && "EnforceVector didn't work");
-      if (MVT(TypeVec[i]).getVectorNumElements() != NumElems) {
-        TypeVec.erase(TypeVec.begin()+i--);
-        MadeChange = true;
-      }
-    }
-    if (TypeVec.empty()) {  // FIXME: Really want an SMLoc here!
-      TP.error("Type inference contradiction found, forcing '" +
-               InputSet.getName() + "' to have same number elements than '" +
-               VTOperand.getName() + "'");
-      return false;
-    }
-  }
-
-  return MadeChange;
-}
-
-//===----------------------------------------------------------------------===//
-// Helpers for working with extended types.
-
-/// Dependent variable map for CodeGenDAGPattern variant generation
-typedef std::map<std::string, int> DepVarMap;
-
-/// Const iterator shorthand for DepVarMap
-typedef DepVarMap::const_iterator DepVarMap_citer;
-
-static void FindDepVarsOf(TreePatternNode *N, DepVarMap &DepMap) {
-  if (N->isLeaf()) {
-    if (isa<DefInit>(N->getLeafValue()))
-      DepMap[N->getName()]++;
-  } else {
-    for (size_t i = 0, e = N->getNumChildren(); i != e; ++i)
-      FindDepVarsOf(N->getChild(i), DepMap);
-  }
-}
-  
-/// Find dependent variables within child patterns
-static void FindDepVars(TreePatternNode *N, MultipleUseVarSet &DepVars) {
-  DepVarMap depcounts;
-  FindDepVarsOf(N, depcounts);
-  for (DepVarMap_citer i = depcounts.begin(); i != depcounts.end(); ++i) {
-    if (i->second > 1)            // std::pair<std::string, int>
-      DepVars.insert(i->first);
   }
 }
 
-#ifndef NDEBUG
-/// Dump the dependent variable set:
-static void DumpDepVars(MultipleUseVarSet &DepVars) {
-  if (DepVars.empty()) {
-    DEBUG(errs() << "<empty set>");
-  } else {
-    DEBUG(errs() << "[ ");
-    for (MultipleUseVarSet::const_iterator i = DepVars.begin(),
-         e = DepVars.end(); i != e; ++i) {
-      DEBUG(errs() << (*i) << " ");
-    }
-    DEBUG(errs() << "]");
-  }
-}
-#endif
+TypeSetByHwMode TypeInfer::getLegalTypes() {
+  TypeSetByHwMode VTS;
+  TypeSetByHwMode::SetType &DS = VTS.getOrCreate(DefaultMode);
+  const TypeSetByHwMode &LTS = TP.getDAGPatterns().getLegalTypes();
 
+  // Stuff all types from all modes into the default mode.
+  for (const auto &I : LTS)
+    DS.insert(I.second.begin(), I.second.end());
+  return VTS;
+}
 
 //===----------------------------------------------------------------------===//
 // TreePredicateFn Implementation
@@ -742,7 +842,7 @@ bool TreePredicateFn::isAlwaysTrue() const {
 /// Return the name to use in the generated code to reference this, this is
 /// "Predicate_foo" if from a pattern fragment "foo".
 std::string TreePredicateFn::getFnName() const {
-  return "Predicate_" + PatFragRec->getRecord()->getName();
+  return "Predicate_" + PatFragRec->getRecord()->getName().str();
 }
 
 /// getCodeToRunOnSDNode - Return the code for the function body that
@@ -771,7 +871,7 @@ std::string TreePredicateFn::getCodeToRunOnSDNode() const {
   if (ClassName == "SDNode")
     Result = "    SDNode *N = Node;\n";
   else
-    Result = "    " + ClassName + "*N = cast<" + ClassName + ">(Node);\n";
+    Result = "    auto *N = cast<" + ClassName + ">(Node);\n";
   
   return Result + getPredCode();
 }
@@ -779,7 +879,6 @@ std::string TreePredicateFn::getCodeToRunOnSDNode() const {
 //===----------------------------------------------------------------------===//
 // PatternToMatch implementation
 //
-
 
 /// getPatternSize - Return the 'size' of this pattern.  We want to match large
 /// patterns before small ones.  This is used to determine the size of a
@@ -792,14 +891,9 @@ static unsigned getPatternSize(const TreePatternNode *P,
   if (P->isLeaf() && isa<IntInit>(P->getLeafValue()))
     Size += 2;
 
-  // FIXME: This is a hack to statically increase the priority of patterns
-  // which maps a sub-dag to a complex pattern. e.g. favors LEA over ADD.
-  // Later we can allow complexity / cost for each pattern to be (optionally)
-  // specified. To get best possible pattern match we'll need to dynamically
-  // calculate the complexity of all patterns a dag can potentially map to.
   const ComplexPattern *AM = P->getComplexPatternInfo(CGP);
   if (AM) {
-    Size += AM->getNumOperands() * 3;
+    Size += AM->getComplexity();
 
     // We don't want to count any children twice, so return early.
     return Size;
@@ -813,10 +907,16 @@ static unsigned getPatternSize(const TreePatternNode *P,
   // Count children in the count if they are also nodes.
   for (unsigned i = 0, e = P->getNumChildren(); i != e; ++i) {
     TreePatternNode *Child = P->getChild(i);
-    if (!Child->isLeaf() && Child->getNumTypes() &&
-        Child->getType(0) != MVT::Other)
-      Size += getPatternSize(Child, CGP);
-    else if (Child->isLeaf()) {
+    if (!Child->isLeaf() && Child->getNumTypes()) {
+      const TypeSetByHwMode &T0 = Child->getType(0);
+      // At this point, all variable type sets should be simple, i.e. only
+      // have a default mode.
+      if (T0.getMachineValueType() != MVT::Other) {
+        Size += getPatternSize(Child, CGP);
+        continue;
+      }
+    }
+    if (Child->isLeaf()) {
       if (isa<IntInit>(Child->getLeafValue()))
         Size += 5;  // Matches a ConstantSDNode (+3) and a specific value (+2).
       else if (Child->getComplexPatternInfo(CGP))
@@ -836,43 +936,37 @@ getPatternComplexity(const CodeGenDAGPatterns &CGP) const {
   return getPatternSize(getSrcPattern(), CGP) + getAddedComplexity();
 }
 
-
 /// getPredicateCheck - Return a single string containing all of this
 /// pattern's predicates concatenated with "&&" operators.
 ///
 std::string PatternToMatch::getPredicateCheck() const {
-  std::string PredicateCheck;
-  for (Init *I : Predicates->getValues()) {
-    if (DefInit *Pred = dyn_cast<DefInit>(I)) {
-      Record *Def = Pred->getDef();
-      if (!Def->isSubClassOf("Predicate")) {
-#ifndef NDEBUG
-        Def->dump();
-#endif
-        llvm_unreachable("Unknown predicate type!");
-      }
-      if (!PredicateCheck.empty())
-        PredicateCheck += " && ";
-      PredicateCheck += "(" + Def->getValueAsString("CondString") + ")";
-    }
-  }
+  SmallVector<const Predicate*,4> PredList;
+  for (const Predicate &P : Predicates)
+    PredList.push_back(&P);
+  std::sort(PredList.begin(), PredList.end(), deref<llvm::less>());
 
-  return PredicateCheck;
+  std::string Check;
+  for (unsigned i = 0, e = PredList.size(); i != e; ++i) {
+    if (i != 0)
+      Check += " && ";
+    Check += '(' + PredList[i]->getCondString() + ')';
+  }
+  return Check;
 }
 
 //===----------------------------------------------------------------------===//
 // SDTypeConstraint implementation
 //
 
-SDTypeConstraint::SDTypeConstraint(Record *R) {
+SDTypeConstraint::SDTypeConstraint(Record *R, const CodeGenHwModes &CGH) {
   OperandNo = R->getValueAsInt("OperandNum");
 
   if (R->isSubClassOf("SDTCisVT")) {
     ConstraintType = SDTCisVT;
-    x.SDTCisVT_Info.VT = getValueType(R->getValueAsDef("VT"));
-    if (x.SDTCisVT_Info.VT == MVT::isVoid)
-      PrintFatalError(R->getLoc(), "Cannot use 'Void' as type to SDTCisVT");
-
+    VVT = getValueTypeByHwMode(R->getValueAsDef("VT"), CGH);
+    for (const auto &P : VVT)
+      if (P.second == MVT::isVoid)
+        PrintFatalError(R->getLoc(), "Cannot use 'Void' as type to SDTCisVT");
   } else if (R->isSubClassOf("SDTCisPtrTy")) {
     ConstraintType = SDTCisPtrTy;
   } else if (R->isSubClassOf("SDTCisInt")) {
@@ -901,16 +995,23 @@ SDTypeConstraint::SDTypeConstraint(Record *R) {
       R->getValueAsInt("OtherOpNum");
   } else if (R->isSubClassOf("SDTCVecEltisVT")) {
     ConstraintType = SDTCVecEltisVT;
-    x.SDTCVecEltisVT_Info.VT = getValueType(R->getValueAsDef("VT"));
-    if (MVT(x.SDTCVecEltisVT_Info.VT).isVector())
-      PrintFatalError(R->getLoc(), "Cannot use vector type as SDTCVecEltisVT");
-    if (!MVT(x.SDTCVecEltisVT_Info.VT).isInteger() &&
-        !MVT(x.SDTCVecEltisVT_Info.VT).isFloatingPoint())
-      PrintFatalError(R->getLoc(), "Must use integer or floating point type "
-                                   "as SDTCVecEltisVT");
+    VVT = getValueTypeByHwMode(R->getValueAsDef("VT"), CGH);
+    for (const auto &P : VVT) {
+      MVT T = P.second;
+      if (T.isVector())
+        PrintFatalError(R->getLoc(),
+                        "Cannot use vector type as SDTCVecEltisVT");
+      if (!T.isInteger() && !T.isFloatingPoint())
+        PrintFatalError(R->getLoc(), "Must use integer or floating point type "
+                                     "as SDTCVecEltisVT");
+    }
   } else if (R->isSubClassOf("SDTCisSameNumEltsAs")) {
     ConstraintType = SDTCisSameNumEltsAs;
     x.SDTCisSameNumEltsAs_Info.OtherOperandNum =
+      R->getValueAsInt("OtherOperandNum");
+  } else if (R->isSubClassOf("SDTCisSameSizeAs")) {
+    ConstraintType = SDTCisSameSizeAs;
+    x.SDTCisSameSizeAs_Info.OtherOperandNum =
       R->getValueAsInt("OtherOperandNum");
   } else {
     PrintFatalError("Unrecognized SDTypeConstraint '" + R->getName() + "'!\n");
@@ -953,23 +1054,24 @@ bool SDTypeConstraint::ApplyTypeConstraint(TreePatternNode *N,
 
   unsigned ResNo = 0; // The result number being referenced.
   TreePatternNode *NodeToApply = getOperandNum(OperandNo, N, NodeInfo, ResNo);
+  TypeInfer &TI = TP.getInfer();
 
   switch (ConstraintType) {
   case SDTCisVT:
     // Operand must be a particular type.
-    return NodeToApply->UpdateNodeType(ResNo, x.SDTCisVT_Info.VT, TP);
+    return NodeToApply->UpdateNodeType(ResNo, VVT, TP);
   case SDTCisPtrTy:
     // Operand must be same as target pointer type.
     return NodeToApply->UpdateNodeType(ResNo, MVT::iPTR, TP);
   case SDTCisInt:
     // Require it to be one of the legal integer VTs.
-    return NodeToApply->getExtType(ResNo).EnforceInteger(TP);
+     return TI.EnforceInteger(NodeToApply->getExtType(ResNo));
   case SDTCisFP:
     // Require it to be one of the legal fp VTs.
-    return NodeToApply->getExtType(ResNo).EnforceFloatingPoint(TP);
+    return TI.EnforceFloatingPoint(NodeToApply->getExtType(ResNo));
   case SDTCisVec:
     // Require it to be one of the legal vector VTs.
-    return NodeToApply->getExtType(ResNo).EnforceVector(TP);
+    return TI.EnforceVector(NodeToApply->getExtType(ResNo));
   case SDTCisSameAs: {
     unsigned OResNo = 0;
     TreePatternNode *OtherNode =
@@ -987,36 +1089,35 @@ bool SDTypeConstraint::ApplyTypeConstraint(TreePatternNode *N,
       TP.error(N->getOperator()->getName() + " expects a VT operand!");
       return false;
     }
-    MVT::SimpleValueType VT =
-     getValueType(static_cast<DefInit*>(NodeToApply->getLeafValue())->getDef());
-
-    EEVT::TypeSet TypeListTmp(VT, TP);
+    DefInit *DI = static_cast<DefInit*>(NodeToApply->getLeafValue());
+    const CodeGenTarget &T = TP.getDAGPatterns().getTargetInfo();
+    auto VVT = getValueTypeByHwMode(DI->getDef(), T.getHwModes());
+    TypeSetByHwMode TypeListTmp(VVT);
 
     unsigned OResNo = 0;
     TreePatternNode *OtherNode =
       getOperandNum(x.SDTCisVTSmallerThanOp_Info.OtherOperandNum, N, NodeInfo,
                     OResNo);
 
-    return TypeListTmp.EnforceSmallerThan(OtherNode->getExtType(OResNo), TP);
+    return TI.EnforceSmallerThan(TypeListTmp, OtherNode->getExtType(OResNo));
   }
   case SDTCisOpSmallerThanOp: {
     unsigned BResNo = 0;
     TreePatternNode *BigOperand =
       getOperandNum(x.SDTCisOpSmallerThanOp_Info.BigOperandNum, N, NodeInfo,
                     BResNo);
-    return NodeToApply->getExtType(ResNo).
-                  EnforceSmallerThan(BigOperand->getExtType(BResNo), TP);
+    return TI.EnforceSmallerThan(NodeToApply->getExtType(ResNo),
+                                 BigOperand->getExtType(BResNo));
   }
   case SDTCisEltOfVec: {
     unsigned VResNo = 0;
     TreePatternNode *VecOperand =
       getOperandNum(x.SDTCisEltOfVec_Info.OtherOperandNum, N, NodeInfo,
                     VResNo);
-
     // Filter vector types out of VecOperand that don't have the right element
     // type.
-    return VecOperand->getExtType(VResNo).
-      EnforceVectorEltTypeIs(NodeToApply->getExtType(ResNo), TP);
+    return TI.EnforceVectorEltTypeIs(VecOperand->getExtType(VResNo),
+                                     NodeToApply->getExtType(ResNo));
   }
   case SDTCisSubVecOfVec: {
     unsigned VResNo = 0;
@@ -1026,20 +1127,27 @@ bool SDTypeConstraint::ApplyTypeConstraint(TreePatternNode *N,
 
     // Filter vector types out of BigVecOperand that don't have the
     // right subvector type.
-    return BigVecOperand->getExtType(VResNo).
-      EnforceVectorSubVectorTypeIs(NodeToApply->getExtType(ResNo), TP);
+    return TI.EnforceVectorSubVectorTypeIs(BigVecOperand->getExtType(VResNo),
+                                           NodeToApply->getExtType(ResNo));
   }
   case SDTCVecEltisVT: {
-    return NodeToApply->getExtType(ResNo).
-      EnforceVectorEltTypeIs(x.SDTCVecEltisVT_Info.VT, TP);
+    return TI.EnforceVectorEltTypeIs(NodeToApply->getExtType(ResNo), VVT);
   }
   case SDTCisSameNumEltsAs: {
     unsigned OResNo = 0;
     TreePatternNode *OtherNode =
       getOperandNum(x.SDTCisSameNumEltsAs_Info.OtherOperandNum,
                     N, NodeInfo, OResNo);
-    return OtherNode->getExtType(OResNo).
-      EnforceVectorSameNumElts(NodeToApply->getExtType(ResNo), TP);
+    return TI.EnforceSameNumElts(OtherNode->getExtType(OResNo),
+                                 NodeToApply->getExtType(ResNo));
+  }
+  case SDTCisSameSizeAs: {
+    unsigned OResNo = 0;
+    TreePatternNode *OtherNode =
+      getOperandNum(x.SDTCisSameSizeAs_Info.OtherOperandNum,
+                    N, NodeInfo, OResNo);
+    return TI.EnforceSameSize(OtherNode->getExtType(OResNo),
+                              NodeToApply->getExtType(ResNo));
   }
   }
   llvm_unreachable("Invalid ConstraintType!");
@@ -1057,9 +1165,11 @@ bool TreePatternNode::UpdateNodeTypeFromInst(unsigned ResNo,
     return false;
 
   // The Operand class specifies a type directly.
-  if (Operand->isSubClassOf("Operand"))
-    return UpdateNodeType(ResNo, getValueType(Operand->getValueAsDef("Type")),
-                          TP);
+  if (Operand->isSubClassOf("Operand")) {
+    Record *R = Operand->getValueAsDef("Type");
+    const CodeGenTarget &T = TP.getDAGPatterns().getTargetInfo();
+    return UpdateNodeType(ResNo, getValueTypeByHwMode(R, T.getHwModes()), TP);
+  }
 
   // PointerLikeRegClass has a type that is determined at runtime.
   if (Operand->isSubClassOf("PointerLikeRegClass"))
@@ -1078,11 +1188,53 @@ bool TreePatternNode::UpdateNodeTypeFromInst(unsigned ResNo,
   return UpdateNodeType(ResNo, Tgt.getRegisterClass(RC).getValueTypes(), TP);
 }
 
+bool TreePatternNode::ContainsUnresolvedType(TreePattern &TP) const {
+  for (unsigned i = 0, e = Types.size(); i != e; ++i)
+    if (!TP.getInfer().isConcrete(Types[i], true))
+      return true;
+  for (unsigned i = 0, e = getNumChildren(); i != e; ++i)
+    if (getChild(i)->ContainsUnresolvedType(TP))
+      return true;
+  return false;
+}
+
+bool TreePatternNode::hasProperTypeByHwMode() const {
+  for (const TypeSetByHwMode &S : Types)
+    if (!S.isDefaultOnly())
+      return true;
+  for (TreePatternNode *C : Children)
+    if (C->hasProperTypeByHwMode())
+      return true;
+  return false;
+}
+
+bool TreePatternNode::hasPossibleType() const {
+  for (const TypeSetByHwMode &S : Types)
+    if (!S.isPossible())
+      return false;
+  for (TreePatternNode *C : Children)
+    if (!C->hasPossibleType())
+      return false;
+  return true;
+}
+
+bool TreePatternNode::setDefaultMode(unsigned Mode) {
+  for (TypeSetByHwMode &S : Types) {
+    S.makeSimple(Mode);
+    // Check if the selected mode had a type conflict.
+    if (S.get(DefaultMode).empty())
+      return false;
+  }
+  for (TreePatternNode *C : Children)
+    if (!C->setDefaultMode(Mode))
+      return false;
+  return true;
+}
 
 //===----------------------------------------------------------------------===//
 // SDNodeInfo implementation
 //
-SDNodeInfo::SDNodeInfo(Record *R) : Def(R) {
+SDNodeInfo::SDNodeInfo(Record *R, const CodeGenHwModes &CGH) : Def(R) {
   EnumName    = R->getValueAsString("Opcode");
   SDClassName = R->getValueAsString("SDClass");
   Record *TypeProfile = R->getValueAsDef("TypeProfile");
@@ -1091,33 +1243,32 @@ SDNodeInfo::SDNodeInfo(Record *R) : Def(R) {
 
   // Parse the properties.
   Properties = 0;
-  std::vector<Record*> PropList = R->getValueAsListOfDefs("Properties");
-  for (unsigned i = 0, e = PropList.size(); i != e; ++i) {
-    if (PropList[i]->getName() == "SDNPCommutative") {
+  for (Record *Property : R->getValueAsListOfDefs("Properties")) {
+    if (Property->getName() == "SDNPCommutative") {
       Properties |= 1 << SDNPCommutative;
-    } else if (PropList[i]->getName() == "SDNPAssociative") {
+    } else if (Property->getName() == "SDNPAssociative") {
       Properties |= 1 << SDNPAssociative;
-    } else if (PropList[i]->getName() == "SDNPHasChain") {
+    } else if (Property->getName() == "SDNPHasChain") {
       Properties |= 1 << SDNPHasChain;
-    } else if (PropList[i]->getName() == "SDNPOutGlue") {
+    } else if (Property->getName() == "SDNPOutGlue") {
       Properties |= 1 << SDNPOutGlue;
-    } else if (PropList[i]->getName() == "SDNPInGlue") {
+    } else if (Property->getName() == "SDNPInGlue") {
       Properties |= 1 << SDNPInGlue;
-    } else if (PropList[i]->getName() == "SDNPOptInGlue") {
+    } else if (Property->getName() == "SDNPOptInGlue") {
       Properties |= 1 << SDNPOptInGlue;
-    } else if (PropList[i]->getName() == "SDNPMayStore") {
+    } else if (Property->getName() == "SDNPMayStore") {
       Properties |= 1 << SDNPMayStore;
-    } else if (PropList[i]->getName() == "SDNPMayLoad") {
+    } else if (Property->getName() == "SDNPMayLoad") {
       Properties |= 1 << SDNPMayLoad;
-    } else if (PropList[i]->getName() == "SDNPSideEffect") {
+    } else if (Property->getName() == "SDNPSideEffect") {
       Properties |= 1 << SDNPSideEffect;
-    } else if (PropList[i]->getName() == "SDNPMemOperand") {
+    } else if (Property->getName() == "SDNPMemOperand") {
       Properties |= 1 << SDNPMemOperand;
-    } else if (PropList[i]->getName() == "SDNPVariadic") {
+    } else if (Property->getName() == "SDNPVariadic") {
       Properties |= 1 << SDNPVariadic;
     } else {
       PrintFatalError("Unknown SD Node property '" +
-                      PropList[i]->getName() + "' on node '" +
+                      Property->getName() + "' on node '" +
                       R->getName() + "'!");
     }
   }
@@ -1126,7 +1277,8 @@ SDNodeInfo::SDNodeInfo(Record *R) : Def(R) {
   // Parse the type constraints.
   std::vector<Record*> ConstraintList =
     TypeProfile->getValueAsListOfDefs("Constraints");
-  TypeConstraints.assign(ConstraintList.begin(), ConstraintList.end());
+  for (Record *R : ConstraintList)
+    TypeConstraints.emplace_back(R, CGH);
 }
 
 /// getKnownType - If the type constraints on this node imply a fixed type
@@ -1138,15 +1290,17 @@ MVT::SimpleValueType SDNodeInfo::getKnownType(unsigned ResNo) const {
          "We only work with nodes with zero or one result so far!");
   assert(ResNo == 0 && "Only handles single result nodes so far");
 
-  for (unsigned i = 0, e = TypeConstraints.size(); i != e; ++i) {
+  for (const SDTypeConstraint &Constraint : TypeConstraints) {
     // Make sure that this applies to the correct node result.
-    if (TypeConstraints[i].OperandNo >= NumResults)  // FIXME: need value #
+    if (Constraint.OperandNo >= NumResults)  // FIXME: need value #
       continue;
 
-    switch (TypeConstraints[i].ConstraintType) {
+    switch (Constraint.ConstraintType) {
     default: break;
     case SDTypeConstraint::SDTCisVT:
-      return TypeConstraints[i].x.SDTCisVT_Info.VT;
+      if (Constraint.VVT.isSimple())
+        return Constraint.VVT.getSimple().SimpleTy;
+      break;
     case SDTypeConstraint::SDTCisPtrTy:
       return MVT::iPTR;
     }
@@ -1222,7 +1376,7 @@ static unsigned GetNumNodeResults(Record *Operator, CodeGenDAGPatterns &CDP) {
   if (Operator->isSubClassOf("ComplexPattern"))
     return 1;
 
-  Operator->dump();
+  errs() << *Operator;
   PrintFatalError("Unhandled node in GetNumNodeResults");
 }
 
@@ -1233,7 +1387,7 @@ void TreePatternNode::print(raw_ostream &OS) const {
     OS << '(' << getOperator()->getName();
 
   for (unsigned i = 0, e = Types.size(); i != e; ++i)
-    OS << ':' << getExtType(i).getName();
+    OS << ':' << getExtType(i).getAsString();
 
   if (!isLeaf()) {
     if (getNumChildren() != 0) {
@@ -1247,8 +1401,8 @@ void TreePatternNode::print(raw_ostream &OS) const {
     OS << ")";
   }
 
-  for (unsigned i = 0, e = PredicateFns.size(); i != e; ++i)
-    OS << "<<P:" << PredicateFns[i].getFnName() << ">>";
+  for (const TreePredicateFn &Pred : PredicateFns)
+    OS << "<<P:" << Pred.getFnName() << ">>";
   if (TransformFn)
     OS << "<<X:" << TransformFn->getName() << ">>";
   if (!getName().empty())
@@ -1315,8 +1469,8 @@ TreePatternNode *TreePatternNode::clone() const {
 
 /// RemoveAllTypes - Recursively strip all the types of this tree.
 void TreePatternNode::RemoveAllTypes() {
-  for (unsigned i = 0, e = Types.size(); i != e; ++i)
-    Types[i] = EEVT::TypeSet();  // Reset to unknown type.
+  // Reset to unknown type.
+  std::fill(Types.begin(), Types.end(), TypeSetByHwMode());
   if (isLeaf()) return;
   for (unsigned i = 0, e = getNumChildren(); i != e; ++i)
     getChild(i)->RemoveAllTypes();
@@ -1410,8 +1564,8 @@ TreePatternNode *TreePatternNode::InlinePatternFragments(TreePattern &TP) {
     FragTree->UpdateNodeType(i, getExtType(i), TP);
 
   // Transfer in the old predicates.
-  for (unsigned i = 0, e = getPredicateFns().size(); i != e; ++i)
-    FragTree->addPredicateFn(getPredicateFns()[i]);
+  for (const TreePredicateFn &Pred : getPredicateFns())
+    FragTree->addPredicateFn(Pred);
 
   // Get a new copy of this fragment to stitch into here.
   //delete this;    // FIXME: implement refcounting!
@@ -1433,18 +1587,20 @@ TreePatternNode *TreePatternNode::InlinePatternFragments(TreePattern &TP) {
 /// When Unnamed is false, return the type of a named DAG operand such as the
 /// GPR:$src operand above.
 ///
-static EEVT::TypeSet getImplicitType(Record *R, unsigned ResNo,
-                                     bool NotRegisters,
-                                     bool Unnamed,
-                                     TreePattern &TP) {
+static TypeSetByHwMode getImplicitType(Record *R, unsigned ResNo,
+                                       bool NotRegisters,
+                                       bool Unnamed,
+                                       TreePattern &TP) {
+  CodeGenDAGPatterns &CDP = TP.getDAGPatterns();
+
   // Check to see if this is a register operand.
   if (R->isSubClassOf("RegisterOperand")) {
     assert(ResNo == 0 && "Regoperand ref only has one result!");
     if (NotRegisters)
-      return EEVT::TypeSet(); // Unknown.
+      return TypeSetByHwMode(); // Unknown.
     Record *RegClass = R->getValueAsDef("RegClass");
     const CodeGenTarget &T = TP.getDAGPatterns().getTargetInfo();
-    return EEVT::TypeSet(T.getRegisterClass(RegClass).getValueTypes());
+    return TypeSetByHwMode(T.getRegisterClass(RegClass).getValueTypes());
   }
 
   // Check to see if this is a register or a register class.
@@ -1453,33 +1609,33 @@ static EEVT::TypeSet getImplicitType(Record *R, unsigned ResNo,
     // An unnamed register class represents itself as an i32 immediate, for
     // example on a COPY_TO_REGCLASS instruction.
     if (Unnamed)
-      return EEVT::TypeSet(MVT::i32, TP);
+      return TypeSetByHwMode(MVT::i32);
 
     // In a named operand, the register class provides the possible set of
     // types.
     if (NotRegisters)
-      return EEVT::TypeSet(); // Unknown.
+      return TypeSetByHwMode(); // Unknown.
     const CodeGenTarget &T = TP.getDAGPatterns().getTargetInfo();
-    return EEVT::TypeSet(T.getRegisterClass(R).getValueTypes());
+    return TypeSetByHwMode(T.getRegisterClass(R).getValueTypes());
   }
 
   if (R->isSubClassOf("PatFrag")) {
     assert(ResNo == 0 && "FIXME: PatFrag with multiple results?");
     // Pattern fragment types will be resolved when they are inlined.
-    return EEVT::TypeSet(); // Unknown.
+    return TypeSetByHwMode(); // Unknown.
   }
 
   if (R->isSubClassOf("Register")) {
     assert(ResNo == 0 && "Registers only produce one result!");
     if (NotRegisters)
-      return EEVT::TypeSet(); // Unknown.
+      return TypeSetByHwMode(); // Unknown.
     const CodeGenTarget &T = TP.getDAGPatterns().getTargetInfo();
-    return EEVT::TypeSet(T.getRegisterVTs(R));
+    return TypeSetByHwMode(T.getRegisterVTs(R));
   }
 
   if (R->isSubClassOf("SubRegIndex")) {
     assert(ResNo == 0 && "SubRegisterIndices only produce one result!");
-    return EEVT::TypeSet(MVT::i32, TP);
+    return TypeSetByHwMode(MVT::i32);
   }
 
   if (R->isSubClassOf("ValueType")) {
@@ -1489,46 +1645,51 @@ static EEVT::TypeSet getImplicitType(Record *R, unsigned ResNo,
     //   (sext_inreg GPR:$src, i16)
     //                         ~~~
     if (Unnamed)
-      return EEVT::TypeSet(MVT::Other, TP);
+      return TypeSetByHwMode(MVT::Other);
     // With a name, the ValueType simply provides the type of the named
     // variable.
     //
     //   (sext_inreg i32:$src, i16)
     //               ~~~~~~~~
     if (NotRegisters)
-      return EEVT::TypeSet(); // Unknown.
-    return EEVT::TypeSet(getValueType(R), TP);
+      return TypeSetByHwMode(); // Unknown.
+    const CodeGenHwModes &CGH = CDP.getTargetInfo().getHwModes();
+    return TypeSetByHwMode(getValueTypeByHwMode(R, CGH));
   }
 
   if (R->isSubClassOf("CondCode")) {
     assert(ResNo == 0 && "This node only has one result!");
     // Using a CondCodeSDNode.
-    return EEVT::TypeSet(MVT::Other, TP);
+    return TypeSetByHwMode(MVT::Other);
   }
 
   if (R->isSubClassOf("ComplexPattern")) {
     assert(ResNo == 0 && "FIXME: ComplexPattern with multiple results?");
     if (NotRegisters)
-      return EEVT::TypeSet(); // Unknown.
-   return EEVT::TypeSet(TP.getDAGPatterns().getComplexPattern(R).getValueType(),
-                         TP);
+      return TypeSetByHwMode(); // Unknown.
+    return TypeSetByHwMode(CDP.getComplexPattern(R).getValueType());
   }
   if (R->isSubClassOf("PointerLikeRegClass")) {
     assert(ResNo == 0 && "Regclass can only have one result!");
-    return EEVT::TypeSet(MVT::iPTR, TP);
+    TypeSetByHwMode VTS(MVT::iPTR);
+    TP.getInfer().expandOverloads(VTS);
+    return VTS;
   }
 
   if (R->getName() == "node" || R->getName() == "srcvalue" ||
       R->getName() == "zero_reg") {
     // Placeholder.
-    return EEVT::TypeSet(); // Unknown.
+    return TypeSetByHwMode(); // Unknown.
   }
 
-  if (R->isSubClassOf("Operand"))
-    return EEVT::TypeSet(getValueType(R->getValueAsDef("Type")));
+  if (R->isSubClassOf("Operand")) {
+    const CodeGenHwModes &CGH = CDP.getTargetInfo().getHwModes();
+    Record *T = R->getValueAsDef("Type");
+    return TypeSetByHwMode(getValueTypeByHwMode(T, CGH));
+  }
 
   TP.error("Unknown node flavor used in pattern: " + R->getName());
-  return EEVT::TypeSet(MVT::Other, TP);
+  return TypeSetByHwMode(MVT::Other);
 }
 
 
@@ -1670,29 +1831,34 @@ bool TreePatternNode::ApplyTypeConstraints(TreePattern &TP, bool NotRegisters) {
       assert(Types.size() == 1 && "Invalid IntInit");
 
       // Int inits are always integers. :)
-      bool MadeChange = Types[0].EnforceInteger(TP);
+      bool MadeChange = TP.getInfer().EnforceInteger(Types[0]);
 
-      if (!Types[0].isConcrete())
+      if (!TP.getInfer().isConcrete(Types[0], false))
         return MadeChange;
 
-      MVT::SimpleValueType VT = getType(0);
-      if (VT == MVT::iPTR || VT == MVT::iPTRAny)
-        return MadeChange;
+      ValueTypeByHwMode VVT = TP.getInfer().getConcrete(Types[0], false);
+      for (auto &P : VVT) {
+        MVT::SimpleValueType VT = P.second.SimpleTy;
+        if (VT == MVT::iPTR || VT == MVT::iPTRAny)
+          continue;
+        unsigned Size = MVT(VT).getSizeInBits();
+        // Make sure that the value is representable for this type.
+        if (Size >= 32)
+          continue;
+        // Check that the value doesn't use more bits than we have. It must
+        // either be a sign- or zero-extended equivalent of the original.
+        int64_t SignBitAndAbove = II->getValue() >> (Size - 1);
+        if (SignBitAndAbove == -1 || SignBitAndAbove == 0 ||
+            SignBitAndAbove == 1)
+          continue;
 
-      unsigned Size = MVT(VT).getSizeInBits();
-      // Make sure that the value is representable for this type.
-      if (Size >= 32) return MadeChange;
-
-      // Check that the value doesn't use more bits than we have. It must either
-      // be a sign- or zero-extended equivalent of the original.
-      int64_t SignBitAndAbove = II->getValue() >> (Size - 1);
-      if (SignBitAndAbove == -1 || SignBitAndAbove == 0 || SignBitAndAbove == 1)
-        return MadeChange;
-
-      TP.error("Integer value '" + itostr(II->getValue()) +
-               "' is out of range for type '" + getEnumName(getType(0)) + "'!");
-      return false;
+        TP.error("Integer value '" + itostr(II->getValue()) +
+                 "' is out of range for type '" + getEnumName(VT) + "'!");
+        break;
+      }
+      return MadeChange;
     }
+
     return false;
   }
 
@@ -1721,7 +1887,7 @@ bool TreePatternNode::ApplyTypeConstraints(TreePattern &TP, bool NotRegisters) {
 
     bool MadeChange = false;
     for (unsigned i = 0; i < getNumChildren(); ++i)
-      MadeChange = getChild(i)->ApplyTypeConstraints(TP, NotRegisters);
+      MadeChange |= getChild(i)->ApplyTypeConstraints(TP, NotRegisters);
     return MadeChange;
   }
 
@@ -1766,9 +1932,10 @@ bool TreePatternNode::ApplyTypeConstraints(TreePattern &TP, bool NotRegisters) {
       return false;
     }
 
-    bool MadeChange = NI.ApplyTypeConstraints(this, TP);
+    bool MadeChange = false;
     for (unsigned i = 0, e = getNumChildren(); i != e; ++i)
       MadeChange |= getChild(i)->ApplyTypeConstraints(TP, NotRegisters);
+    MadeChange |= NI.ApplyTypeConstraints(this, TP);
     return MadeChange;
   }
 
@@ -1923,18 +2090,6 @@ bool TreePatternNode::ApplyTypeConstraints(TreePattern &TP, bool NotRegisters) {
   }
 
   bool MadeChange = getChild(0)->ApplyTypeConstraints(TP, NotRegisters);
-
-
-  // If either the output or input of the xform does not have exact
-  // type info. We assume they must be the same. Otherwise, it is perfectly
-  // legal to transform from one type to a completely different type.
-#if 0
-  if (!hasTypeSet() || !getChild(0)->hasTypeSet()) {
-    bool MadeChange = UpdateNodeType(getChild(0)->getExtType(), TP);
-    MadeChange |= getChild(0)->UpdateNodeType(getExtType(), TP);
-    return MadeChange;
-  }
-#endif
   return MadeChange;
 }
 
@@ -1980,7 +2135,7 @@ bool TreePatternNode::canPatternMatch(std::string &Reason,
     // Scan all of the operands of the node and make sure that only the last one
     // is a constant node, unless the RHS also is.
     if (!OnlyOnRHSOfCommutative(getChild(getNumChildren()-1))) {
-      bool Skip = isCommIntrinsic ? 1 : 0; // First operand is intrinsic id.
+      unsigned Skip = isCommIntrinsic ? 1 : 0; // First operand is intrinsic id.
       for (unsigned i = Skip, e = getNumChildren()-1; i != e; ++i)
         if (OnlyOnRHSOfCommutative(getChild(i))) {
           Reason="Immediate value must be on the RHS of commutative operators!";
@@ -1998,20 +2153,23 @@ bool TreePatternNode::canPatternMatch(std::string &Reason,
 
 TreePattern::TreePattern(Record *TheRec, ListInit *RawPat, bool isInput,
                          CodeGenDAGPatterns &cdp) : TheRecord(TheRec), CDP(cdp),
-                         isInputPattern(isInput), HasError(false) {
+                         isInputPattern(isInput), HasError(false),
+                         Infer(*this) {
   for (Init *I : RawPat->getValues())
     Trees.push_back(ParseTreePattern(I, ""));
 }
 
 TreePattern::TreePattern(Record *TheRec, DagInit *Pat, bool isInput,
                          CodeGenDAGPatterns &cdp) : TheRecord(TheRec), CDP(cdp),
-                         isInputPattern(isInput), HasError(false) {
+                         isInputPattern(isInput), HasError(false),
+                         Infer(*this) {
   Trees.push_back(ParseTreePattern(Pat, ""));
 }
 
 TreePattern::TreePattern(Record *TheRec, TreePatternNode *Pat, bool isInput,
                          CodeGenDAGPatterns &cdp) : TheRecord(TheRec), CDP(cdp),
-                         isInputPattern(isInput), HasError(false) {
+                         isInputPattern(isInput), HasError(false),
+                         Infer(*this) {
   Trees.push_back(Pat);
 }
 
@@ -2024,8 +2182,8 @@ void TreePattern::error(const Twine &Msg) {
 }
 
 void TreePattern::ComputeNamedNodes() {
-  for (unsigned i = 0, e = Trees.size(); i != e; ++i)
-    ComputeNamedNodes(Trees[i]);
+  for (TreePatternNode *Tree : Trees)
+    ComputeNamedNodes(Tree);
 }
 
 void TreePattern::ComputeNamedNodes(TreePatternNode *N) {
@@ -2046,8 +2204,8 @@ TreePatternNode *TreePattern::ParseTreePattern(Init *TheInit, StringRef OpName){
     ///   (foo GPR, imm) -> (foo GPR, (imm))
     if (R->isSubClassOf("SDNode") || R->isSubClassOf("PatFrag"))
       return ParseTreePattern(
-        DagInit::get(DI, "",
-                     std::vector<std::pair<Init*, std::string> >()),
+        DagInit::get(DI, nullptr,
+                     std::vector<std::pair<Init*, StringInit*> >()),
         OpName);
 
     // Input argument?
@@ -2088,7 +2246,7 @@ TreePatternNode *TreePattern::ParseTreePattern(Init *TheInit, StringRef OpName){
 
   DagInit *Dag = dyn_cast<DagInit>(TheInit);
   if (!Dag) {
-    TheInit->dump();
+    TheInit->print(errs());
     error("Pattern has unexpected init kind!");
   }
   DefInit *OpDef = dyn_cast<DefInit>(Dag->getOperator());
@@ -2101,11 +2259,13 @@ TreePatternNode *TreePattern::ParseTreePattern(Init *TheInit, StringRef OpName){
     if (Dag->getNumArgs() != 1)
       error("Type cast only takes one operand!");
 
-    TreePatternNode *New = ParseTreePattern(Dag->getArg(0), Dag->getArgName(0));
+    TreePatternNode *New = ParseTreePattern(Dag->getArg(0),
+                                            Dag->getArgNameStr(0));
 
     // Apply the type cast.
     assert(New->getNumTypes() == 1 && "FIXME: Unhandled");
-    New->UpdateNodeType(0, getValueType(Operator), *this);
+    const CodeGenHwModes &CGH = getDAGPatterns().getTargetInfo().getHwModes();
+    New->UpdateNodeType(0, getValueTypeByHwMode(Operator, CGH), *this);
 
     if (!OpName.empty())
       error("ValueType cast should not have a name!");
@@ -2152,7 +2312,7 @@ TreePatternNode *TreePattern::ParseTreePattern(Init *TheInit, StringRef OpName){
 
   // Parse all the operands.
   for (unsigned i = 0, e = Dag->getNumArgs(); i != e; ++i)
-    Children.push_back(ParseTreePattern(Dag->getArg(i), Dag->getArgName(i)));
+    Children.push_back(ParseTreePattern(Dag->getArg(i), Dag->getArgNameStr(i)));
 
   // If the operator is an intrinsic, then this is just syntactic sugar for for
   // (intrinsic_* <number>, ..children..).  Pick the right intrinsic node, and
@@ -2200,9 +2360,9 @@ TreePatternNode *TreePattern::ParseTreePattern(Init *TheInit, StringRef OpName){
   TreePatternNode *Result = new TreePatternNode(Operator, Children, NumResults);
   Result->setName(OpName);
 
-  if (!Dag->getName().empty()) {
+  if (Dag->getName()) {
     assert(Result->getName().empty());
-    Result->setName(Dag->getName());
+    Result->setName(Dag->getNameStr());
   }
   return Result;
 }
@@ -2220,7 +2380,7 @@ static bool SimplifyTree(TreePatternNode *&N) {
   // If we have a bitconvert with a resolved type and if the source and
   // destination types are the same, then the bitconvert is useless, remove it.
   if (N->getOperator()->getName() == "bitconvert" &&
-      N->getExtType(0).isConcrete() &&
+      N->getExtType(0).isValueTypeByHwMode(false) &&
       N->getExtType(0) == N->getChild(0)->getExtType(0) &&
       N->getName().empty()) {
     N = N->getChild(0);
@@ -2251,53 +2411,52 @@ InferAllTypes(const StringMap<SmallVector<TreePatternNode*,1> > *InNamedTypes) {
   bool MadeChange = true;
   while (MadeChange) {
     MadeChange = false;
-    for (unsigned i = 0, e = Trees.size(); i != e; ++i) {
-      MadeChange |= Trees[i]->ApplyTypeConstraints(*this, false);
-      MadeChange |= SimplifyTree(Trees[i]);
+    for (TreePatternNode *&Tree : Trees) {
+      MadeChange |= Tree->ApplyTypeConstraints(*this, false);
+      MadeChange |= SimplifyTree(Tree);
     }
 
     // If there are constraints on our named nodes, apply them.
-    for (StringMap<SmallVector<TreePatternNode*,1> >::iterator
-         I = NamedNodes.begin(), E = NamedNodes.end(); I != E; ++I) {
-      SmallVectorImpl<TreePatternNode*> &Nodes = I->second;
+    for (auto &Entry : NamedNodes) {
+      SmallVectorImpl<TreePatternNode*> &Nodes = Entry.second;
 
       // If we have input named node types, propagate their types to the named
       // values here.
       if (InNamedTypes) {
-        if (!InNamedTypes->count(I->getKey())) {
-          error("Node '" + std::string(I->getKey()) +
+        if (!InNamedTypes->count(Entry.getKey())) {
+          error("Node '" + std::string(Entry.getKey()) +
                 "' in output pattern but not input pattern");
           return true;
         }
 
         const SmallVectorImpl<TreePatternNode*> &InNodes =
-          InNamedTypes->find(I->getKey())->second;
+          InNamedTypes->find(Entry.getKey())->second;
 
         // The input types should be fully resolved by now.
-        for (unsigned i = 0, e = Nodes.size(); i != e; ++i) {
+        for (TreePatternNode *Node : Nodes) {
           // If this node is a register class, and it is the root of the pattern
           // then we're mapping something onto an input register.  We allow
           // changing the type of the input register in this case.  This allows
           // us to match things like:
           //  def : Pat<(v1i64 (bitconvert(v2i32 DPR:$src))), (v1i64 DPR:$src)>;
-          if (Nodes[i] == Trees[0] && Nodes[i]->isLeaf()) {
-            DefInit *DI = dyn_cast<DefInit>(Nodes[i]->getLeafValue());
+          if (Node == Trees[0] && Node->isLeaf()) {
+            DefInit *DI = dyn_cast<DefInit>(Node->getLeafValue());
             if (DI && (DI->getDef()->isSubClassOf("RegisterClass") ||
                        DI->getDef()->isSubClassOf("RegisterOperand")))
               continue;
           }
 
-          assert(Nodes[i]->getNumTypes() == 1 &&
+          assert(Node->getNumTypes() == 1 &&
                  InNodes[0]->getNumTypes() == 1 &&
                  "FIXME: cannot name multiple result nodes yet");
-          MadeChange |= Nodes[i]->UpdateNodeType(0, InNodes[0]->getExtType(0),
-                                                 *this);
+          MadeChange |= Node->UpdateNodeType(0, InNodes[0]->getExtType(0),
+                                             *this);
         }
       }
 
       // If there are multiple nodes with the same name, they must all have the
       // same type.
-      if (I->second.size() > 1) {
+      if (Entry.second.size() > 1) {
         for (unsigned i = 0, e = Nodes.size()-1; i != e; ++i) {
           TreePatternNode *N1 = Nodes[i], *N2 = Nodes[i+1];
           assert(N1->getNumTypes() == 1 && N2->getNumTypes() == 1 &&
@@ -2311,8 +2470,8 @@ InferAllTypes(const StringMap<SmallVector<TreePatternNode*,1> > *InNamedTypes) {
   }
 
   bool HasUnresolvedTypes = false;
-  for (unsigned i = 0, e = Trees.size(); i != e; ++i)
-    HasUnresolvedTypes |= Trees[i]->ContainsUnresolvedType();
+  for (const TreePatternNode *Tree : Trees)
+    HasUnresolvedTypes |= Tree->ContainsUnresolvedType(*this);
   return !HasUnresolvedTypes;
 }
 
@@ -2328,9 +2487,9 @@ void TreePattern::print(raw_ostream &OS) const {
 
   if (Trees.size() > 1)
     OS << "[\n";
-  for (unsigned i = 0, e = Trees.size(); i != e; ++i) {
+  for (const TreePatternNode *Tree : Trees) {
     OS << "\t";
-    Trees[i]->print(OS);
+    Tree->print(OS);
     OS << "\n";
   }
 
@@ -2345,10 +2504,10 @@ void TreePattern::dump() const { print(errs()); }
 //
 
 CodeGenDAGPatterns::CodeGenDAGPatterns(RecordKeeper &R) :
-  Records(R), Target(R) {
+  Records(R), Target(R), LegalVTS(Target.getLegalValueTypes()) {
 
-  Intrinsics = LoadIntrinsics(Records, false);
-  TgtIntrinsics = LoadIntrinsics(Records, true);
+  Intrinsics = CodeGenIntrinsicTable(Records, false);
+  TgtIntrinsics = CodeGenIntrinsicTable(Records, true);
   ParseNodeInfo();
   ParseNodeTransforms();
   ParseComplexPatterns();
@@ -2357,6 +2516,11 @@ CodeGenDAGPatterns::CodeGenDAGPatterns(RecordKeeper &R) :
   ParseInstructions();
   ParsePatternFragments(/*OutFrags*/true);
   ParsePatterns();
+
+  // Break patterns with parameterized types into a series of patterns,
+  // where each one has a fixed type and is predicated on the conditions
+  // of the associated HW mode.
+  ExpandHwModeBasedTypes();
 
   // Generate variants.  For example, commutative patterns can match
   // multiple ways.  Add them to PatternsToMatch as well.
@@ -2382,8 +2546,11 @@ Record *CodeGenDAGPatterns::getSDNodeNamed(const std::string &Name) const {
 // Parse all of the SDNode definitions for the target, populating SDNodes.
 void CodeGenDAGPatterns::ParseNodeInfo() {
   std::vector<Record*> Nodes = Records.getAllDerivedDefinitions("SDNode");
+  const CodeGenHwModes &CGH = getTargetInfo().getHwModes();
+
   while (!Nodes.empty()) {
-    SDNodes.insert(std::make_pair(Nodes.back(), Nodes.back()));
+    Record *R = Nodes.back();
+    SDNodes.insert(std::make_pair(R, SDNodeInfo(R, CGH)));
     Nodes.pop_back();
   }
 
@@ -2400,7 +2567,7 @@ void CodeGenDAGPatterns::ParseNodeTransforms() {
   while (!Xforms.empty()) {
     Record *XFormNode = Xforms.back();
     Record *SDNode = XFormNode->getValueAsDef("Opcode");
-    std::string Code = XFormNode->getValueAsString("XFormFunction");
+    StringRef Code = XFormNode->getValueAsString("XFormFunction");
     SDNodeXForms.insert(std::make_pair(XFormNode, NodeXForm(SDNode, Code)));
 
     Xforms.pop_back();
@@ -2425,14 +2592,14 @@ void CodeGenDAGPatterns::ParsePatternFragments(bool OutFrags) {
   std::vector<Record*> Fragments = Records.getAllDerivedDefinitions("PatFrag");
 
   // First step, parse all of the fragments.
-  for (unsigned i = 0, e = Fragments.size(); i != e; ++i) {
-    if (OutFrags != Fragments[i]->isSubClassOf("OutPatFrag"))
+  for (Record *Frag : Fragments) {
+    if (OutFrags != Frag->isSubClassOf("OutPatFrag"))
       continue;
 
-    DagInit *Tree = Fragments[i]->getValueAsDag("Fragment");
+    DagInit *Tree = Frag->getValueAsDag("Fragment");
     TreePattern *P =
-        (PatternFragments[Fragments[i]] = llvm::make_unique<TreePattern>(
-             Fragments[i], Tree, !Fragments[i]->isSubClassOf("OutPatFrag"),
+        (PatternFragments[Frag] = llvm::make_unique<TreePattern>(
+             Frag, Tree, !Frag->isSubClassOf("OutPatFrag"),
              *this)).get();
 
     // Validate the argument list, converting it to set, to discard duplicates.
@@ -2443,7 +2610,7 @@ void CodeGenDAGPatterns::ParsePatternFragments(bool OutFrags) {
       P->error("Cannot have unnamed 'node' values in pattern fragment!");
 
     // Parse the operands list.
-    DagInit *OpsList = Fragments[i]->getValueAsDag("Operands");
+    DagInit *OpsList = Frag->getValueAsDag("Operands");
     DefInit *OpsOp = dyn_cast<DefInit>(OpsList->getOperator());
     // Special cases: ops == outs == ins. Different names are used to
     // improve readability.
@@ -2459,13 +2626,14 @@ void CodeGenDAGPatterns::ParsePatternFragments(bool OutFrags) {
       if (!isa<DefInit>(OpsList->getArg(j)) ||
           cast<DefInit>(OpsList->getArg(j))->getDef()->getName() != "node")
         P->error("Operands list should all be 'node' values.");
-      if (OpsList->getArgName(j).empty())
+      if (!OpsList->getArgName(j))
         P->error("Operands list should have names for each operand!");
-      if (!OperandsSet.count(OpsList->getArgName(j)))
-        P->error("'" + OpsList->getArgName(j) +
+      StringRef ArgNameStr = OpsList->getArgNameStr(j);
+      if (!OperandsSet.count(ArgNameStr))
+        P->error("'" + ArgNameStr +
                  "' does not occur in pattern or was multiply specified!");
-      OperandsSet.erase(OpsList->getArgName(j));
-      Args.push_back(OpsList->getArgName(j));
+      OperandsSet.erase(ArgNameStr);
+      Args.push_back(ArgNameStr);
     }
 
     if (!OperandsSet.empty())
@@ -2480,18 +2648,18 @@ void CodeGenDAGPatterns::ParsePatternFragments(bool OutFrags) {
 
     // If there is a node transformation corresponding to this, keep track of
     // it.
-    Record *Transform = Fragments[i]->getValueAsDef("OperandTransform");
+    Record *Transform = Frag->getValueAsDef("OperandTransform");
     if (!getSDNodeTransform(Transform).second.empty())    // not noop xform?
       P->getOnlyTree()->setTransformFn(Transform);
   }
 
   // Now that we've parsed all of the tree fragments, do a closure on them so
   // that there are not references to PatFrags left inside of them.
-  for (unsigned i = 0, e = Fragments.size(); i != e; ++i) {
-    if (OutFrags != Fragments[i]->isSubClassOf("OutPatFrag"))
+  for (Record *Frag : Fragments) {
+    if (OutFrags != Frag->isSubClassOf("OutPatFrag"))
       continue;
 
-    TreePattern &ThePat = *PatternFragments[Fragments[i]];
+    TreePattern &ThePat = *PatternFragments[Frag];
     ThePat.InlinePatternFragments();
 
     // Infer as many types as possible.  Don't worry about it if we don't infer
@@ -2517,11 +2685,11 @@ void CodeGenDAGPatterns::ParseDefaultOperands() {
 
     // Clone the DefaultInfo dag node, changing the operator from 'ops' to
     // SomeSDnode so that we can parse this.
-    std::vector<std::pair<Init*, std::string> > Ops;
+    std::vector<std::pair<Init*, StringInit*> > Ops;
     for (unsigned op = 0, e = DefaultInfo->getNumArgs(); op != e; ++op)
       Ops.push_back(std::make_pair(DefaultInfo->getArg(op),
                                    DefaultInfo->getArgName(op)));
-    DagInit *DI = DagInit::get(SomeSDNode, "", Ops);
+    DagInit *DI = DagInit::get(SomeSDNode, nullptr, Ops);
 
     // Create a TreePattern to parse this.
     TreePattern P(DefaultOps[i], DI, false, *this);
@@ -2536,7 +2704,7 @@ void CodeGenDAGPatterns::ParseDefaultOperands() {
       while (TPN->ApplyTypeConstraints(P, false))
         /* Resolve all types */;
 
-      if (TPN->ContainsUnresolvedType()) {
+      if (TPN->ContainsUnresolvedType(P)) {
         PrintFatalError("Value #" + Twine(i) + " of OperandWithDefaultOps '" +
                         DefaultOps[i]->getName() +
                         "' doesn't have a concrete type!");
@@ -2709,8 +2877,8 @@ public:
     AnalyzeNode(Pat->getTree(0));
   }
 
-  void Analyze(const PatternToMatch *Pat) {
-    AnalyzeNode(Pat->getSrcPattern());
+  void Analyze(const PatternToMatch &Pat) {
+    AnalyzeNode(Pat.getSrcPattern());
   }
 
 private:
@@ -2771,14 +2939,15 @@ public:
 
     if (const CodeGenIntrinsic *IntInfo = N->getIntrinsicInfo(CDP)) {
       // If this is an intrinsic, analyze it.
-      if (IntInfo->ModRef >= CodeGenIntrinsic::ReadArgMem)
+      if (IntInfo->ModRef & CodeGenIntrinsic::MR_Ref)
         mayLoad = true;// These may load memory.
 
-      if (IntInfo->ModRef >= CodeGenIntrinsic::ReadWriteArgMem)
+      if (IntInfo->ModRef & CodeGenIntrinsic::MR_Mod)
         mayStore = true;// Intrinsics that can write to memory are 'mayStore'.
 
-      if (IntInfo->ModRef >= CodeGenIntrinsic::ReadWriteMem)
-        // WriteMem intrinsics can have other strange effects.
+      if (IntInfo->ModRef >= CodeGenIntrinsic::ReadWriteMem ||
+          IntInfo->hasSideEffects)
+        // ReadWriteMem intrinsics can have other strange effects.
         hasSideEffects = true;
     }
   }
@@ -2815,7 +2984,7 @@ static bool InferFromPattern(CodeGenInstruction &InstInfo,
 
   if (InstInfo.mayLoad != PatInfo.mayLoad && !InstInfo.mayLoad_Unset) {
     // Allow explicitly setting mayLoad = 1, even when the pattern has no loads.
-    // Some targets translate imediates to loads.
+    // Some targets translate immediates to loads.
     if (!InstInfo.mayLoad) {
       Error = true;
       PrintError(PatDef->getLoc(), "Pattern doesn't match mayLoad = " +
@@ -2929,9 +3098,16 @@ const DAGInstruction &CodeGenDAGPatterns::parseInstructionPattern(
   // fill in the InstResults map.
   for (unsigned j = 0, e = I->getNumTrees(); j != e; ++j) {
     TreePatternNode *Pat = I->getTree(j);
-    if (Pat->getNumTypes() != 0)
+    if (Pat->getNumTypes() != 0) {
+      std::string Types;
+      for (unsigned k = 0, ke = Pat->getNumTypes(); k != ke; ++k) {
+        if (k > 0)
+          Types += ", ";
+        Types += Pat->getExtType(k).getAsString();
+      }
       I->error("Top-level forms in instruction pattern should have"
-               " void types");
+               " void types, has types " + Types);
+    }
 
     // Find inputs and outputs, and verify the structure of the uses/defs.
     FindPatternInputsAndOutputs(I, Pat, InstInputs, InstResults,
@@ -3065,11 +3241,11 @@ const DAGInstruction &CodeGenDAGPatterns::parseInstructionPattern(
 void CodeGenDAGPatterns::ParseInstructions() {
   std::vector<Record*> Instrs = Records.getAllDerivedDefinitions("Instruction");
 
-  for (unsigned i = 0, e = Instrs.size(); i != e; ++i) {
+  for (Record *Instr : Instrs) {
     ListInit *LI = nullptr;
 
-    if (isa<ListInit>(Instrs[i]->getValueInit("Pattern")))
-      LI = Instrs[i]->getValueAsListInit("Pattern");
+    if (isa<ListInit>(Instr->getValueInit("Pattern")))
+      LI = Instr->getValueAsListInit("Pattern");
 
     // If there is no pattern, only collect minimal information about the
     // instruction for its operand list.  We have to assume that there is one
@@ -3081,7 +3257,7 @@ void CodeGenDAGPatterns::ParseInstructions() {
       std::vector<Record*> Results;
       std::vector<Record*> Operands;
 
-      CodeGenInstruction &InstInfo = Target.getInstruction(Instrs[i]);
+      CodeGenInstruction &InstInfo = Target.getInstruction(Instr);
 
       if (InstInfo.Operands.size() != 0) {
         for (unsigned j = 0, e = InstInfo.Operands.NumDefs; j < e; ++j)
@@ -3095,12 +3271,12 @@ void CodeGenDAGPatterns::ParseInstructions() {
 
       // Create and insert the instruction.
       std::vector<Record*> ImpResults;
-      Instructions.insert(std::make_pair(Instrs[i],
+      Instructions.insert(std::make_pair(Instr,
                           DAGInstruction(nullptr, Results, Operands, ImpResults)));
       continue;  // no pattern.
     }
 
-    CodeGenInstruction &CGI = Target.getInstruction(Instrs[i]);
+    CodeGenInstruction &CGI = Target.getInstruction(Instr);
     const DAGInstruction &DI = parseInstructionPattern(CGI, LI, Instructions);
 
     (void)DI;
@@ -3108,10 +3284,8 @@ void CodeGenDAGPatterns::ParseInstructions() {
   }
 
   // If we can, convert the instructions to be patterns that are matched!
-  for (std::map<Record*, DAGInstruction, LessRecordByID>::iterator II =
-        Instructions.begin(),
-       E = Instructions.end(); II != E; ++II) {
-    DAGInstruction &TheInst = II->second;
+  for (auto &Entry : Instructions) {
+    DAGInstruction &TheInst = Entry.second;
     TreePattern *I = TheInst.getPattern();
     if (!I) continue;  // No pattern.
 
@@ -3126,15 +3300,14 @@ void CodeGenDAGPatterns::ParseInstructions() {
       SrcPattern = Pattern;
     }
 
-    Record *Instr = II->first;
-    AddPatternToMatch(I,
-                      PatternToMatch(Instr,
-                                     Instr->getValueAsListInit("Predicates"),
-                                     SrcPattern,
-                                     TheInst.getResultPattern(),
-                                     TheInst.getImpResults(),
-                                     Instr->getValueAsInt("AddedComplexity"),
-                                     Instr->getID()));
+    Record *Instr = Entry.first;
+    ListInit *Preds = Instr->getValueAsListInit("Predicates");
+    int Complexity = Instr->getValueAsInt("AddedComplexity");
+    AddPatternToMatch(
+        I,
+        PatternToMatch(Instr, makePredList(Preds), SrcPattern,
+                       TheInst.getResultPattern(), TheInst.getImpResults(),
+                       Complexity, Instr->getID()));
   }
 }
 
@@ -3160,8 +3333,22 @@ static void FindNames(const TreePatternNode *P,
   }
 }
 
+std::vector<Predicate> CodeGenDAGPatterns::makePredList(ListInit *L) {
+  std::vector<Predicate> Preds;
+  for (Init *I : L->getValues()) {
+    if (DefInit *Pred = dyn_cast<DefInit>(I))
+      Preds.push_back(Pred->getDef());
+    else
+      llvm_unreachable("Non-def on the list");
+  }
+
+  // Sort so that different orders get canonicalized to the same string.
+  std::sort(Preds.begin(), Preds.end());
+  return Preds;
+}
+
 void CodeGenDAGPatterns::AddPatternToMatch(TreePattern *Pattern,
-                                           const PatternToMatch &PTM) {
+                                           PatternToMatch &&PTM) {
   // Do some sanity checking on the pattern we're about to match.
   std::string Reason;
   if (!PTM.getSrcPattern()->canPatternMatch(Reason, *this)) {
@@ -3187,27 +3374,24 @@ void CodeGenDAGPatterns::AddPatternToMatch(TreePattern *Pattern,
 
   // Scan all of the named values in the destination pattern, rejecting them if
   // they don't exist in the input pattern.
-  for (std::map<std::string, NameRecord>::iterator
-       I = DstNames.begin(), E = DstNames.end(); I != E; ++I) {
-    if (SrcNames[I->first].first == nullptr)
+  for (const auto &Entry : DstNames) {
+    if (SrcNames[Entry.first].first == nullptr)
       Pattern->error("Pattern has input without matching name in output: $" +
-                     I->first);
+                     Entry.first);
   }
 
   // Scan all of the named values in the source pattern, rejecting them if the
   // name isn't used in the dest, and isn't used to tie two values together.
-  for (std::map<std::string, NameRecord>::iterator
-       I = SrcNames.begin(), E = SrcNames.end(); I != E; ++I)
-    if (DstNames[I->first].first == nullptr && SrcNames[I->first].second == 1)
-      Pattern->error("Pattern has dead named input: $" + I->first);
+  for (const auto &Entry : SrcNames)
+    if (DstNames[Entry.first].first == nullptr &&
+        SrcNames[Entry.first].second == 1)
+      Pattern->error("Pattern has dead named input: $" + Entry.first);
 
-  PatternsToMatch.push_back(PTM);
+  PatternsToMatch.push_back(std::move(PTM));
 }
 
-
-
 void CodeGenDAGPatterns::InferInstructionFlags() {
-  const std::vector<const CodeGenInstruction*> &Instructions =
+  ArrayRef<const CodeGenInstruction*> Instructions =
     Target.getInstructionsByEnumValue();
 
   // First try to infer flags from the primary instruction pattern, if any.
@@ -3231,9 +3415,7 @@ void CodeGenDAGPatterns::InferInstructionFlags() {
 
   // Second, look for single-instruction patterns defined outside the
   // instruction.
-  for (ptm_iterator I = ptm_begin(), E = ptm_end(); I != E; ++I) {
-    const PatternToMatch &PTM = *I;
-
+  for (const PatternToMatch &PTM : ptms()) {
     // We can only infer from single-instruction patterns, otherwise we won't
     // know which instruction should get the flags.
     SmallVector<Record*, 8> PatInstrs;
@@ -3249,7 +3431,7 @@ void CodeGenDAGPatterns::InferInstructionFlags() {
       continue;
 
     InstAnalyzer PatInfo(*this);
-    PatInfo.Analyze(&PTM);
+    PatInfo.Analyze(PTM);
     Errors += InferFromPattern(InstInfo, PatInfo, PTM.getSrcRecord());
   }
 
@@ -3258,31 +3440,29 @@ void CodeGenDAGPatterns::InferInstructionFlags() {
 
   // Revisit instructions with undefined flags and no pattern.
   if (Target.guessInstructionProperties()) {
-    for (unsigned i = 0, e = Revisit.size(); i != e; ++i) {
-      CodeGenInstruction &InstInfo = *Revisit[i];
-      if (InstInfo.InferredFrom)
+    for (CodeGenInstruction *InstInfo : Revisit) {
+      if (InstInfo->InferredFrom)
         continue;
       // The mayLoad and mayStore flags default to false.
       // Conservatively assume hasSideEffects if it wasn't explicit.
-      if (InstInfo.hasSideEffects_Unset)
-        InstInfo.hasSideEffects = true;
+      if (InstInfo->hasSideEffects_Unset)
+        InstInfo->hasSideEffects = true;
     }
     return;
   }
 
   // Complain about any flags that are still undefined.
-  for (unsigned i = 0, e = Revisit.size(); i != e; ++i) {
-    CodeGenInstruction &InstInfo = *Revisit[i];
-    if (InstInfo.InferredFrom)
+  for (CodeGenInstruction *InstInfo : Revisit) {
+    if (InstInfo->InferredFrom)
       continue;
-    if (InstInfo.hasSideEffects_Unset)
-      PrintError(InstInfo.TheDef->getLoc(),
+    if (InstInfo->hasSideEffects_Unset)
+      PrintError(InstInfo->TheDef->getLoc(),
                  "Can't infer hasSideEffects from patterns");
-    if (InstInfo.mayStore_Unset)
-      PrintError(InstInfo.TheDef->getLoc(),
+    if (InstInfo->mayStore_Unset)
+      PrintError(InstInfo->TheDef->getLoc(),
                  "Can't infer mayStore from patterns");
-    if (InstInfo.mayLoad_Unset)
-      PrintError(InstInfo.TheDef->getLoc(),
+    if (InstInfo->mayLoad_Unset)
+      PrintError(InstInfo->TheDef->getLoc(),
                  "Can't infer mayLoad from patterns");
   }
 }
@@ -3302,8 +3482,8 @@ void CodeGenDAGPatterns::VerifyInstructionFlags() {
     unsigned NumSideEffects = 0;
     unsigned NumStores = 0;
     unsigned NumLoads = 0;
-    for (unsigned i = 0, e = Instrs.size(); i != e; ++i) {
-      const CodeGenInstruction &InstInfo = Target.getInstruction(Instrs[i]);
+    for (const Record *Instr : Instrs) {
+      const CodeGenInstruction &InstInfo = Target.getInstruction(Instr);
       NumSideEffects += InstInfo.hasSideEffects;
       NumStores += InstInfo.mayStore;
       NumLoads += InstInfo.mayLoad;
@@ -3311,7 +3491,7 @@ void CodeGenDAGPatterns::VerifyInstructionFlags() {
 
     // Analyze the source pattern.
     InstAnalyzer PatInfo(*this);
-    PatInfo.Analyze(&PTM);
+    PatInfo.Analyze(PTM);
 
     // Collect error messages.
     SmallVector<std::string, 4> Msgs;
@@ -3335,19 +3515,19 @@ void CodeGenDAGPatterns::VerifyInstructionFlags() {
       continue;
     ++Errors;
 
-    for (unsigned i = 0, e = Msgs.size(); i != e; ++i)
-      PrintError(PTM.getSrcRecord()->getLoc(), Twine(Msgs[i]) + " on the " +
+    for (const std::string &Msg : Msgs)
+      PrintError(PTM.getSrcRecord()->getLoc(), Twine(Msg) + " on the " +
                  (Instrs.size() == 1 ?
                   "instruction" : "output instructions"));
     // Provide the location of the relevant instruction definitions.
-    for (unsigned i = 0, e = Instrs.size(); i != e; ++i) {
-      if (Instrs[i] != PTM.getSrcRecord())
-        PrintError(Instrs[i]->getLoc(), "defined here");
-      const CodeGenInstruction &InstInfo = Target.getInstruction(Instrs[i]);
+    for (const Record *Instr : Instrs) {
+      if (Instr != PTM.getSrcRecord())
+        PrintError(Instr->getLoc(), "defined here");
+      const CodeGenInstruction &InstInfo = Target.getInstruction(Instr);
       if (InstInfo.InferredFrom &&
           InstInfo.InferredFrom != InstInfo.TheDef &&
           InstInfo.InferredFrom != PTM.getSrcRecord())
-        PrintError(InstInfo.InferredFrom->getLoc(), "inferred from patttern");
+        PrintError(InstInfo.InferredFrom->getLoc(), "inferred from pattern");
     }
   }
   if (Errors)
@@ -3371,12 +3551,13 @@ static bool ForceArbitraryInstResultType(TreePatternNode *N, TreePattern &TP) {
 
   // If this type is already concrete or completely unknown we can't do
   // anything.
+  TypeInfer &TI = TP.getInfer();
   for (unsigned i = 0, e = N->getNumTypes(); i != e; ++i) {
-    if (N->getExtType(i).isCompletelyUnknown() || N->getExtType(i).isConcrete())
+    if (N->getExtType(i).empty() || TI.isConcrete(N->getExtType(i), false))
       continue;
 
-    // Otherwise, force its type to the first possibility (an arbitrary choice).
-    if (N->getExtType(i).MergeInTypeInfo(N->getExtType(i).getTypeList()[0], TP))
+    // Otherwise, force its type to an arbitrary choice.
+    if (TI.forceArbitrary(N->getExtType(i)))
       return true;
   }
 
@@ -3386,8 +3567,7 @@ static bool ForceArbitraryInstResultType(TreePatternNode *N, TreePattern &TP) {
 void CodeGenDAGPatterns::ParsePatterns() {
   std::vector<Record*> Patterns = Records.getAllDerivedDefinitions("Pattern");
 
-  for (unsigned i = 0, e = Patterns.size(); i != e; ++i) {
-    Record *CurPattern = Patterns[i];
+  for (Record *CurPattern : Patterns) {
     DagInit *Tree = CurPattern->getValueAsDag("PatternToMatch");
 
     // If the pattern references the null_frag, there's nothing to do.
@@ -3498,16 +3678,153 @@ void CodeGenDAGPatterns::ParsePatterns() {
     TreePattern Temp(Result.getRecord(), DstPattern, false, *this);
     Temp.InferAllTypes();
 
-
-    AddPatternToMatch(Pattern,
-                    PatternToMatch(CurPattern,
-                                   CurPattern->getValueAsListInit("Predicates"),
-                                   Pattern->getTree(0),
-                                   Temp.getOnlyTree(), InstImpResults,
-                                   CurPattern->getValueAsInt("AddedComplexity"),
-                                   CurPattern->getID()));
+    // A pattern may end up with an "impossible" type, i.e. a situation
+    // where all types have been eliminated for some node in this pattern.
+    // This could occur for intrinsics that only make sense for a specific
+    // value type, and use a specific register class. If, for some mode,
+    // that register class does not accept that type, the type inference
+    // will lead to a contradiction, which is not an error however, but
+    // a sign that this pattern will simply never match.
+    if (Pattern->getTree(0)->hasPossibleType() &&
+        Temp.getOnlyTree()->hasPossibleType()) {
+      ListInit *Preds = CurPattern->getValueAsListInit("Predicates");
+      int Complexity = CurPattern->getValueAsInt("AddedComplexity");
+      AddPatternToMatch(
+          Pattern,
+          PatternToMatch(
+              CurPattern, makePredList(Preds), Pattern->getTree(0),
+              Temp.getOnlyTree(), std::move(InstImpResults), Complexity,
+              CurPattern->getID()));
+    }
   }
 }
+
+static void collectModes(std::set<unsigned> &Modes, const TreePatternNode *N) {
+  for (const TypeSetByHwMode &VTS : N->getExtTypes())
+    for (const auto &I : VTS)
+      Modes.insert(I.first);
+
+  for (unsigned i = 0, e = N->getNumChildren(); i != e; ++i)
+    collectModes(Modes, N->getChild(i));
+}
+
+void CodeGenDAGPatterns::ExpandHwModeBasedTypes() {
+  const CodeGenHwModes &CGH = getTargetInfo().getHwModes();
+  std::map<unsigned,std::vector<Predicate>> ModeChecks;
+  std::vector<PatternToMatch> Copy = PatternsToMatch;
+  PatternsToMatch.clear();
+
+  auto AppendPattern = [this,&ModeChecks](PatternToMatch &P, unsigned Mode) {
+    TreePatternNode *NewSrc = P.SrcPattern->clone();
+    TreePatternNode *NewDst = P.DstPattern->clone();
+    if (!NewSrc->setDefaultMode(Mode) || !NewDst->setDefaultMode(Mode)) {
+      delete NewSrc;
+      delete NewDst;
+      return;
+    }
+
+    std::vector<Predicate> Preds = P.Predicates;
+    const std::vector<Predicate> &MC = ModeChecks[Mode];
+    Preds.insert(Preds.end(), MC.begin(), MC.end());
+    PatternsToMatch.emplace_back(P.getSrcRecord(), Preds, NewSrc, NewDst,
+                                 P.getDstRegs(), P.getAddedComplexity(),
+                                 Record::getNewUID(), Mode);
+  };
+
+  for (PatternToMatch &P : Copy) {
+    TreePatternNode *SrcP = nullptr, *DstP = nullptr;
+    if (P.SrcPattern->hasProperTypeByHwMode())
+      SrcP = P.SrcPattern;
+    if (P.DstPattern->hasProperTypeByHwMode())
+      DstP = P.DstPattern;
+    if (!SrcP && !DstP) {
+      PatternsToMatch.push_back(P);
+      continue;
+    }
+
+    std::set<unsigned> Modes;
+    if (SrcP)
+      collectModes(Modes, SrcP);
+    if (DstP)
+      collectModes(Modes, DstP);
+
+    // The predicate for the default mode needs to be constructed for each
+    // pattern separately.
+    // Since not all modes must be present in each pattern, if a mode m is
+    // absent, then there is no point in constructing a check for m. If such
+    // a check was created, it would be equivalent to checking the default
+    // mode, except not all modes' predicates would be a part of the checking
+    // code. The subsequently generated check for the default mode would then
+    // have the exact same patterns, but a different predicate code. To avoid
+    // duplicated patterns with different predicate checks, construct the
+    // default check as a negation of all predicates that are actually present
+    // in the source/destination patterns.
+    std::vector<Predicate> DefaultPred;
+
+    for (unsigned M : Modes) {
+      if (M == DefaultMode)
+        continue;
+      if (ModeChecks.find(M) != ModeChecks.end())
+        continue;
+
+      // Fill the map entry for this mode.
+      const HwMode &HM = CGH.getMode(M);
+      ModeChecks[M].emplace_back(Predicate(HM.Features, true));
+
+      // Add negations of the HM's predicates to the default predicate.
+      DefaultPred.emplace_back(Predicate(HM.Features, false));
+    }
+
+    for (unsigned M : Modes) {
+      if (M == DefaultMode)
+        continue;
+      AppendPattern(P, M);
+    }
+
+    bool HasDefault = Modes.count(DefaultMode);
+    if (HasDefault)
+      AppendPattern(P, DefaultMode);
+  }
+}
+
+/// Dependent variable map for CodeGenDAGPattern variant generation
+typedef std::map<std::string, int> DepVarMap;
+
+static void FindDepVarsOf(TreePatternNode *N, DepVarMap &DepMap) {
+  if (N->isLeaf()) {
+    if (isa<DefInit>(N->getLeafValue()))
+      DepMap[N->getName()]++;
+  } else {
+    for (size_t i = 0, e = N->getNumChildren(); i != e; ++i)
+      FindDepVarsOf(N->getChild(i), DepMap);
+  }
+}
+
+/// Find dependent variables within child patterns
+static void FindDepVars(TreePatternNode *N, MultipleUseVarSet &DepVars) {
+  DepVarMap depcounts;
+  FindDepVarsOf(N, depcounts);
+  for (const std::pair<std::string, int> &Pair : depcounts) {
+    if (Pair.second > 1)
+      DepVars.insert(Pair.first);
+  }
+}
+
+#ifndef NDEBUG
+/// Dump the dependent variable set:
+static void DumpDepVars(MultipleUseVarSet &DepVars) {
+  if (DepVars.empty()) {
+    DEBUG(errs() << "<empty set>");
+  } else {
+    DEBUG(errs() << "[ ");
+    for (const std::string &DepVar : DepVars) {
+      DEBUG(errs() << DepVar << " ");
+    }
+    DEBUG(errs() << "]");
+  }
+}
+#endif
+
 
 /// CombineChildVariants - Given a bunch of permutations of each child of the
 /// 'operator' node, put them together in all possible ways.
@@ -3517,8 +3834,8 @@ static void CombineChildVariants(TreePatternNode *Orig,
                                  CodeGenDAGPatterns &CDP,
                                  const MultipleUseVarSet &DepVars) {
   // Make sure that each operand has at least one variant to choose from.
-  for (unsigned i = 0, e = ChildVariants.size(); i != e; ++i)
-    if (ChildVariants[i].empty())
+  for (const auto &Variants : ChildVariants)
+    if (Variants.empty())
       return;
 
   // The end result is an all-pairs construction of the resultant pattern.
@@ -3529,8 +3846,8 @@ static void CombineChildVariants(TreePatternNode *Orig,
 #ifndef NDEBUG
     DEBUG(if (!Idxs.empty()) {
             errs() << Orig->getOperator()->getName() << ": Idxs = [ ";
-              for (unsigned i = 0; i < Idxs.size(); ++i) {
-                errs() << Idxs[i] << " ";
+              for (unsigned Idx : Idxs) {
+                errs() << Idx << " ";
             }
             errs() << "]\n";
           });
@@ -3539,8 +3856,8 @@ static void CombineChildVariants(TreePatternNode *Orig,
     std::vector<TreePatternNode*> NewChildren;
     for (unsigned i = 0, e = ChildVariants.size(); i != e; ++i)
       NewChildren.push_back(ChildVariants[i][Idxs[i]]);
-    TreePatternNode *R = new TreePatternNode(Orig->getOperator(), NewChildren,
-                                             Orig->getNumTypes());
+    auto R = llvm::make_unique<TreePatternNode>(
+        Orig->getOperator(), NewChildren, Orig->getNumTypes());
 
     // Copy over properties.
     R->setName(Orig->getName());
@@ -3551,29 +3868,18 @@ static void CombineChildVariants(TreePatternNode *Orig,
 
     // If this pattern cannot match, do not include it as a variant.
     std::string ErrString;
-    if (!R->canPatternMatch(ErrString, CDP)) {
-      delete R;
-    } else {
-      bool AlreadyExists = false;
-
-      // Scan to see if this pattern has already been emitted.  We can get
-      // duplication due to things like commuting:
-      //   (and GPRC:$a, GPRC:$b) -> (and GPRC:$b, GPRC:$a)
-      // which are the same pattern.  Ignore the dups.
-      for (unsigned i = 0, e = OutVariants.size(); i != e; ++i)
-        if (R->isIsomorphicTo(OutVariants[i], DepVars)) {
-          AlreadyExists = true;
-          break;
-        }
-
-      if (AlreadyExists)
-        delete R;
-      else
-        OutVariants.push_back(R);
-    }
+    // Scan to see if this pattern has already been emitted.  We can get
+    // duplication due to things like commuting:
+    //   (and GPRC:$a, GPRC:$b) -> (and GPRC:$b, GPRC:$a)
+    // which are the same pattern.  Ignore the dups.
+    if (R->canPatternMatch(ErrString, CDP) &&
+        none_of(OutVariants, [&](TreePatternNode *Variant) {
+          return R->isIsomorphicTo(Variant, DepVars);
+        }))
+      OutVariants.push_back(R.release());
 
     // Increment indices to the next permutation by incrementing the
-    // indicies from last index backward, e.g., generate the sequence
+    // indices from last index backward, e.g., generate the sequence
     // [0, 0], [0, 1], [1, 0], [1, 1].
     int IdxsIdx;
     for (IdxsIdx = Idxs.size() - 1; IdxsIdx >= 0; --IdxsIdx) {
@@ -3704,7 +4010,7 @@ static void GenerateVariantsOf(TreePatternNode *N,
   // If this node is commutative, consider the commuted order.
   bool isCommIntrinsic = N->isCommutativeIntrinsic(CDP);
   if (NodeInfo.hasProperty(SDNPCommutative) || isCommIntrinsic) {
-    assert((N->getNumChildren()==2 || isCommIntrinsic) &&
+    assert((N->getNumChildren()>=2 || isCommIntrinsic) &&
            "Commutative but doesn't have 2 children!");
     // Don't count children which are actually register references.
     unsigned NC = 0;
@@ -3724,7 +4030,7 @@ static void GenerateVariantsOf(TreePatternNode *N,
       // operands are the commutative operands, and there might be more operands
       // after those.
       assert(NC >= 3 &&
-             "Commutative intrinsic should have at least 3 childrean!");
+             "Commutative intrinsic should have at least 3 children!");
       std::vector<std::vector<TreePatternNode*> > Variants;
       Variants.push_back(ChildVariants[0]); // Intrinsic id.
       Variants.push_back(ChildVariants[2]);
@@ -3732,9 +4038,14 @@ static void GenerateVariantsOf(TreePatternNode *N,
       for (unsigned i = 3; i != NC; ++i)
         Variants.push_back(ChildVariants[i]);
       CombineChildVariants(N, Variants, OutVariants, CDP, DepVars);
-    } else if (NC == 2)
-      CombineChildVariants(N, ChildVariants[1], ChildVariants[0],
-                           OutVariants, CDP, DepVars);
+    } else if (NC == N->getNumChildren()) {
+      std::vector<std::vector<TreePatternNode*> > Variants;
+      Variants.push_back(ChildVariants[1]);
+      Variants.push_back(ChildVariants[0]);
+      for (unsigned i = 2; i != NC; ++i)
+        Variants.push_back(ChildVariants[i]);
+      CombineChildVariants(N, Variants, OutVariants, CDP, DepVars);
+    }
   }
 }
 
@@ -3764,9 +4075,7 @@ void CodeGenDAGPatterns::GenerateVariants() {
                        DepVars);
 
     assert(!Variants.empty() && "Must create at least original variant!");
-    Variants.erase(Variants.begin());  // Remove the original pattern.
-
-    if (Variants.empty())  // No variants for this pattern.
+    if (Variants.size() == 1)  // No additional variants for this pattern.
       continue;
 
     DEBUG(errs() << "FOUND VARIANTS OF: ";
@@ -3799,11 +4108,11 @@ void CodeGenDAGPatterns::GenerateVariants() {
       if (AlreadyExists) continue;
 
       // Otherwise, add it to the list of patterns we have.
-      PatternsToMatch.emplace_back(
+      PatternsToMatch.push_back(PatternToMatch(
           PatternsToMatch[i].getSrcRecord(), PatternsToMatch[i].getPredicates(),
           Variant, PatternsToMatch[i].getDstPattern(),
           PatternsToMatch[i].getDstRegs(),
-          PatternsToMatch[i].getAddedComplexity(), Record::getNewUID());
+          PatternsToMatch[i].getAddedComplexity(), Record::getNewUID()));
     }
 
     DEBUG(errs() << "\n");

@@ -1,5 +1,5 @@
-; RUN: opt < %s -default-data-layout="e-p:64:64:64-p1:16:16:16-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f32:32:32-f64:64:64-v64:64:64-v128:128:128-a0:0:64-s0:64:64" -instcombine -S | FileCheck %s --check-prefix=LE
-; RUN: opt < %s -default-data-layout="E-p:64:64:64-p1:16:16:16-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f32:32:32-f64:64:64-v64:64:64-v128:128:128-a0:0:64-s0:64:64" -instcombine -S | FileCheck %s --check-prefix=BE
+; RUN: opt < %s -data-layout="e-p:64:64:64-p1:16:16:16-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f32:32:32-f64:64:64-v64:64:64-v128:128:128-a0:0:64-s0:64:64" -instcombine -S | FileCheck %s --check-prefix=LE
+; RUN: opt < %s -data-layout="E-p:64:64:64-p1:16:16:16-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f32:32:32-f64:64:64-v64:64:64-v128:128:128-a0:0:64-s0:64:64" -instcombine -S | FileCheck %s --check-prefix=BE
 
 ; {{ 0xDEADBEEF, 0xBA }, 0xCAFEBABE}
 @g1 = constant {{i32,i8},i32} {{i32,i8} { i32 -559038737, i8 186 }, i32 -889275714 }
@@ -40,13 +40,16 @@ define i16 @test2_addrspacecast() {
   %r = load i16, i16 addrspace(1)* addrspacecast(i32* getelementptr ({{i32,i8},i32}, {{i32,i8},i32}* @g1, i32 0, i32 0, i32 0) to i16 addrspace(1)*)
   ret i16 %r
 
+; FIXME: Should be able to load through a constant addrspacecast.
 ; 0xBEEF
 ; LE-LABEL: @test2_addrspacecast(
-; LE: ret i16 -16657
+; XLE: ret i16 -16657
+; LE: load i16, i16 addrspace(1)* addrspacecast
 
 ; 0xDEAD
 ; BE-LABEL: @test2_addrspacecast(
-; BE: ret i16 -8531
+; XBE: ret i16 -8531
+; BE: load i16, i16 addrspace(1)* addrspacecast
 }
 
 ; Load of second 16 bits of 32-bit value.

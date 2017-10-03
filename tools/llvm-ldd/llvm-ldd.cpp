@@ -14,7 +14,8 @@
 
 #include "llvm/Linker/Linker.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/Bitcode/ReaderWriter.h"
+#include "llvm/Bitcode/BitcodeReader.h"
+#include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/DiagnosticPrinter.h"
 #include "llvm/IR/LLVMContext.h"
@@ -104,10 +105,10 @@ static std::string findSharedLib(StringRef Name) {
 
 int main(int argc, char **argv) {
   // Print a stack trace if we signal out.
-  sys::PrintStackTraceOnErrorSignal();
+  sys::PrintStackTraceOnErrorSignal(argv[0]);
   PrettyStackTraceProgram X(argc, argv);
 
-  LLVMContext &Context = getGlobalContext();
+  LLVMContext Context;
   llvm_shutdown_obj Y;  // Call llvm_shutdown() on exit.
   cl::ParseCommandLineOptions(argc, argv, "llvm ldd\n");
 
@@ -123,6 +124,7 @@ int main(int argc, char **argv) {
     errs() << "Library search path: ['" << join(LibrarySearchPaths.begin(), LibrarySearchPaths.end(), "', '") << "']\n";
   }
 
+#define DEBUG_TYPE "sharedlibs"
   bool error = false;
   for (unsigned i = 0; i < InputFilenames.size(); ++i) {
     StringRef InputFilename = InputFilenames[i];
@@ -142,7 +144,9 @@ int main(int argc, char **argv) {
         continue; // there is no shared libs metadata
       } else if (NMD->getNumOperands() != 1) {
         errs() << "Invalid file format of " << InputFilename << "\n";
-        if (Verbose) NMD->dump();
+        if (Verbose) {
+          DEBUG(NMD->dump());
+        }
         error = true;
         continue;
       }
@@ -172,7 +176,9 @@ int main(int argc, char **argv) {
           indented(1) << Name << " => " << Result << "\n";
         } else {
           errs() << "Invalid file format of " << InputFilename << ": Operand is not a string!\n";
-          if (Verbose) lib->dump();
+          if (Verbose) {
+            DEBUG(lib->dump());
+          }
         }
       }
     } else {
@@ -181,5 +187,6 @@ int main(int argc, char **argv) {
       }
     }
   }
+#undef DEBUG_TYPE
   return error ? 1 : 0;
 }

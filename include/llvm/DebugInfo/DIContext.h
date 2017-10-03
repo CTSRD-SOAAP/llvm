@@ -1,4 +1,4 @@
-//===-- DIContext.h ---------------------------------------------*- C++ -*-===//
+//===- DIContext.h ----------------------------------------------*- C++ -*-===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -15,13 +15,14 @@
 #ifndef LLVM_DEBUGINFO_DICONTEXT_H
 #define LLVM_DEBUGINFO_DICONTEXT_H
 
-#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Object/ObjectFile.h"
-#include "llvm/Object/RelocVisitor.h"
-#include "llvm/Support/Casting.h"
-#include "llvm/Support/DataTypes.h"
+#include <cassert>
+#include <cstdint>
+#include <memory>
 #include <string>
+#include <tuple>
+#include <utility>
 
 namespace llvm {
 
@@ -31,38 +32,66 @@ class raw_ostream;
 struct DILineInfo {
   std::string FileName;
   std::string FunctionName;
-  uint32_t Line;
-  uint32_t Column;
+  uint32_t Line = 0;
+  uint32_t Column = 0;
+  uint32_t StartLine = 0;
 
-  DILineInfo()
-      : FileName("<invalid>"), FunctionName("<invalid>"), Line(0), Column(0) {}
+  // DWARF-specific.
+  uint32_t Discriminator = 0;
+
+  DILineInfo() : FileName("<invalid>"), FunctionName("<invalid>") {}
 
   bool operator==(const DILineInfo &RHS) const {
     return Line == RHS.Line && Column == RHS.Column &&
-           FileName == RHS.FileName && FunctionName == RHS.FunctionName;
+           FileName == RHS.FileName && FunctionName == RHS.FunctionName &&
+           StartLine == RHS.StartLine && Discriminator == RHS.Discriminator;
   }
   bool operator!=(const DILineInfo &RHS) const {
     return !(*this == RHS);
   }
+  bool operator<(const DILineInfo &RHS) const {
+    return std::tie(FileName, FunctionName, Line, Column, StartLine,
+                    Discriminator) <
+           std::tie(RHS.FileName, RHS.FunctionName, RHS.Line, RHS.Column,
+                    RHS.StartLine, RHS.Discriminator);
+  }
 };
 
-typedef SmallVector<std::pair<uint64_t, DILineInfo>, 16> DILineInfoTable;
+using DILineInfoTable = SmallVector<std::pair<uint64_t, DILineInfo>, 16>;
 
 /// DIInliningInfo - a format-neutral container for inlined code description.
 class DIInliningInfo {
   SmallVector<DILineInfo, 4> Frames;
- public:
-  DIInliningInfo() {}
+
+public:
+  DIInliningInfo() = default;
+
   DILineInfo getFrame(unsigned Index) const {
     assert(Index < Frames.size());
     return Frames[Index];
   }
+
+  DILineInfo *getMutableFrame(unsigned Index) {
+    assert(Index < Frames.size());
+    return &Frames[Index];
+  }
+
   uint32_t getNumberOfFrames() const {
     return Frames.size();
   }
+
   void addFrame(const DILineInfo &Frame) {
     Frames.push_back(Frame);
   }
+};
+
+/// DIGlobal - container for description of a global variable.
+struct DIGlobal {
+  std::string Name;
+  uint64_t Start = 0;
+  uint64_t Size = 0;
+
+  DIGlobal() : Name("<invalid>") {}
 };
 
 /// A DINameKind is passed to name search methods to specify a
@@ -73,7 +102,7 @@ enum class DINameKind { None, ShortName, LinkageName };
 /// should be filled with data.
 struct DILineInfoSpecifier {
   enum class FileLineInfoKind { None, Default, AbsoluteFilePath };
-  typedef DINameKind FunctionNameKind;
+  using FunctionNameKind = DINameKind;
 
   FileLineInfoKind FLIKind;
   FunctionNameKind FNKind;
@@ -83,34 +112,36 @@ struct DILineInfoSpecifier {
       : FLIKind(FLIKind), FNKind(FNKind) {}
 };
 
+/// This is just a helper to programmatically construct DIDumpType.
+enum DIDumpTypeCounter {
+#define HANDLE_DWARF_SECTION(ENUM_NAME, ELF_NAME, CMDLINE_NAME) \
+  DIDT_ID_##ENUM_NAME,
+#include "llvm/BinaryFormat/Dwarf.def"
+#undef HANDLE_DWARF_SECTION
+  DIDT_ID_UUID,
+  DIDT_ID_Count
+};
+static_assert(DIDT_ID_Count <= 32, "section types overflow storage");
+
 /// Selects which debug sections get dumped.
-enum DIDumpType {
+enum DIDumpType : unsigned {
   DIDT_Null,
-  DIDT_All,
-  DIDT_Abbrev,
-  DIDT_AbbrevDwo,
-  DIDT_Aranges,
-  DIDT_Frames,
-  DIDT_Info,
-  DIDT_InfoDwo,
-  DIDT_Types,
-  DIDT_TypesDwo,
-  DIDT_Line,
-  DIDT_LineDwo,
-  DIDT_Loc,
-  DIDT_LocDwo,
-  DIDT_Ranges,
-  DIDT_Pubnames,
-  DIDT_Pubtypes,
-  DIDT_GnuPubnames,
-  DIDT_GnuPubtypes,
-  DIDT_Str,
-  DIDT_StrDwo,
-  DIDT_StrOffsetsDwo,
-  DIDT_AppleNames,
-  DIDT_AppleTypes,
-  DIDT_AppleNamespaces,
-  DIDT_AppleObjC
+  DIDT_All             = ~0U,
+#define HANDLE_DWARF_SECTION(ENUM_NAME, ELF_NAME, CMDLINE_NAME) \
+  DIDT_##ENUM_NAME = 1U << DIDT_ID_##ENUM_NAME,
+#include "llvm/BinaryFormat/Dwarf.def"
+#undef HANDLE_DWARF_SECTION
+  DIDT_UUID = 1 << DIDT_ID_UUID,
+};
+
+/// Container for dump options that control which debug information will be
+/// dumped.
+struct DIDumpOptions {
+  unsigned DumpType = DIDT_All;
+  bool ShowChildren = false;
+  bool ShowParents = false;
+  bool SummarizeTypes = false;
+  bool Verbose = false;
 };
 
 class DIContext {
@@ -119,12 +150,18 @@ public:
     CK_DWARF,
     CK_PDB
   };
-  DIContextKind getKind() const { return Kind; }
 
   DIContext(DIContextKind K) : Kind(K) {}
-  virtual ~DIContext() {}
+  virtual ~DIContext() = default;
 
-  virtual void dump(raw_ostream &OS, DIDumpType DumpType = DIDT_All) = 0;
+  DIContextKind getKind() const { return Kind; }
+
+  virtual void dump(raw_ostream &OS, DIDumpOptions DumpOpts) = 0;
+
+  virtual bool verify(raw_ostream &OS, DIDumpOptions DumpOpts = {}) {
+    // No verifier? Just say things went well.
+    return true;
+  }
 
   virtual DILineInfo getLineInfoForAddress(uint64_t Address,
       DILineInfoSpecifier Specifier = DILineInfoSpecifier()) = 0;
@@ -132,6 +169,7 @@ public:
       uint64_t Size, DILineInfoSpecifier Specifier = DILineInfoSpecifier()) = 0;
   virtual DIInliningInfo getInliningInfoForAddress(uint64_t Address,
       DILineInfoSpecifier Specifier = DILineInfoSpecifier()) = 0;
+
 private:
   const DIContextKind Kind;
 };
@@ -140,17 +178,23 @@ private:
 /// to be used by the DIContext implementations when applying relocations
 /// on the fly.
 class LoadedObjectInfo {
+protected:
+  LoadedObjectInfo() = default;
+  LoadedObjectInfo(const LoadedObjectInfo &) = default;
+
 public:
   virtual ~LoadedObjectInfo() = default;
 
-  /// Obtain the Load Address of a section by Name.
+  /// Obtain the Load Address of a section by SectionRef.
   ///
-  /// Calculate the address of the section identified by the passed in Name.
+  /// Calculate the address of the given section.
   /// The section need not be present in the local address space. The addresses
   /// need to be consistent with the addresses used to query the DIContext and
   /// the output of this function should be deterministic, i.e. repeated calls with
-  /// the same Name should give the same address.
-  virtual uint64_t getSectionLoadAddress(StringRef Name) const = 0;
+  /// the same Sec should give the same address.
+  virtual uint64_t getSectionLoadAddress(const object::SectionRef &Sec) const {
+    return 0;
+  }
 
   /// If conveniently available, return the content of the given Section.
   ///
@@ -162,16 +206,33 @@ public:
   /// local (unrelocated) object file and applied on the fly. Note that this method
   /// is used purely for optimzation purposes in the common case of JITting in the
   /// local address space, so returning false should always be correct.
-  virtual bool getLoadedSectionContents(StringRef Name, StringRef &Data) const {
+  virtual bool getLoadedSectionContents(const object::SectionRef &Sec,
+                                        StringRef &Data) const {
     return false;
   }
 
+  // FIXME: This is untested and unused anywhere in the LLVM project, it's
+  // used/needed by Julia (an external project). It should have some coverage
+  // (at least tests, but ideally example functionality).
   /// Obtain a copy of this LoadedObjectInfo.
-  ///
-  /// The caller is responsible for deallocation once the copy is no longer required.
   virtual std::unique_ptr<LoadedObjectInfo> clone() const = 0;
 };
 
-}
+template <typename Derived, typename Base = LoadedObjectInfo>
+struct LoadedObjectInfoHelper : Base {
+protected:
+  LoadedObjectInfoHelper(const LoadedObjectInfoHelper &) = default;
+  LoadedObjectInfoHelper() = default;
 
-#endif
+public:
+  template <typename... Ts>
+  LoadedObjectInfoHelper(Ts &&... Args) : Base(std::forward<Ts>(Args)...) {}
+
+  std::unique_ptr<llvm::LoadedObjectInfo> clone() const override {
+    return llvm::make_unique<Derived>(static_cast<const Derived &>(*this));
+  }
+};
+
+} // end namespace llvm
+
+#endif // LLVM_DEBUGINFO_DICONTEXT_H

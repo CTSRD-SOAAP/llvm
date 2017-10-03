@@ -1,4 +1,4 @@
-//===- FastISelEmitter.cpp - Generate an instruction selector -------------===//
+///===- FastISelEmitter.cpp - Generate an instruction selector -------------===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -18,13 +18,13 @@
 //===----------------------------------------------------------------------===//
 
 #include "CodeGenDAGPatterns.h"
-#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/TableGen/Error.h"
 #include "llvm/TableGen/Record.h"
 #include "llvm/TableGen/TableGenBackend.h"
+#include <utility>
 using namespace llvm;
 
 
@@ -159,10 +159,11 @@ struct OperandsSignature {
       TreePredicateFn PredFn = ImmPredicates.getPredicate(Code-1);
 
       // Emit the type check.
-      OS << "VT == "
-         << getEnumName(PredFn.getOrigPatFragRecord()->getTree(0)->getType(0))
-         << " && ";
-
+      TreePattern *TP = PredFn.getOrigPatFragRecord();
+      ValueTypeByHwMode VVT = TP->getTree(0)->getType(0);
+      assert(VVT.isSimple() &&
+             "Cannot use variable value types with fast isel");
+      OS << "VT == " << getEnumName(VVT.getSimple().SimpleTy) << " && ";
 
       OS << PredFn.getFnName() << "(imm" << i <<')';
       EmittedAnything = true;
@@ -217,10 +218,6 @@ struct OperandsSignature {
           PredNo = ImmediatePredicates.getIDFor(PredFn)+1;
         }
 
-        // Handle unmatched immediate sizes here.
-        //if (Op->getType(0) != VT)
-        //  return false;
-
         Operands.push_back(OpKind::getImm(PredNo));
         continue;
       }
@@ -240,12 +237,12 @@ struct OperandsSignature {
         return false;
       }
 
-      assert(Op->hasTypeSet(0) && "Type infererence not done?");
+      assert(Op->hasConcreteType(0) && "Type infererence not done?");
 
       // For now, all the operands must have the same type (if they aren't
       // immediates).  Note that this causes us to reject variable sized shifts
       // on X86.
-      if (Op->getType(0) != VT)
+      if (Op->getSimpleType(0) != VT)
         return false;
 
       DefInit *OpDI = dyn_cast<DefInit>(Op->getLeafValue());
@@ -390,10 +387,10 @@ class FastISelMap {
   std::map<OperandsSignature, std::vector<OperandsSignature> >
     SignaturesWithConstantForms;
 
-  std::string InstNS;
+  StringRef InstNS;
   ImmPredicateSet ImmediatePredicates;
 public:
-  explicit FastISelMap(std::string InstNS);
+  explicit FastISelMap(StringRef InstNS);
 
   void collectPatterns(CodeGenDAGPatterns &CGP);
   void printImmediatePredicates(raw_ostream &OS);
@@ -417,9 +414,7 @@ static std::string getLegalCName(std::string OpName) {
   return OpName;
 }
 
-FastISelMap::FastISelMap(std::string instns)
-  : InstNS(instns) {
-}
+FastISelMap::FastISelMap(StringRef instns) : InstNS(instns) {}
 
 static std::string PhyRegForNode(TreePatternNode *Op,
                                  const CodeGenTarget &Target) {
@@ -441,10 +436,6 @@ static std::string PhyRegForNode(TreePatternNode *Op,
 
 void FastISelMap::collectPatterns(CodeGenDAGPatterns &CGP) {
   const CodeGenTarget &Target = CGP.getTargetInfo();
-
-  // Determine the target's namespace name.
-  InstNS = Target.getInstNamespace() + "::";
-  assert(InstNS.size() > 2 && "Can't determine target-specific namespace!");
 
   // Scan through all the patterns and record the simple ones.
   for (CodeGenDAGPatterns::ptm_iterator I = CGP.ptm_begin(),
@@ -512,11 +503,11 @@ void FastISelMap::collectPatterns(CodeGenDAGPatterns &CGP) {
     Record *InstPatOp = InstPatNode->getOperator();
     std::string OpcodeName = getOpcodeName(InstPatOp, CGP);
     MVT::SimpleValueType RetVT = MVT::isVoid;
-    if (InstPatNode->getNumTypes()) RetVT = InstPatNode->getType(0);
+    if (InstPatNode->getNumTypes()) RetVT = InstPatNode->getSimpleType(0);
     MVT::SimpleValueType VT = RetVT;
     if (InstPatNode->getNumChildren()) {
       assert(InstPatNode->getChild(0)->getNumTypes() == 1);
-      VT = InstPatNode->getChild(0)->getType(0);
+      VT = InstPatNode->getChild(0)->getSimpleType(0);
     }
 
     // For now, filter out any instructions with predicates.
@@ -566,8 +557,7 @@ void FastISelMap::collectPatterns(CodeGenDAGPatterns &CGP) {
     Operands.PrintManglingSuffix(SuffixOS, ImmediatePredicates, true);
     SuffixOS.flush();
     if (!StringSwitch<bool>(ManglingSuffix)
-        .Cases("", "r", "rr", "ri", "rf", true)
-        .Cases("rri", "i", "f", true)
+        .Cases("", "r", "rr", "ri", "i", "f", true)
         .Default(false))
       continue;
 
@@ -643,12 +633,9 @@ void FastISelMap::emitInstructionCode(raw_ostream &OS,
       OneHadNoPredicate = true;
     } else {
       if (OneHadNoPredicate) {
-        // FIXME: This should be a PrintError once the x86 target
-        // fixes PR21575.
-        PrintWarning("Multiple instructions match and one with no "
-                     "predicate came before one with a predicate!  "
-                     "name:" + Memo.Name + "  predicate: " + 
-                     PredicateCheck);
+        PrintFatalError("Multiple instructions match and one with no "
+                        "predicate came before one with a predicate!  "
+                        "name:" + Memo.Name + "  predicate: " + PredicateCheck);
       }
       OS << "  if (" + PredicateCheck + ") {\n";
       OS << "  ";
@@ -665,8 +652,8 @@ void FastISelMap::emitInstructionCode(raw_ostream &OS,
     if (Memo.SubRegNo.empty()) {
       Operands.PrintManglingSuffix(OS, *Memo.PhysRegs,
      ImmediatePredicates, true);
-      OS << "(" << InstNS << Memo.Name << ", ";
-      OS << "&" << InstNS << Memo.RC->getName() << "RegClass";
+      OS << "(" << InstNS << "::" << Memo.Name << ", ";
+      OS << "&" << InstNS << "::" << Memo.RC->getName() << "RegClass";
       if (!Operands.empty())
         OS << ", ";
       Operands.PrintArguments(OS, *Memo.PhysRegs);
@@ -876,11 +863,11 @@ void EmitFastISel(RecordKeeper &RK, raw_ostream &OS) {
   CodeGenDAGPatterns CGP(RK);
   const CodeGenTarget &Target = CGP.getTargetInfo();
   emitSourceFileHeader("\"Fast\" Instruction Selector for the " +
-                       Target.getName() + " target", OS);
+                       Target.getName().str() + " target", OS);
 
   // Determine the target's namespace name.
-  std::string InstNS = Target.getInstNamespace() + "::";
-  assert(InstNS.size() > 2 && "Can't determine target-specific namespace!");
+  StringRef InstNS = Target.getInstNamespace();
+  assert(!InstNS.empty() && "Can't determine target-specific namespace!");
 
   FastISelMap F(InstNS);
   F.collectPatterns(CGP);

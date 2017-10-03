@@ -1,21 +1,21 @@
-======================
-LLVM 3.8 Release Notes
-======================
+========================
+LLVM 6.0.0 Release Notes
+========================
 
 .. contents::
     :local:
 
 .. warning::
-   These are in-progress notes for the upcoming LLVM 3.8 release.  You may
-   prefer the `LLVM 3.6 Release Notes <http://llvm.org/releases/3.6.0/docs
-   /ReleaseNotes.html>`_.
+   These are in-progress notes for the upcoming LLVM 6 release.
+   Release notes for previous releases can be found on
+   `the Download Page <http://releases.llvm.org/download.html>`_.
 
 
 Introduction
 ============
 
 This document contains the release notes for the LLVM Compiler Infrastructure,
-release 3.8.  Here we describe the status of LLVM, including major improvements
+release 5.0.0.  Here we describe the status of LLVM, including major improvements
 from the previous release, improvements in various subprojects of LLVM, and
 some of the current users of the code.  All LLVM releases may be downloaded
 from the `LLVM releases web site <http://llvm.org/releases/>`_.
@@ -23,7 +23,7 @@ from the `LLVM releases web site <http://llvm.org/releases/>`_.
 For more information about LLVM, including information about the latest
 release, please check out the `main LLVM web site <http://llvm.org/>`_.  If you
 have questions or comments, the `LLVM Developer's Mailing List
-<http://lists.cs.uiuc.edu/mailman/listinfo/llvmdev>`_ is a good place to send
+<http://lists.llvm.org/mailman/listinfo/llvm-dev>`_ is a good place to send
 them.
 
 Note that if you are reading this file from a Subversion checkout or the main
@@ -33,7 +33,6 @@ page <http://llvm.org/releases/>`_.
 
 Non-comprehensive list of changes in this release
 =================================================
-
 .. NOTE
    For small 1-3 sentence descriptions, just add an entry at the end of
    this list. If your description won't fit comfortably in one bullet
@@ -41,7 +40,11 @@ Non-comprehensive list of changes in this release
    functionality, or simply have a lot to talk about), see the `NOTE` below
    for adding a new subsection.
 
-* ... next change ...
+* The ``Redirects`` argument of ``llvm::sys::ExecuteAndWait`` and
+  ``llvm::sys::ExecuteNoWait`` was changed to an ``ArrayRef`` of optional
+  ``StringRef``'s to make it safer and more convenient to use.
+
+* Note..
 
 .. NOTE
    If you would like to document a larger change, then you can add a
@@ -52,6 +55,9 @@ Non-comprehensive list of changes in this release
    -------------------
 
    Makes programs 10x faster by doing Special New Thing.
+
+Changes to the LLVM IR
+----------------------
 
 Changes to the ARM Backend
 --------------------------
@@ -70,6 +76,20 @@ Changes to the PowerPC Target
 
  During this release ...
 
+Changes to the X86 Target
+-------------------------
+
+ During this release ...
+
+Changes to the AMDGPU Target
+-----------------------------
+
+ During this release ...
+
+Changes to the AVR Target
+-----------------------------
+
+ During this release ...
 
 Changes to the OCaml bindings
 -----------------------------
@@ -77,14 +97,16 @@ Changes to the OCaml bindings
  During this release ...
 
 
-External Open Source Projects Using LLVM 3.8
-============================================
+Changes to the C API
+--------------------
 
-An exciting aspect of LLVM is that it is used as an enabling technology for
-a lot of other language and tools projects. This section lists some of the
-projects that have already been updated to work with LLVM 3.8.
+ During this release ...
 
-* A project
+
+External Open Source Projects Using LLVM 6
+==========================================
+
+* A project...
 
 
 Additional Information
@@ -99,4 +121,3 @@ going into the ``llvm/docs/`` directory in the LLVM tree.
 
 If you have any questions or comments about LLVM, please feel free to contact
 us via the `mailing lists <http://llvm.org/docs/#maillist>`_.
-

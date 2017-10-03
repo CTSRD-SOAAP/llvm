@@ -21,6 +21,7 @@ Basic Commands
    lli
    llvm-link
    llvm-ar
+   llvm-lib
    llvm-nm
    llvm-config
    llvm-diff
@@ -50,4 +51,5 @@ Developer Tools
    tblgen
    lit
    llvm-build
+   llvm-pdbutil
    llvm-readobj

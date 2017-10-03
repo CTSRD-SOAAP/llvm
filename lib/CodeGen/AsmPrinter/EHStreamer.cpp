@@ -74,7 +74,7 @@ computeActionsTable(const SmallVectorImpl<const LandingPadInfo*> &LandingPads,
   // output using a fixed width encoding.  FilterOffsets[i] holds the byte
   // offset corresponding to FilterIds[i].
 
-  const std::vector<unsigned> &FilterIds = MMI->getFilterIds();
+  const std::vector<unsigned> &FilterIds = Asm->MF->getFilterIds();
   SmallVector<int, 16> FilterOffsets;
   FilterOffsets.reserve(FilterIds.size());
   int Offset = -1;
@@ -296,7 +296,7 @@ computeCallSiteTable(SmallVectorImpl<CallSiteEntry> &CallSites,
         else {
           // SjLj EH must maintain the call sites in the order assigned
           // to them by the SjLjPrepare pass.
-          unsigned SiteNo = MMI->getCallSiteBeginLabel(BeginLabel);
+          unsigned SiteNo = Asm->MF->getCallSiteBeginLabel(BeginLabel);
           if (CallSites.size() < SiteNo)
             CallSites.resize(SiteNo);
           CallSites[SiteNo - 1] = Site;
@@ -309,7 +309,7 @@ computeCallSiteTable(SmallVectorImpl<CallSiteEntry> &CallSites,
   // If some instruction between the previous try-range and the end of the
   // function may throw, create a call-site entry with no landing pad for the
   // region following the try-range.
-  if (SawPotentiallyThrowing && !IsSJLJ && LastLabel != nullptr) {
+  if (SawPotentiallyThrowing && !IsSJLJ) {
     CallSiteEntry Site = { LastLabel, nullptr, nullptr, 0 };
     CallSites.push_back(Site);
   }
@@ -336,9 +336,10 @@ computeCallSiteTable(SmallVectorImpl<CallSiteEntry> &CallSites,
 ///  3. Type ID table contains references to all the C++ typeinfo for all
 ///     catches in the function.  This tables is reverse indexed base 1.
 void EHStreamer::emitExceptionTable() {
-  const std::vector<const GlobalValue *> &TypeInfos = MMI->getTypeInfos();
-  const std::vector<unsigned> &FilterIds = MMI->getFilterIds();
-  const std::vector<LandingPadInfo> &PadInfos = MMI->getLandingPads();
+  const MachineFunction *MF = Asm->MF;
+  const std::vector<const GlobalValue *> &TypeInfos = MF->getTypeInfos();
+  const std::vector<unsigned> &FilterIds = MF->getFilterIds();
+  const std::vector<LandingPadInfo> &PadInfos = MF->getLandingPads();
 
   // Sort the landing pads in order of their type ids.  This is used to fold
   // duplicate actions.
@@ -477,13 +478,14 @@ void EHStreamer::emitExceptionTable() {
     sizeof(int8_t) +                            // TType format
     (HaveTTData ? TTypeBaseOffsetSize : 0) +    // TType base offset size
     TTypeBaseOffset;                            // TType base offset
-  unsigned SizeAlign = (4 - TotalSize) & 3;
+  unsigned PadBytes = (4 - TotalSize) & 3;
 
   if (HaveTTData) {
     // Account for any extra padding that will be added to the call site table
     // length.
-    Asm->EmitULEB128(TTypeBaseOffset, "@TType base offset", SizeAlign);
-    SizeAlign = 0;
+    Asm->EmitPaddedULEB128(TTypeBaseOffset, TTypeBaseOffsetSize + PadBytes,
+                           "@TType base offset");
+    PadBytes = 0;
   }
 
   bool VerboseAsm = Asm->OutStreamer->isVerboseAsm();
@@ -493,7 +495,9 @@ void EHStreamer::emitExceptionTable() {
     Asm->EmitEncodingByte(dwarf::DW_EH_PE_udata4, "Call site");
 
     // Add extra padding if it wasn't added to the TType base offset.
-    Asm->EmitULEB128(CallSiteTableLength, "Call site table length", SizeAlign);
+    Asm->EmitPaddedULEB128(CallSiteTableLength,
+                           CallSiteTableLengthSize + PadBytes,
+                           "Call site table length");
 
     // Emit the landing pad site information.
     unsigned idx = 0;
@@ -546,7 +550,9 @@ void EHStreamer::emitExceptionTable() {
     Asm->EmitEncodingByte(dwarf::DW_EH_PE_udata4, "Call site");
 
     // Add extra padding if it wasn't added to the TType base offset.
-    Asm->EmitULEB128(CallSiteTableLength, "Call site table length", SizeAlign);
+    Asm->EmitPaddedULEB128(CallSiteTableLength,
+                           CallSiteTableLengthSize + PadBytes,
+                           "Call site table length");
 
     unsigned Entry = 0;
     for (SmallVectorImpl<CallSiteEntry>::const_iterator
@@ -649,8 +655,9 @@ void EHStreamer::emitExceptionTable() {
 }
 
 void EHStreamer::emitTypeInfos(unsigned TTypeEncoding) {
-  const std::vector<const GlobalValue *> &TypeInfos = MMI->getTypeInfos();
-  const std::vector<unsigned> &FilterIds = MMI->getFilterIds();
+  const MachineFunction *MF = Asm->MF;
+  const std::vector<const GlobalValue *> &TypeInfos = MF->getTypeInfos();
+  const std::vector<unsigned> &FilterIds = MF->getFilterIds();
 
   bool VerboseAsm = Asm->OutStreamer->isVerboseAsm();
 
@@ -662,9 +669,8 @@ void EHStreamer::emitTypeInfos(unsigned TTypeEncoding) {
     Entry = TypeInfos.size();
   }
 
-  for (std::vector<const GlobalValue *>::const_reverse_iterator
-         I = TypeInfos.rbegin(), E = TypeInfos.rend(); I != E; ++I) {
-    const GlobalValue *GV = *I;
+  for (const GlobalValue *GV : make_range(TypeInfos.rbegin(),
+                                          TypeInfos.rend())) {
     if (VerboseAsm)
       Asm->OutStreamer->AddComment("TypeInfo " + Twine(Entry--));
     Asm->EmitTTypeReference(GV, TTypeEncoding);

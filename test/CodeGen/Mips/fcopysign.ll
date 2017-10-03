@@ -27,9 +27,9 @@ entry:
 ; 64: or     $[[OR:[0-9]+]], $[[AND0]], $[[AND1]]
 ; 64: dmtc1  $[[OR]], $f0
 
-; 64R2: dext  $[[EXT:[0-9]+]], ${{[0-9]+}}, 63, 1
-; 64R2: dins  $[[INS:[0-9]+]], $[[EXT]], 63, 1
-; 64R2: dmtc1 $[[INS]], $f0
+; 64R2: dextu  $[[EXT:[0-9]+]], ${{[0-9]+}}, 63, 1
+; 64R2: dinsu  $[[INS:[0-9]+]], $[[EXT]], 63, 1
+; 64R2: dmtc1  $[[INS]], $f0
 
   %call = tail call double @copysign(double %d0, double %d1) nounwind readnone
   ret double %call

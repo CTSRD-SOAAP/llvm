@@ -14,10 +14,10 @@
 
 #include "yaml2obj.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/BinaryFormat/ELF.h"
 #include "llvm/MC/StringTableBuilder.h"
 #include "llvm/Object/ELFObjectFile.h"
-#include "llvm/Object/ELFYAML.h"
-#include "llvm/Support/ELF.h"
+#include "llvm/ObjectYAML/ELFYAML.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/YAMLTraits.h"
 #include "llvm/Support/raw_ostream.h"
@@ -38,7 +38,7 @@ class ContiguousBlobAccumulator {
     if (Align == 0)
       Align = 1;
     uint64_t CurrentOffset = InitialOffset + OS.tell();
-    uint64_t AlignedOffset = RoundUpToAlignment(CurrentOffset, Align);
+    uint64_t AlignedOffset = alignTo(CurrentOffset, Align);
     for (; CurrentOffset != AlignedOffset; ++CurrentOffset)
       OS.write('\0');
     return AlignedOffset; // == CurrentOffset;
@@ -99,16 +99,17 @@ namespace {
 template <class ELFT>
 class ELFState {
   typedef typename object::ELFFile<ELFT>::Elf_Ehdr Elf_Ehdr;
+  typedef typename object::ELFFile<ELFT>::Elf_Phdr Elf_Phdr;
   typedef typename object::ELFFile<ELFT>::Elf_Shdr Elf_Shdr;
   typedef typename object::ELFFile<ELFT>::Elf_Sym Elf_Sym;
   typedef typename object::ELFFile<ELFT>::Elf_Rel Elf_Rel;
   typedef typename object::ELFFile<ELFT>::Elf_Rela Elf_Rela;
 
   /// \brief The future ".strtab" section.
-  StringTableBuilder DotStrtab;
+  StringTableBuilder DotStrtab{StringTableBuilder::ELF};
 
   /// \brief The future ".shstrtab" section.
-  StringTableBuilder DotShStrtab;
+  StringTableBuilder DotShStrtab{StringTableBuilder::ELF};
 
   NameToIdxMap SN2I;
   NameToIdxMap SymN2I;
@@ -118,6 +119,7 @@ class ELFState {
   bool buildSymbolIndex(std::size_t &StartIndex,
                         const std::vector<ELFYAML::Symbol> &Symbols);
   void initELFHeader(Elf_Ehdr &Header);
+  void initProgramHeaders(std::vector<Elf_Phdr> &PHeaders);
   bool initSectionHeaders(std::vector<Elf_Shdr> &SHeaders,
                           ContiguousBlobAccumulator &CBA);
   void initSymtabSectionHeader(Elf_Shdr &SHeader,
@@ -125,6 +127,8 @@ class ELFState {
   void initStrtabSectionHeader(Elf_Shdr &SHeader, StringRef Name,
                                StringTableBuilder &STB,
                                ContiguousBlobAccumulator &CBA);
+  void setProgramHeaderLayout(std::vector<Elf_Phdr> &PHeaders,
+                              std::vector<Elf_Shdr> &SHeaders);
   void addSymbols(const std::vector<ELFYAML::Symbol> &Symbols,
                   std::vector<Elf_Sym> &Syms, unsigned SymbolBinding);
   void writeSectionContent(Elf_Shdr &SHeader,
@@ -173,13 +177,29 @@ void ELFState<ELFT>::initELFHeader(Elf_Ehdr &Header) {
   Header.e_machine = Doc.Header.Machine;
   Header.e_version = EV_CURRENT;
   Header.e_entry = Doc.Header.Entry;
+  Header.e_phoff = sizeof(Header);
   Header.e_flags = Doc.Header.Flags;
   Header.e_ehsize = sizeof(Elf_Ehdr);
+  Header.e_phentsize = sizeof(Elf_Phdr);
+  Header.e_phnum = Doc.ProgramHeaders.size();
   Header.e_shentsize = sizeof(Elf_Shdr);
-  // Immediately following the ELF header.
-  Header.e_shoff = sizeof(Header);
+  // Immediately following the ELF header and program headers.
+  Header.e_shoff =
+      sizeof(Header) + sizeof(Elf_Phdr) * Doc.ProgramHeaders.size();
   Header.e_shnum = getSectionCount();
   Header.e_shstrndx = getDotShStrTabSecNo();
+}
+
+template <class ELFT>
+void ELFState<ELFT>::initProgramHeaders(std::vector<Elf_Phdr> &PHeaders) {
+  for (const auto &YamlPhdr : Doc.ProgramHeaders) {
+    Elf_Phdr Phdr;
+    Phdr.p_type = YamlPhdr.Type;
+    Phdr.p_flags = YamlPhdr.Flags;
+    Phdr.p_vaddr = YamlPhdr.VAddr;
+    Phdr.p_paddr = YamlPhdr.PAddr;
+    PHeaders.push_back(Phdr);
+  }
 }
 
 template <class ELFT>
@@ -193,7 +213,7 @@ bool ELFState<ELFT>::initSectionHeaders(std::vector<Elf_Shdr> &SHeaders,
 
   for (const auto &Sec : Doc.Sections)
     DotShStrtab.add(Sec->Name);
-  DotShStrtab.finalize(StringTableBuilder::ELF);
+  DotShStrtab.finalize();
 
   for (const auto &Sec : Doc.Sections) {
     zero(SHeader);
@@ -222,9 +242,11 @@ bool ELFState<ELFT>::initSectionHeaders(std::vector<Elf_Shdr> &SHeaders,
 
       unsigned Index;
       if (SN2I.lookup(S->Info, Index)) {
-        errs() << "error: Unknown section referenced: '" << S->Info
-               << "' at YAML section '" << S->Name << "'.\n";
-        return false;
+        if (S->Info.getAsInteger(0, Index)) {
+          errs() << "error: Unknown section referenced: '" << S->Info
+                 << "' at YAML section '" << S->Name << "'.\n";
+          return false;
+        }
       }
       SHeader.sh_info = Index;
 
@@ -284,7 +306,7 @@ void ELFState<ELFT>::initSymtabSectionHeader(Elf_Shdr &SHeader,
     DotStrtab.add(Sym.Name);
   for (const auto &Sym : Doc.Symbols.Weak)
     DotStrtab.add(Sym.Name);
-  DotStrtab.finalize(StringTableBuilder::ELF);
+  DotStrtab.finalize();
 
   addSymbols(Doc.Symbols.Local, Syms, ELF::STB_LOCAL);
   addSymbols(Doc.Symbols.Global, Syms, ELF::STB_GLOBAL);
@@ -303,10 +325,70 @@ void ELFState<ELFT>::initStrtabSectionHeader(Elf_Shdr &SHeader, StringRef Name,
   zero(SHeader);
   SHeader.sh_name = DotShStrtab.getOffset(Name);
   SHeader.sh_type = ELF::SHT_STRTAB;
-  CBA.getOSAndAlignedOffset(SHeader.sh_offset, SHeader.sh_addralign)
-      << STB.data();
-  SHeader.sh_size = STB.data().size();
+  STB.write(CBA.getOSAndAlignedOffset(SHeader.sh_offset, SHeader.sh_addralign));
+  SHeader.sh_size = STB.getSize();
   SHeader.sh_addralign = 1;
+}
+
+template <class ELFT>
+void ELFState<ELFT>::setProgramHeaderLayout(std::vector<Elf_Phdr> &PHeaders,
+                                            std::vector<Elf_Shdr> &SHeaders) {
+  uint32_t PhdrIdx = 0;
+  for (auto &YamlPhdr : Doc.ProgramHeaders) {
+    auto &PHeader = PHeaders[PhdrIdx++];
+
+    if (YamlPhdr.Sections.size())
+      PHeader.p_offset = UINT32_MAX;
+    else
+      PHeader.p_offset = 0;
+
+    // Find the minimum offset for the program header.
+    for (auto SecName : YamlPhdr.Sections) {
+      uint32_t Index = 0;
+      SN2I.lookup(SecName.Section, Index);
+      const auto &SHeader = SHeaders[Index];
+      PHeader.p_offset = std::min(PHeader.p_offset, SHeader.sh_offset);
+    }
+
+    // Find the maximum offset of the end of a section in order to set p_filesz.
+    PHeader.p_filesz = 0;
+    for (auto SecName : YamlPhdr.Sections) {
+      uint32_t Index = 0;
+      SN2I.lookup(SecName.Section, Index);
+      const auto &SHeader = SHeaders[Index];
+      uint64_t EndOfSection;
+      if (SHeader.sh_type == llvm::ELF::SHT_NOBITS)
+        EndOfSection = SHeader.sh_offset;
+      else
+        EndOfSection = SHeader.sh_offset + SHeader.sh_size;
+      uint64_t EndOfSegment = PHeader.p_offset + PHeader.p_filesz;
+      EndOfSegment = std::max(EndOfSegment, EndOfSection);
+      PHeader.p_filesz = EndOfSegment - PHeader.p_offset;
+    }
+
+    // Find the memory size by adding the size of sections at the end of the
+    // segment. These should be empty (size of zero) and NOBITS sections.
+    PHeader.p_memsz = PHeader.p_filesz;
+    for (auto SecName : YamlPhdr.Sections) {
+      uint32_t Index = 0;
+      SN2I.lookup(SecName.Section, Index);
+      const auto &SHeader = SHeaders[Index];
+      if (SHeader.sh_offset == PHeader.p_offset + PHeader.p_filesz)
+        PHeader.p_memsz += SHeader.sh_size;
+    }
+
+    // Set the alignment of the segment to be the same as the maximum alignment
+    // of the the sections with the same offset so that by default the segment
+    // has a valid and sensible alignment.
+    PHeader.p_align = 1;
+    for (auto SecName : YamlPhdr.Sections) {
+      uint32_t Index = 0;
+      SN2I.lookup(SecName.Section, Index);
+      const auto &SHeader = SHeaders[Index];
+      if (SHeader.sh_offset == PHeader.p_offset)
+        PHeader.p_align = std::max(PHeader.p_align, SHeader.sh_addralign);
+    }
+  }
 }
 
 template <class ELFT>
@@ -327,7 +409,10 @@ void ELFState<ELFT>::addSymbols(const std::vector<ELFYAML::Symbol> &Symbols,
         exit(1);
       }
       Symbol.st_shndx = Index;
-    } // else Symbol.st_shndex == SHN_UNDEF (== 0), since it was zero'd earlier.
+    } else if (Sym.Index) {
+      Symbol.st_shndx = *Sym.Index;
+    }
+    // else Symbol.st_shndex == SHN_UNDEF (== 0), since it was zero'd earlier.
     Symbol.st_value = Sym.Value;
     Symbol.st_other = Sym.Other;
     Symbol.st_size = Sym.Size;
@@ -377,7 +462,8 @@ ELFState<ELFT>::writeSectionContent(Elf_Shdr &SHeader,
     // Some special relocation, R_ARM_v4BX for instance, does not have
     // an external reference.  So it ignores the return value of lookup()
     // here.
-    SymN2I.lookup(Rel.Symbol, SymIdx);
+    if (Rel.Symbol)
+      SymN2I.lookup(*Rel.Symbol, SymIdx);
 
     if (IsRela) {
       Elf_Rela REntry;
@@ -507,12 +593,15 @@ int ELFState<ELFT>::writeELF(raw_ostream &OS, const ELFYAML::Object &Doc) {
   State.initELFHeader(Header);
 
   // TODO: Flesh out section header support.
-  // TODO: Program headers.
+
+  std::vector<Elf_Phdr> PHeaders;
+  State.initProgramHeaders(PHeaders);
 
   // XXX: This offset is tightly coupled with the order that we write
   // things to `OS`.
-  const size_t SectionContentBeginOffset =
-      Header.e_ehsize + Header.e_shentsize * Header.e_shnum;
+  const size_t SectionContentBeginOffset = Header.e_ehsize +
+                                           Header.e_phentsize * Header.e_phnum +
+                                           Header.e_shentsize * Header.e_shnum;
   ContiguousBlobAccumulator CBA(SectionContentBeginOffset);
 
   // Doc might not contain .symtab, .strtab and .shstrtab sections,
@@ -542,7 +631,11 @@ int ELFState<ELFT>::writeELF(raw_ostream &OS, const ELFYAML::Object &Doc) {
                                 CBA);
   SHeaders.push_back(ShStrTabSHeader);
 
+  // Now we can decide segment offsets
+  State.setProgramHeaderLayout(PHeaders, SHeaders);
+
   OS.write((const char *)&Header, sizeof(Header));
+  writeArrayData(OS, makeArrayRef(PHeaders));
   writeArrayData(OS, makeArrayRef(SHeaders));
   CBA.writeBlobToStream(OS);
   return 0;
@@ -556,13 +649,7 @@ static bool isLittleEndian(const ELFYAML::Object &Doc) {
   return Doc.Header.Data == ELFYAML::ELF_ELFDATA(ELF::ELFDATA2LSB);
 }
 
-int yaml2elf(yaml::Input &YIn, raw_ostream &Out) {
-  ELFYAML::Object Doc;
-  YIn >> Doc;
-  if (YIn.error()) {
-    errs() << "yaml2obj: Failed to parse YAML file!\n";
-    return 1;
-  }
+int yaml2elf(llvm::ELFYAML::Object &Doc, raw_ostream &Out) {
   using object::ELFType;
   typedef ELFType<support::little, true> LE64;
   typedef ELFType<support::big, true> BE64;

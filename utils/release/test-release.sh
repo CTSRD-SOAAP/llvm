@@ -12,13 +12,12 @@
 #
 #===------------------------------------------------------------------------===#
 
-if [ `uname -s` = "FreeBSD" ]; then
+System=`uname -s`
+if [ "$System" = "FreeBSD" ]; then
     MAKE=gmake
 else
     MAKE=make
 fi
-
-projects="llvm cfe compiler-rt libcxx libcxxabi test-suite clang-tools-extra"
 
 # Base SVN URL for the sources.
 Base_url="http://llvm.org/svn/llvm-project"
@@ -29,12 +28,20 @@ RC=""
 Triple=""
 use_gzip="no"
 do_checkout="yes"
-do_64bit="yes"
 do_debug="no"
 do_asserts="no"
 do_compare="yes"
+do_rt="yes"
+do_libs="yes"
+do_libunwind="yes"
+do_test_suite="yes"
+do_openmp="yes"
+do_lld="yes"
+do_lldb="no"
+do_polly="yes"
 BuildDir="`pwd`"
-BuildTriple=""
+ExtraConfigureFlags=""
+ExportBranch=""
 
 function usage() {
     echo "usage: `basename $0` -release X.Y.Z -rc NUM [OPTIONS]"
@@ -46,13 +53,22 @@ function usage() {
     echo " -j NUM               Number of compile jobs to run. [default: 3]"
     echo " -build-dir DIR       Directory to perform testing in. [default: pwd]"
     echo " -no-checkout         Don't checkout the sources from SVN."
-    echo " -no-64bit            Don't test the 64-bit version. [default: yes]"
     echo " -test-debug          Test the debug build. [default: no]"
     echo " -test-asserts        Test with asserts on. [default: no]"
     echo " -no-compare-files    Don't test that phase 2 and 3 files are identical."
     echo " -use-gzip            Use gzip instead of xz."
-    echo " -build-triple TRIPLE The build triple for this machine"
-    echo "                      [default: use config.guess]"
+    echo " -configure-flags FLAGS  Extra flags to pass to the configure step."
+    echo " -svn-path DIR        Use the specified DIR instead of a release."
+    echo "                      For example -svn-path trunk or -svn-path branches/release_37"
+    echo " -no-rt               Disable check-out & build Compiler-RT"
+    echo " -no-libs             Disable check-out & build libcxx/libcxxabi/libunwind"
+    echo " -no-libunwind        Disable check-out & build libunwind"
+    echo " -no-test-suite       Disable check-out & build test-suite"
+    echo " -no-openmp           Disable check-out & build libomp"
+    echo " -no-lld              Disable check-out & build lld"
+    echo " -lldb                Enable check-out & build lldb"
+    echo " -no-lldb             Disable check-out & build lldb (default)"
+    echo " -no-polly            Disable check-out & build Polly"
 }
 
 while [ $# -gt 0 ]; do
@@ -69,13 +85,23 @@ while [ $# -gt 0 ]; do
         -final | --final )
             RC=final
             ;;
+        -svn-path | --svn-path )
+            shift
+            Release="test"
+            Release_no_dot="test"
+            ExportBranch="$1"
+            RC="`echo $ExportBranch | sed -e 's,/,_,g'`"
+            echo "WARNING: Using the branch $ExportBranch instead of a release tag"
+            echo "         This is intended to aid new packagers in trialing "
+            echo "         builds without requiring a tag to be created first"
+            ;;
         -triple | --triple )
             shift
             Triple="$1"
             ;;
-        -build-triple | --build-triple )
+        -configure-flags | --configure-flags )
             shift
-            BuildTriple="$1"
+            ExtraConfigureFlags="$1"
             ;;
         -j* )
             NumJobs="`echo $1 | sed -e 's,-j\([0-9]*\),\1,g'`"
@@ -91,9 +117,6 @@ while [ $# -gt 0 ]; do
         -no-checkout | --no-checkout )
             do_checkout="no"
             ;;
-        -no-64bit | --no-64bit )
-            do_64bit="no"
-            ;;
         -test-debug | --test-debug )
             do_debug="yes"
             ;;
@@ -105,6 +128,33 @@ while [ $# -gt 0 ]; do
             ;;
         -use-gzip | --use-gzip )
             use_gzip="yes"
+            ;;
+        -no-rt )
+            do_rt="no"
+            ;;
+        -no-libs )
+            do_libs="no"
+            ;;
+        -no-libunwind )
+            do_libunwind="no"
+            ;;
+        -no-test-suite )
+            do_test_suite="no"
+            ;;
+        -no-openmp )
+            do_openmp="no"
+            ;;
+        -no-lld )
+            do_lld="no"
+            ;;
+        -lldb )
+            do_lldb="yes"
+            ;;
+        -no-lldb )
+            do_lldb="no"
+            ;;
+        -no-polly )
+            do_polly="no"
             ;;
         -help | --help | -h | --h | -\? )
             usage
@@ -128,6 +178,9 @@ if [ -z "$RC" ]; then
     echo "error: no release candidate number specified"
     exit 1
 fi
+if [ -z "$ExportBranch" ]; then
+    ExportBranch="tags/RELEASE_$Release_no_dot/$RC"
+fi
 if [ -z "$Triple" ]; then
     echo "error: no target triple specified"
     exit 1
@@ -147,6 +200,35 @@ if [ -z "$NumJobs" ]; then
     NumJobs=3
 fi
 
+# Projects list
+projects="llvm cfe clang-tools-extra"
+if [ $do_rt = "yes" ]; then
+  projects="$projects compiler-rt"
+fi
+if [ $do_libs = "yes" ]; then
+  projects="$projects libcxx libcxxabi"
+  if [ $do_libunwind = "yes" ]; then
+    projects="$projects libunwind"
+  fi
+fi
+case $do_test_suite in
+  yes|export-only)
+    projects="$projects test-suite"
+    ;;
+esac
+if [ $do_openmp = "yes" ]; then
+  projects="$projects openmp"
+fi
+if [ $do_lld = "yes" ]; then
+  projects="$projects lld"
+fi
+if [ $do_lldb = "yes" ]; then
+  projects="$projects lldb"
+fi
+if [ $do_polly = "yes" ]; then
+  projects="$projects polly"
+fi
+
 # Go to the build directory (may be different from CWD)
 BuildDir=$BuildDir/$RC
 mkdir -p $BuildDir
@@ -163,6 +245,16 @@ if [ $RC != "final" ]; then
 fi
 Package=$Package-$Triple
 
+# Errors to be highlighted at the end are written to this file.
+echo -n > $LogDir/deferred_errors.log
+
+function deferred_error() {
+  Phase="$1"
+  Flavor="$2"
+  Msg="$3"
+  echo "[${Flavor} Phase${Phase}] ${Msg}" | tee -a $LogDir/deferred_errors.log
+}
+
 # Make sure that a required program is available
 function check_program_exists() {
   local program="$1"
@@ -172,7 +264,7 @@ function check_program_exists() {
   fi
 }
 
-if [ `uname -s` != "Darwin" ]; then
+if [ "$System" != "Darwin" ]; then
   check_program_exists 'chrpath'
   check_program_exists 'file'
   check_program_exists 'objdump'
@@ -183,8 +275,8 @@ function check_valid_urls() {
     for proj in $projects ; do
         echo "# Validating $proj SVN URL"
 
-        if ! svn ls $Base_url/$proj/tags/RELEASE_$Release_no_dot/$RC > /dev/null 2>&1 ; then
-            echo "$proj $Release release candidate $RC doesn't exist!"
+        if ! svn ls $Base_url/$proj/$ExportBranch > /dev/null 2>&1 ; then
+            echo "$proj does not have a $ExportBranch branch/tag!"
             exit 1
         fi
     done
@@ -195,35 +287,42 @@ function export_sources() {
     check_valid_urls
 
     for proj in $projects ; do
-        echo "# Exporting $proj $Release-$RC sources"
-        if ! svn export -q $Base_url/$proj/tags/RELEASE_$Release_no_dot/$RC $proj.src ; then
+        case $proj in
+        llvm)
+            projsrc=$proj.src
+            ;;
+        cfe)
+            projsrc=llvm.src/tools/clang
+            ;;
+        lld|lldb|polly)
+            projsrc=llvm.src/tools/$proj
+            ;;
+        clang-tools-extra)
+            projsrc=llvm.src/tools/clang/tools/extra
+            ;;
+        compiler-rt|libcxx|libcxxabi|libunwind|openmp)
+            projsrc=llvm.src/projects/$proj
+            ;;
+        test-suite)
+            projsrc=$proj.src
+            ;;
+        *)
+            echo "error: unknown project $proj"
+            exit 1
+            ;;
+        esac
+
+        if [ -d $projsrc ]; then
+          echo "# Reusing $proj $Release-$RC sources in $projsrc"
+          continue
+        fi
+        echo "# Exporting $proj $Release-$RC sources to $projsrc"
+        if ! svn export -q $Base_url/$proj/$ExportBranch $projsrc ; then
             echo "error: failed to export $proj project"
             exit 1
         fi
     done
 
-    echo "# Creating symlinks"
-    cd $BuildDir/llvm.src/tools
-    if [ ! -h clang ]; then
-        ln -s ../../cfe.src clang
-    fi
-    cd $BuildDir/llvm.src/tools/clang/tools
-    if [ ! -h clang-tools-extra ]; then
-        ln -s ../../../../clang-tools-extra.src extra
-    fi
-    cd $BuildDir/llvm.src/projects
-    if [ ! -h test-suite ]; then
-        ln -s ../../test-suite.src test-suite
-    fi
-    if [ ! -h compiler-rt ]; then
-        ln -s ../../compiler-rt.src compiler-rt
-    fi
-    if [ ! -h libcxx ]; then
-        ln -s ../../libcxx.src libcxx
-    fi
-    if [ ! -h libcxxabi ]; then
-        ln -s ../../libcxxabi.src libcxxabi
-    fi
     cd $BuildDir
 }
 
@@ -233,17 +332,17 @@ function configure_llvmCore() {
     ObjDir="$3"
 
     case $Flavor in
-        Release | Release-64 )
-            Optimized="yes"
-            Assertions="no"
+        Release )
+            BuildType="Release"
+            Assertions="OFF"
             ;;
         Release+Asserts )
-            Optimized="yes"
-            Assertions="yes"
+            BuildType="Release"
+            Assertions="ON"
             ;;
         Debug )
-            Optimized="no"
-            Assertions="yes"
+            BuildType="Debug"
+            Assertions="ON"
             ;;
         * )
             echo "# Invalid flavor '$Flavor'"
@@ -255,22 +354,20 @@ function configure_llvmCore() {
     echo "# Using C compiler: $c_compiler"
     echo "# Using C++ compiler: $cxx_compiler"
 
-    build_triple_option="${BuildTriple:+--build=$BuildTriple}"
-
     cd $ObjDir
     echo "# Configuring llvm $Release-$RC $Flavor"
-    echo "# $BuildDir/llvm.src/configure \
-        --enable-optimized=$Optimized \
-        --enable-assertions=$Assertions \
-        --disable-timestamps \
-        $build_triple_option"
-    env CC="$c_compiler" CXX="$cxx_compiler" \
-        $BuildDir/llvm.src/configure \
-        --enable-optimized=$Optimized \
-        --enable-assertions=$Assertions \
-        --disable-timestamps \
-        $build_triple_option \
+
+    echo "#" env CC="$c_compiler" CXX="$cxx_compiler" \
+        cmake -G "Unix Makefiles" \
+        -DCMAKE_BUILD_TYPE=$BuildType -DLLVM_ENABLE_ASSERTIONS=$Assertions \
+        $ExtraConfigureFlags $BuildDir/llvm.src \
         2>&1 | tee $LogDir/llvm.configure-Phase$Phase-$Flavor.log
+    env CC="$c_compiler" CXX="$cxx_compiler" \
+        cmake -G "Unix Makefiles" \
+        -DCMAKE_BUILD_TYPE=$BuildType -DLLVM_ENABLE_ASSERTIONS=$Assertions \
+        $ExtraConfigureFlags $BuildDir/llvm.src \
+        2>&1 | tee $LogDir/llvm.configure-Phase$Phase-$Flavor.log
+
     cd $BuildDir
 }
 
@@ -279,16 +376,11 @@ function build_llvmCore() {
     Flavor="$2"
     ObjDir="$3"
     DestDir="$4"
-    ExtraOpts=""
-
-    if [ "$Flavor" = "Release-64" ]; then
-        ExtraOpts="EXTRA_OPTIONS=-m64"
-    fi
 
     cd $ObjDir
     echo "# Compiling llvm $Release-$RC $Flavor"
-    echo "# ${MAKE} -j $NumJobs VERBOSE=1 $ExtraOpts"
-    ${MAKE} -j $NumJobs VERBOSE=1 $ExtraOpts \
+    echo "# ${MAKE} -j $NumJobs VERBOSE=1"
+    ${MAKE} -j $NumJobs VERBOSE=1 \
         2>&1 | tee $LogDir/llvm.make-Phase$Phase-$Flavor.log
 
     echo "# Installing llvm $Release-$RC $Flavor"
@@ -305,26 +397,38 @@ function test_llvmCore() {
     ObjDir="$3"
 
     cd $ObjDir
-    ${MAKE} -k check-all \
-        2>&1 | tee $LogDir/llvm.check-Phase$Phase-$Flavor.log
-    ${MAKE} -k unittests \
-        2>&1 | tee $LogDir/llvm.unittests-Phase$Phase-$Flavor.log
+    if ! ( ${MAKE} -j $NumJobs -k check-all \
+        2>&1 | tee $LogDir/llvm.check-Phase$Phase-$Flavor.log ) ; then
+      deferred_error $Phase $Flavor "check-all failed"
+    fi
+
+    if [ $do_test_suite = 'yes' ]; then
+      cd $TestSuiteBuildDir
+      env CC="$c_compiler" CXX="$cxx_compiler" \
+          cmake $TestSuiteSrcDir -DTEST_SUITE_LIT=$Lit
+      if ! ( ${MAKE} -j $NumJobs -k check \
+          2>&1 | tee $LogDir/llvm.check-Phase$Phase-$Flavor.log ) ; then
+        deferred_error $Phase $Flavor "test suite failed"
+      fi
+    fi
     cd $BuildDir
 }
 
 # Clean RPATH. Libtool adds the build directory to the search path, which is
 # not necessary --- and even harmful --- for the binary packages we release.
 function clean_RPATH() {
-  if [ `uname -s` = "Darwin" ]; then
+  if [ "$System" = "Darwin" ]; then
     return
   fi
   local InstallPath="$1"
   for Candidate in `find $InstallPath/{bin,lib} -type f`; do
     if file $Candidate | grep ELF | egrep 'executable|shared object' > /dev/null 2>&1 ; then
-      rpath=`objdump -x $Candidate | grep 'RPATH' | sed -e's/^ *RPATH *//'`
-      if [ -n "$rpath" ]; then
-        newrpath=`echo $rpath | sed -e's/.*\(\$ORIGIN[^:]*\).*/\1/'`
-        chrpath -r $newrpath $Candidate 2>&1 > /dev/null 2>&1
+      if rpath=`objdump -x $Candidate | grep 'RPATH'` ; then
+        rpath=`echo $rpath | sed -e's/^ *RPATH *//'`
+        if [ -n "$rpath" ]; then
+          newrpath=`echo $rpath | sed -e's/.*\(\$ORIGIN[^:]*\).*/\1/'`
+          chrpath -r $newrpath $Candidate 2>&1 > /dev/null 2>&1
+        fi
       fi
     fi
   done
@@ -334,13 +438,13 @@ function clean_RPATH() {
 function package_release() {
     cwd=`pwd`
     cd $BuildDir/Phase3/Release
-    mv llvmCore-$Release-$RC.install $Package
+    mv llvmCore-$Release-$RC.install/usr/local $Package
     if [ "$use_gzip" = "yes" ]; then
       tar cfz $BuildDir/$Package.tar.gz $Package
     else
       tar cfJ $BuildDir/$Package.tar.xz $Package
     fi
-    mv $Package llvmCore-$Release-$RC.install
+    mv $Package llvmCore-$Release-$RC.install/usr/local
     cd $cwd
 }
 
@@ -354,6 +458,19 @@ if [ "$do_checkout" = "yes" ]; then
     export_sources
 fi
 
+# Setup the test-suite.  Do this early so we can catch failures before
+# we do the full 3 stage build.
+if [ $do_test_suite = "yes" ]; then
+  SandboxDir="$BuildDir/sandbox"
+  Lit=$SandboxDir/bin/lit
+  TestSuiteBuildDir="$BuildDir/test-suite-build"
+  TestSuiteSrcDir="$BuildDir/test-suite.src"
+
+  virtualenv $SandboxDir
+  $SandboxDir/bin/python $BuildDir/llvm.src/utils/lit/setup.py install
+  mkdir -p $TestSuiteBuildDir
+fi
+
 (
 Flavors="Release"
 if [ "$do_debug" = "yes" ]; then
@@ -361,9 +478,6 @@ if [ "$do_debug" = "yes" ]; then
 fi
 if [ "$do_asserts" = "yes" ]; then
     Flavors="$Flavors Release+Asserts"
-fi
-if [ "$do_64bit" = "yes" ]; then
-    Flavors="$Flavors Release-64"
 fi
 
 for Flavor in $Flavors ; do
@@ -379,7 +493,6 @@ for Flavor in $Flavors ; do
 
     c_compiler="$CC"
     cxx_compiler="$CXX"
-
     llvmCore_phase1_objdir=$BuildDir/Phase1/$Flavor/llvmCore-$Release-$RC.obj
     llvmCore_phase1_destdir=$BuildDir/Phase1/$Flavor/llvmCore-$Release-$RC.install
 
@@ -437,6 +550,8 @@ for Flavor in $Flavors ; do
 
     ########################################################################
     # Testing: Test phase 3
+    c_compiler=$llvmCore_phase3_destdir/usr/local/bin/clang
+    cxx_compiler=$llvmCore_phase3_destdir/usr/local/bin/clang++
     echo "# Testing - built with clang"
     test_llvmCore 3 $Flavor $llvmCore_phase3_objdir
 
@@ -446,26 +561,41 @@ for Flavor in $Flavors ; do
     if [ "$do_compare" = "yes" ]; then
         echo
         echo "# Comparing Phase 2 and Phase 3 files"
-        for o in `find $llvmCore_phase2_objdir -name '*.o'` ; do
-            p3=`echo $o | sed -e 's,Phase2,Phase3,'`
-            if ! cmp --ignore-initial=16 $o $p3 > /dev/null 2>&1 ; then
-                echo "file `basename $o` differs between phase 2 and phase 3"
+        for p2 in `find $llvmCore_phase2_objdir -name '*.o'` ; do
+            p3=`echo $p2 | sed -e 's,Phase2,Phase3,'`
+            # Substitute 'Phase2' for 'Phase3' in the Phase 2 object file in
+            # case there are build paths in the debug info. On some systems,
+            # sed adds a newline to the output, so pass $p3 through sed too.
+            if ! cmp -s \
+                <(env LC_CTYPE=C sed -e 's,Phase2,Phase3,g' -e 's,Phase1,Phase2,g' $p2) \
+                <(env LC_CTYPE=C sed -e '' $p3) 16 16; then
+                echo "file `basename $p2` differs between phase 2 and phase 3"
             fi
         done
     fi
 done
+
 ) 2>&1 | tee $LogDir/testing.$Release-$RC.log
 
+if [ "$use_gzip" = "yes" ]; then
+  echo "# Packaging the release as $Package.tar.gz"
+else
+  echo "# Packaging the release as $Package.tar.xz"
+fi
 package_release
 
 set +e
 
 # Woo hoo!
 echo "### Testing Finished ###"
-if [ "$use_gzip" = "yes" ]; then
-  echo "### Package: $Package.tar.gz"
-else
-  echo "### Package: $Package.tar.xz"
-fi
 echo "### Logs: $LogDir"
+
+echo "### Errors:"
+if [ -s "$LogDir/deferred_errors.log" ]; then
+  cat "$LogDir/deferred_errors.log"
+  exit 1
+else
+  echo "None."
+fi
+
 exit 0

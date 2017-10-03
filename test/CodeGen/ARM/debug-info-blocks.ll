@@ -1,5 +1,15 @@
-; RUN: llc -O0 < %s | FileCheck %s
-; CHECK: @DEBUG_VALUE: foobar_func_block_invoke_0:mydata <- [SP+{{[0-9]+}}]
+; RUN: llc -filetype=obj -O0 < %s | llvm-dwarfdump -v - | FileCheck %s
+
+; debug_info content
+; CHECK: DW_AT_name {{.*}} "foobar_func_block_invoke_0"
+; CHECK-NOT: DW_TAG_subprogram
+; CHECK: DW_TAG_variable
+; CHECK-NOT: DW_TAG
+; CHECK-NEXT: DW_AT_location [DW_FORM_sec_offset]
+; CHECK-NEXT:    0x{{.*}} - 0x{{.*}}: {{.*}} DW_OP_plus_uconst 0x4, DW_OP_deref, DW_OP_plus_uconst 0x18
+; CHECK-NEXT:    0x{{.*}} - 0x{{.*}}: {{.*}} DW_OP_plus_uconst 0x4, DW_OP_deref, DW_OP_plus_uconst 0x18
+; CHECK-NEXT: DW_AT_name {{.*}} "mydata"
+
 ; Radar 9331779
 target datalayout = "e-p:32:32:32-i1:8:32-i8:8:32-i16:16:32-i32:32:32-i64:32:32-f32:32:32-f64:32:32-v64:32:64-v128:32:128-a0:0:32-n32"
 target triple = "thumbv7-apple-ios"
@@ -23,15 +33,15 @@ declare void @llvm.dbg.declare(metadata, metadata, metadata) nounwind readnone
 
 declare i8* @objc_msgSend(i8*, i8*, ...)
 
-declare void @llvm.dbg.value(metadata, i64, metadata, metadata) nounwind readnone
+declare void @llvm.dbg.value(metadata, metadata, metadata) nounwind readnone
 
 declare void @llvm.memcpy.p0i8.p0i8.i32(i8* nocapture, i8* nocapture, i32, i32, i1) nounwind
 
-define hidden void @foobar_func_block_invoke_0(i8* %.block_descriptor, %0* %loadedMydata, [4 x i32] %bounds.coerce0, [4 x i32] %data.coerce0) ssp {
+define hidden void @foobar_func_block_invoke_0(i8* %.block_descriptor, %0* %loadedMydata, [4 x i32] %bounds.coerce0, [4 x i32] %data.coerce0) ssp !dbg !23 {
   %1 = alloca %0*, align 4
   %bounds = alloca %struct.CR, align 4
   %data = alloca %struct.CR, align 4
-  call void @llvm.dbg.value(metadata i8* %.block_descriptor, i64 0, metadata !27, metadata !DIExpression()), !dbg !129
+  call void @llvm.dbg.value(metadata i8* %.block_descriptor, metadata !27, metadata !DIExpression()), !dbg !129
   store %0* %loadedMydata, %0** %1, align 4
   call void @llvm.dbg.declare(metadata %0** %1, metadata !130, metadata !DIExpression()), !dbg !131
   %2 = bitcast %struct.CR* %bounds to %1*
@@ -95,7 +105,7 @@ define hidden void @foobar_func_block_invoke_0(i8* %.block_descriptor, %0* %load
 !llvm.dbg.cu = !{!0}
 !llvm.module.flags = !{!162}
 
-!0 = !DICompileUnit(language: DW_LANG_ObjC, producer: "Apple clang version 2.1", isOptimized: false, runtimeVersion: 2, emissionKind: 1, file: !153, enums: !147, retainedTypes: !{}, subprograms: !148)
+!0 = distinct !DICompileUnit(language: DW_LANG_ObjC, producer: "Apple clang version 2.1", isOptimized: false, runtimeVersion: 2, emissionKind: FullDebug, file: !153, enums: !147, retainedTypes: !{})
 !1 = !DICompositeType(tag: DW_TAG_enumeration_type, line: 248, size: 32, align: 32, file: !160, scope: !0, elements: !3)
 !2 = !DIFile(filename: "header.h", directory: "/Volumes/Sandbox/llvm")
 !3 = !{!4}
@@ -118,11 +128,11 @@ define hidden void @foobar_func_block_invoke_0(i8* %.block_descriptor, %0* %load
 !20 = !DIFile(filename: "header4.h", directory: "/Volumes/Sandbox/llvm")
 !21 = !{!22}
 !22 = !DIEnumerator(name: "Eleven", value: 0) ; [ DW_TAG_enumerator ]
-!23 = !DISubprogram(name: "foobar_func_block_invoke_0", line: 609, isLocal: true, isDefinition: true, virtualIndex: 6, flags: DIFlagPrototyped, isOptimized: false, scopeLine: 609, file: !152, scope: !24, type: !25, function: void (i8*, %0*, [4 x i32], [4 x i32])* @foobar_func_block_invoke_0)
+!23 = distinct !DISubprogram(name: "foobar_func_block_invoke_0", line: 609, isLocal: true, isDefinition: true, virtualIndex: 6, flags: DIFlagPrototyped, isOptimized: false, unit: !0, scopeLine: 609, file: !152, scope: !24, type: !25)
 !24 = !DIFile(filename: "MyLibrary.m", directory: "/Volumes/Sandbox/llvm")
 !25 = !DISubroutineType(types: !26)
 !26 = !{null}
-!27 = !DILocalVariable(tag: DW_TAG_arg_variable, name: ".block_descriptor", line: 609, arg: 1, flags: DIFlagArtificial, scope: !23, file: !24, type: !28)
+!27 = !DILocalVariable(name: ".block_descriptor", line: 609, arg: 1, flags: DIFlagArtificial, scope: !23, file: !24, type: !28)
 !28 = !DIDerivedType(tag: DW_TAG_pointer_type, size: 32, scope: !0, baseType: !29)
 !29 = !DICompositeType(tag: DW_TAG_structure_type, name: "__block_literal_14", line: 609, size: 256, align: 32, file: !152, scope: !24, elements: !30)
 !30 = !{!31, !33, !35, !36, !37, !48, !89, !124}
@@ -225,16 +235,16 @@ define hidden void @foobar_func_block_invoke_0(i8* %.block_descriptor, %0* %load
 !127 = !DICompositeType(tag: DW_TAG_structure_type, name: "my_struct", line: 49, flags: DIFlagFwdDecl, file: !159, scope: !0)
 !128 = !DIFile(filename: "header15.h", directory: "/Volumes/Sandbox/llvm")
 !129 = !DILocation(line: 609, column: 144, scope: !23)
-!130 = !DILocalVariable(tag: DW_TAG_arg_variable, name: "loadedMydata", line: 609, arg: 2, scope: !23, file: !24, type: !59)
+!130 = !DILocalVariable(name: "loadedMydata", line: 609, arg: 2, scope: !23, file: !24, type: !59)
 !131 = !DILocation(line: 609, column: 155, scope: !23)
-!132 = !DILocalVariable(tag: DW_TAG_arg_variable, name: "bounds", line: 609, arg: 3, scope: !23, file: !24, type: !108)
+!132 = !DILocalVariable(name: "bounds", line: 609, arg: 3, scope: !23, file: !24, type: !108)
 !133 = !DILocation(line: 609, column: 175, scope: !23)
-!134 = !DILocalVariable(tag: DW_TAG_arg_variable, name: "data", line: 609, arg: 4, scope: !23, file: !24, type: !108)
+!134 = !DILocalVariable(name: "data", line: 609, arg: 4, scope: !23, file: !24, type: !108)
 !135 = !DILocation(line: 609, column: 190, scope: !23)
-!136 = !DILocalVariable(tag: DW_TAG_auto_variable, name: "mydata", line: 604, scope: !23, file: !24, type: !50)
+!136 = !DILocalVariable(name: "mydata", line: 604, scope: !23, file: !24, type: !50)
 !137 = !DILocation(line: 604, column: 49, scope: !23)
-!138 = !DILocalVariable(tag: DW_TAG_auto_variable, name: "self", line: 604, scope: !23, file: !40, type: !90)
-!139 = !DILocalVariable(tag: DW_TAG_auto_variable, name: "semi", line: 607, scope: !23, file: !24, type: !125)
+!138 = !DILocalVariable(name: "self", line: 604, scope: !23, file: !40, type: !90)
+!139 = !DILocalVariable(name: "semi", line: 607, scope: !23, file: !24, type: !125)
 !140 = !DILocation(line: 607, column: 30, scope: !23)
 !141 = !DILocation(line: 610, column: 17, scope: !142)
 !142 = distinct !DILexicalBlock(line: 609, column: 200, file: !152, scope: !23)
@@ -243,7 +253,6 @@ define hidden void @foobar_func_block_invoke_0(i8* %.block_descriptor, %0* %load
 !145 = !DILocation(line: 613, column: 17, scope: !142)
 !146 = !DILocation(line: 615, column: 13, scope: !142)
 !147 = !{!1, !1, !5, !5, !9, !14, !19, !19, !14, !14, !14, !19, !19, !19}
-!148 = !{!23}
 !149 = !DIFile(filename: "header3.h", directory: "/Volumes/Sandbox/llvm")
 !150 = !DIFile(filename: "Private.h", directory: "/Volumes/Sandbox/llvm")
 !151 = !DIFile(filename: "header4.h", directory: "/Volumes/Sandbox/llvm")
@@ -258,6 +267,6 @@ define hidden void @foobar_func_block_invoke_0(i8* %.block_descriptor, %0* %load
 !160 = !DIFile(filename: "header.h", directory: "/Volumes/Sandbox/llvm")
 !161 = !{!"header2.h", !"/Volumes/Sandbox/llvm"}
 !162 = !{i32 1, !"Debug Info Version", i32 3}
-!163 = !DIExpression(DW_OP_plus, 20, DW_OP_deref, DW_OP_plus, 4, DW_OP_deref, DW_OP_plus, 24)
-!164 = !DIExpression(DW_OP_deref, DW_OP_plus, 24)
-!165 = !DIExpression(DW_OP_deref, DW_OP_plus, 28)
+!163 = !DIExpression(DW_OP_plus_uconst, 20, DW_OP_deref, DW_OP_plus_uconst, 4, DW_OP_deref, DW_OP_plus_uconst, 24)
+!164 = !DIExpression(DW_OP_deref, DW_OP_plus_uconst, 24)
+!165 = !DIExpression(DW_OP_deref, DW_OP_plus_uconst, 28)

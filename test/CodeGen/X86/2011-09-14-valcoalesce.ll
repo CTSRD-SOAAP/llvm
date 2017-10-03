@@ -1,4 +1,4 @@
-; RUN: llc < %s -march=x86 -disable-block-placement | FileCheck %s
+; RUN: llc < %s -mtriple=i686-- -disable-block-placement | FileCheck %s
 ;
 ; Test RegistersDefinedFromSameValue. We have multiple copies of the same vreg:
 ; while.body85.i:
@@ -19,7 +19,7 @@
 ; reusing the pre-addition register later, or the post-addition one. Currently,
 ; it does the latter, so we check:
 
-; CHECK: # %while.body85.i
+; CHECK: # %while.body85.i{{$}}
 ; CHECK-NOT: # %
 ; CHECK-NOT: add
 ; CHECK: movl %[[POSTR:e[abcdxi]+]], %[[PRER:e[abcdxi]+]]

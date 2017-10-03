@@ -1,5 +1,5 @@
 // RUN: llvm-mc < %s -triple=armv7-linux-gnueabi -filetype=obj -o %t -g -fdebug-compilation-dir=/tmp -dwarf-version 2 2>&1 | FileCheck -check-prefix MESSAGES %s
-// RUN: llvm-dwarfdump %t | FileCheck -check-prefix DWARF %s
+// RUN: llvm-dwarfdump -v %t | FileCheck -check-prefix DWARF %s
 // RUN: llvm-objdump -r %t | FileCheck -check-prefix RELOC %s
 
   .section .text, "ax"
@@ -25,7 +25,7 @@ b:
 
 // DWARF: .debug_info contents:
 // DWARF: 0x{{[0-9a-f]+}}: DW_TAG_compile_unit [1]
-// CHECK-NOT-DWARF: DW_TAG_
+// DWARF-NOT: DW_TAG_
 // DWARF:               DW_AT_low_pc [DW_FORM_addr]       (0x0000000000000000)
 // DWARF:               DW_AT_high_pc [DW_FORM_addr]      (0x0000000000000004)
 
@@ -45,9 +45,8 @@ b:
 // DWARF-NEXT: 0x0000000000000004     11      0      1   0   0 is_stmt end_sequence
 
 
-// DWARF: .debug_ranges contents:
-// DWARF-NOT: {{0-9a-f}}
-// DWARF: .debug_pubnames contents:
+// DWARF-NOT: .debug_ranges contents:
+// DWARF-NOT: .debug_pubnames contents:
 
 
 // RELOC: RELOCATION RECORDS FOR [.rel.debug_info]:
