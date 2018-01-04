@@ -276,15 +276,6 @@ int main(int argc, char **argv) {
       if (!GVSet.count(&F))
         Materialize(F);
     }
-    for (auto &A : M->aliases()) {
-      if (!GVSet.count(&A))
-        Materialize(A);
-    }
-    if (verifyModule(*M, &errs())) {
-      errs() << argv[0] << ": error: linked module is broken!\n";
-      return 1;
-    }
-    // TODO: aliases?
   }
 
   {
@@ -323,11 +314,6 @@ int main(int argc, char **argv) {
     Passes.add(createBitcodeWriterPass(Out.os(), PreserveBitcodeUseListOrder));
 
   Passes.run(*M.get());
-
-  if (verifyModule(*M, &errs())) {
-    errs() << argv[0] << ": error: linked module is broken!\n";
-    return 1;
-  }
 
   // Declare success.
   Out.keep();
